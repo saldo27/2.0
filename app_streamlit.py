@@ -732,20 +732,32 @@ with st.sidebar:
         if st.session_state.workers_data:
             # Prepare full export data
             export_data = st.session_state.config.copy()
-            # Ensure dates are strings
-            if isinstance(export_data.get('start_date'), datetime):
-                export_data['start_date'] = export_data['start_date'].isoformat()
-            if isinstance(export_data.get('end_date'), datetime):
-                export_data['end_date'] = export_data['end_date'].isoformat()
-            
+    
+            # Helper function to convert datetime objects recursively
+            def convert_datetime_to_string(obj):
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                elif isinstance(obj, dict):
+                    return {k: convert_datetime_to_string(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_datetime_to_string(item) for item in obj]
+                else:
+                    return obj
+    
+            # Convert all datetime objects in the config
+            export_data = convert_datetime_to_string(export_data)
+    
+            # Add workers data
+            export_data['workers_data'] = st.session_state.workers_data
+    
             # Add schedule if exists
             if st.session_state.schedule:
                 # Convert schedule keys (datetime) to strings
                 sched_export = {}
                 for k, v in st.session_state.schedule.items():
-                    sched_export[k.isoformat()] = v
+                    sched_export[k. isoformat()] = v
                 export_data['schedule'] = sched_export
-            
+    
             # Export button
             st.download_button(
                 label="💾 Descargar Respaldo Completo (JSON)",
