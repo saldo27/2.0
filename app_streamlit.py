@@ -755,7 +755,7 @@ with st.sidebar:
                 # Convert schedule keys (datetime) to strings
                 sched_export = {}
                 for k, v in st.session_state.schedule.items():
-                    sched_export[k. isoformat()] = v
+                    sched_export[k.isoformat()] = v
                 export_data['schedule'] = sched_export
     
             # Export button
