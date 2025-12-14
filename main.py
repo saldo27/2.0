@@ -909,7 +909,7 @@ Error al acceder a datos históricos: {str(e)}
             
             # 1. Clone Configuration
             sim_config = app.schedule_config.copy()
-            sim_workers = copy.deepcopy(app.workers_data)
+            sim_workers = copy.deepcopy(app.schedule_config.get('workers_data', []))
             
             # 2. Apply Modifications
             # Extra Workers
@@ -1079,7 +1079,7 @@ Error al acceder a datos históricos: {str(e)}
 
                 result_text = (
                     f"[b]Escenario Simulado vs Actual[/b]\n\n"
-                    f"• Médicos Total: {len(sim_workers)} (Actual: {len(app.workers_data)})\n"
+                    f"• Médicos Total: {len(sim_workers)} (Actual: {len(app.schedule_config.get('workers_data', []))})\n"
                     f"• Guardias/Día: {sim_config['num_shifts']} (Actual: {base_shifts_count})\n"
                     f"• Media Guardias/Mes: [b]{sim_avg:.1f}[/b] (Actual: {base_avg:.1f})\n"
                     f"• Equidad (Desvianción Media): [color={'88FF88' if sim_dev < base_dev else 'FF8888'}]{sim_dev:.2f}%[/color] "
@@ -1152,90 +1152,141 @@ Error al acceder a datos históricos: {str(e)}
                     break
             
             if not data_dir:
-                current_dir = os.getcwd()
-                available_dirs = [d for d in os.listdir(current_dir) if os.path.isdir(d)] if os.path.exists(current_dir) else []
-                self.show_popup("Información de Importación", f"""📁 No se encontró el directorio de datos históricos
-
-🔍 Directorio actual: {current_dir}
-📂 Directorios disponibles: {', '.join(available_dirs[:5])}
-
-💡 Para habilitar importación:
-• Genera algunos horarios para crear datos históricos
-• Los archivos de configuración se crearán automáticamente""")
+                self.show_popup("Error", "No se encontró el directorio de datos históricos")
                 return
             
             # Get available JSON files
             json_files = [f for f in os.listdir(data_dir) if f.endswith('.json') and f != 'consolidated_history.json']
+            
             if not json_files:
-                self.show_popup("Información de Importación", f"""📁 Directorio encontrado pero sin archivos JSON
-
-📂 Directorio: {data_dir}
-📄 Archivos disponibles: {len(os.listdir(data_dir))} archivos total
-
-💡 Para crear archivos de importación:
-• Genera varios horarios con 'Comienza el reparto'
-• Los archivos JSON se crearán automáticamente
-• Cada horario genera un archivo de configuración""")
+                self.show_popup("Info", "No hay archivos de respaldo disponibles.")
                 return
             
             # Sort by modification date (newest first)
             json_files = sorted(json_files, key=lambda f: os.path.getmtime(os.path.join(data_dir, f)), reverse=True)
             
-            # Show available files with detailed info
-            files_info = []
-            for i, filename in enumerate(json_files[:5]):  # Show top 5 newest files
-                filepath = os.path.join(data_dir, filename)
+            # Create interactive content
+            content = BoxLayout(orientation='vertical', padding=10, spacing=10)
+            
+            scroll = ScrollView(size_hint_y=0.9)
+            list_layout = GridLayout(cols=1, spacing=10, size_hint_y=None)
+            list_layout.bind(minimum_height=list_layout.setter('height'))
+            
+            popup = None # Forward declare
+            
+            def load_selected_file(filename):
                 try:
+                    filepath = os.path.join(data_dir, filename)
                     with open(filepath, 'r') as f:
                         data = json.load(f)
                     
-                    # Extract useful info
-                    timestamp = data.get('timestamp', 'Unknown')
-                    period = data.get('schedule_period', {})
-                    coverage = data.get('coverage_metrics', {}).get('overall_coverage', 0)
-                    
-                    if timestamp != 'Unknown':
-                        try:
-                            dt = datetime.fromisoformat(timestamp)
-                            timestamp = dt.strftime('%d-%m-%Y %H:%M')
-                        except:
-                            pass
-                    
-                    files_info.append({
-                        'filename': filename,
-                        'timestamp': timestamp,
-                        'period': f"{period.get('start_date', 'N/A')[:10]} - {period.get('end_date', 'N/A')[:10]}",
-                        'coverage': f"{coverage:.1f}%"
-                    })
-                except:
-                    files_info.append({
-                        'filename': filename,
-                        'timestamp': 'Error al leer',
-                        'period': 'N/A',
-                        'coverage': 'N/A'
-                    })
-            
-            # Create detailed info text
-            files_text = f"📁 Archivos Disponibles para Importar ({len(json_files)} total):\n\n"
-            
-            for i, info in enumerate(files_info, 1):
-                files_text += f"{i}. {info['filename']}\n"
-                files_text += f"   📅 Creado: {info['timestamp']}\n"
-                files_text += f"   📊 Período: {info['period']}\n"
-                files_text += f"   ✅ Cobertura: {info['coverage']}\n\n"
-            
-            if len(json_files) > 5:
-                files_text += f"... y {len(json_files) - 5} archivos más\n\n"
-            
-            files_text += """💡 Funcionalidad de Importación:
-• Configuraciones de horarios anteriores
-• Datos históricos para análisis
-• Restaurar parámetros de trabajadores
+                    # 0. Check format type
+                    if isinstance(data, list):
+                        self.show_popup("Error", "Este archivo contiene solo lista de trabajadores. Use la opción de Importar Trabajadores.")
+                        return
 
-🔄 Estado: Sistema listo para importar
-Use estos archivos para restaurar configuraciones anteriores."""
+                    # 1. Validar estructura básica (Relaxed & Diagnostic)
+                    if 'workers_data' not in data:
+                        keys_found = list(data.keys())
+                        if 'worker_metrics' in keys_found:
+                            self.show_popup("Error", f"Archivo de Análisis (Analytics) detectado. No es un respaldo completo.\nClaves: {keys_found}")
+                        else:
+                            self.show_popup("Error", f"Faltan datos de trabajadores ('workers_data').\nClaves: {keys_found}")
+                        return
+
+                    app = App.get_running_app()
+                    
+                    # 2. Restore Workers Data
+                    app.schedule_config['workers_data'] = data['workers_data']
+                    
+                    # 3. Restore Config & Dates
+                    try:
+                        # Try to find dates in different places
+                        s_date_val = data.get('start_date')
+                        e_date_val = data.get('end_date')
+                        
+                        # Fallback
+                        if not s_date_val and 'schedule_period' in data:
+                            s_date_val = data['schedule_period'].get('start_date')
+                            e_date_val = data['schedule_period'].get('end_date')
+
+                        if s_date_val and e_date_val:
+                            if isinstance(s_date_val, str):
+                                s_date = datetime.fromisoformat(s_date_val)
+                            else:
+                                s_date = s_date_val
+                            
+                            if isinstance(e_date_val, str):
+                                e_date = datetime.fromisoformat(e_date_val)
+                            else:
+                                e_date = e_date_val
+                                
+                            app.schedule_config['start_date'] = s_date
+                            app.schedule_config['end_date'] = e_date
+                    except Exception as e:
+                        logging.warning(f"Date parsing warning: {e}")
+                    
+                    if 'num_shifts' in data: app.schedule_config['num_shifts'] = data['num_shifts']
+                    if 'variable_shifts' in data: app.schedule_config['variable_shifts'] = data['variable_shifts']
+                    
+                    # 4. Try to restore full schedule if present
+                    if 'schedule' in data and data['schedule']:
+                        try:
+                            # Reconstruct schedule {datetime: [workers]}
+                            schedule = {}
+                            for date_str, workers in data['schedule'].items():
+                                try:
+                                    dt = datetime.fromisoformat(date_str)
+                                    schedule[dt] = workers
+                                except: pass
+                            
+                            if schedule:
+                                app.schedule_config['schedule'] = schedule
+                                # Recreate scheduler instance
+                                scheduler = Scheduler(app.schedule_config)
+                                scheduler.schedule = schedule
+                                scheduler.workers_data = app.schedule_config.get('workers_data', [])
+                                scheduler.worker_assignments = scheduler._map_worker_assignments()
+                                app.scheduler = scheduler
+                                
+                                logging.info(f"Schedule restored from {filename}")
+                                
+                                # Navigate to calendar view
+                                if self.manager:
+                                    self.manager.current = 'calendar_view'
+                                    
+                                self.show_popup("Éxito", f"Calendario cargado de: {filename}")
+                                if popup: popup.dismiss()
+                                return
+
+                        except Exception as e:
+                             logging.error(f"Schedule reconstruction error: {e}")
+                             self.show_popup("Aviso", "Configuración cargada, pero error en calendario. Genere nuevamente.")
+                             if popup: popup.dismiss()
+                             return
+
+                    if popup: popup.dismiss()
+                    self.show_popup("Exito", "Configuración restaurada. Por favor genere el horario.")
+                    
+                except Exception as e:
+                    logging.error(f"Import Error: {e}")
+                    self.show_popup("Error", f"Error crítico al cargar: {str(e)}")
+
+            for filename in json_files[:20]: # Limit to 20 newest
+                btn = Button(text=filename, size_hint_y=None, height=40)
+                # Use default argument to capture value of filename in lambda
+                btn.bind(on_press=lambda x, fn=filename: load_selected_file(fn))
+                list_layout.add_widget(btn)
+
+            scroll.add_widget(list_layout)
+            content.add_widget(scroll)
             
-            self.show_popup("Importar Datos Históricos", files_text)
+            close_btn = Button(text="Cancelar", size_hint_y=0.1)
+            content.add_widget(close_btn)
+            
+            popup = Popup(title="Seleccione Archivo a Importar", content=content, size_hint=(0.8, 0.8))
+            close_btn.bind(on_press=popup.dismiss)
+            popup.open()
             
         except Exception as e:
             self.show_popup("Error", f"Error al acceder a los datos: {str(e)}")
@@ -2242,7 +2293,7 @@ class CalendarViewScreen(Screen):
         self.month_label = Label(text='', size_hint_x=0.25)  # Reduced to make room
         prev_month = Button(text='<', size_hint_x=0.08)
         next_month = Button(text='>', size_hint_x=0.08)
-        today_btn = Button(text='Today', size_hint_x=0.12)
+        back_btn = Button(text='Volver a Menú Inicial', size_hint_x=0.15)
         summary_btn = Button(text='Global Summary', size_hint_x=0.15) # Keep original text
         adjustment_btn = Button(text='Ajuste', size_hint_x=0.15) # New adjustment button
         
@@ -2255,14 +2306,14 @@ class CalendarViewScreen(Screen):
 
         prev_month.bind(on_press=self.previous_month)
         next_month.bind(on_press=self.next_month)
-        today_btn.bind(on_press=self.go_to_today)
+        back_btn.bind(on_press=self.go_to_welcome)
         summary_btn.bind(on_press=self.show_global_summary) # Keep original function
         adjustment_btn.bind(on_press=self.show_adjustment_window) # New adjustment binding
 
         header.add_widget(prev_month)
         header.add_widget(self.month_label)
         header.add_widget(next_month)
-        header.add_widget(today_btn)
+        header.add_widget(back_btn)
         header.add_widget(summary_btn) # Add the summary button
         header.add_widget(adjustment_btn) # Add the adjustment button
         if rt_btn:
@@ -2318,10 +2369,8 @@ class CalendarViewScreen(Screen):
         year_nav.add_widget(next_year)
         self.layout.add_widget(year_nav)
 
-        # Add Today button
-        today_btn = Button(text='Today', size_hint_x=0.2)
-        today_btn.bind(on_press=self.go_to_today)
-        header.add_widget(today_btn)
+        # Duplicate button removed
+
 
         self.add_widget(self.layout)
         self.current_date = None
@@ -2385,6 +2434,9 @@ class CalendarViewScreen(Screen):
             self.current_date = self.current_date.replace(year=self.current_date.year + 1)
             self.display_month(self.current_date)
     
+    def go_to_welcome(self, instance):
+        self.manager.current = 'welcome'
+
     def go_to_today(self, instance):
         today = datetime.now()
         if self.current_date:

@@ -155,6 +155,120 @@ def save_workers_to_file():
     """Guardar Médicos en JSON"""
     return json.dumps(st.session_state.workers_data, indent=2, ensure_ascii=False)
 
+def load_schedule_from_json(uploaded_file):
+    """Cargar Calendario y Configuración desde archivo JSON"""
+    try:
+        data = json.load(uploaded_file)
+        
+        # 0. Check format type
+        if isinstance(data, list):
+             return False, "❌ Este archivo parece contener solo lista de médicos. Use el importador de 'Trabajadores' más abajo."
+
+        # 1. Validar estructura básica (Relaxed)
+        if 'workers_data' not in data:
+            keys_found = list(data.keys())
+            if 'worker_metrics' in keys_found:
+                 return False, f"❌ Error: Este parece ser un archivo de Análisis Histórico (Analytics), no un respaldo de calendario completo. Claves encontradas: {keys_found}"
+            return False, f"❌ El archivo no contiene datos de trabajadores ('workers_data'). Claves encontradas: {keys_found}"
+            
+        # 2. Cargar Workers Data
+        st.session_state.workers_data = data['workers_data']
+        
+        # 3. Cargar Configuración
+        config = st.session_state.config.copy()
+        
+        # Parse Fechas (Robust)
+        try:
+            # Try to find dates in different places
+            s_date_val = data.get('start_date')
+            e_date_val = data.get('end_date')
+            
+            # Fallback to schedule_period if available
+            if not s_date_val and 'schedule_period' in data:
+                s_date_val = data['schedule_period'].get('start_date')
+                e_date_val = data['schedule_period'].get('end_date')
+
+            if s_date_val and e_date_val:
+                if isinstance(s_date_val, str):
+                    start_date = datetime.fromisoformat(s_date_val)
+                else:
+                    start_date = s_date_val
+                    
+                if isinstance(e_date_val, str):
+                    end_date = datetime.fromisoformat(e_date_val)
+                else:
+                    end_date = e_date_val
+                
+                # Ensure datetime
+                if not isinstance(start_date, datetime): 
+                    start_date = datetime.combine(start_date, datetime.min.time())
+                if not isinstance(end_date, datetime): 
+                    end_date = datetime.combine(end_date, datetime.min.time())
+                    
+                config['start_date'] = start_date
+                config['end_date'] = end_date
+            else:
+                # If no dates found, keep existing or warn?
+                # We'll rely on existing config if file doesn't have dates
+                pass
+            
+        except Exception as e:
+            # Don't fail the whole load just for dates, use existing if needed
+            logging.warning(f"Date parsing warning: {e}")
+
+        # Cargar otros parámetros si existen
+        if 'num_shifts' in data: config['num_shifts'] = data['num_shifts']
+        
+        # Holidays
+        if 'holidays' in data: 
+            holidays = []
+            for h in data['holidays']:
+                try:
+                    if isinstance(h, str):
+                        holidays.append(datetime.fromisoformat(h))
+                    else:
+                        holidays.append(h)
+                except: pass
+            config['holidays'] = holidays
+            
+        if 'variable_shifts' in data: config['variable_shifts'] = data['variable_shifts']
+        
+        st.session_state.config = config
+        
+        # 4. Reconstruir Scheduler y Schedule
+        if 'schedule' in data and data['schedule']:
+            try:
+                # Reconstruir objeto schedule {datetime: [workers]}
+                schedule = {}
+                for date_str, workers in data['schedule'].items():
+                    try:
+                        dt = datetime.fromisoformat(date_str)
+                        schedule[dt] = workers
+                    except: pass
+                
+                if schedule:
+                    # Crear scheduler dummy con esta config
+                    scheduler = Scheduler(config)
+                    scheduler.schedule = schedule
+                    scheduler.workers_data = st.session_state.workers_data
+                    scheduler.worker_assignments = scheduler._map_worker_assignments() 
+                    
+                    st.session_state.scheduler = scheduler
+                    st.session_state.schedule = schedule
+                    
+                    return True, "✅ Calendario y configuración importados correctamente"
+            except Exception as e:
+                 logging.error(f"Schedule reconstruction error: {e}")
+                 return True, "⚠️ Configuración cargada, pero hubo error reconstruyendo el calendario exacto. Genere nuevamente."
+        
+        return True, "✅ Configuración importada (Recuerde generar el horario nuevamente)"
+        
+    except json.JSONDecodeError:
+        return False, "❌ Error: El archivo no es un JSON válido"
+    except Exception as e:
+        return False, f"❌ Error al procesar datos: {str(e)}"
+
+
 
 
 def generate_schedule_internal(start_date, end_date, tolerance, holidays, variable_shifts):
@@ -598,6 +712,47 @@ st.markdown("---")
 # Sidebar - Configuración y Controles
 with st.sidebar:
     st.header("⚙️ Configuración")
+
+    # Importación y Exportación
+    with st.expander("📂 Importar / Exportar / Backup", expanded=False):
+        # Importar
+        sched_file = st.file_uploader("Cargar JSON Completo", type="json", key="sidebar_importer")
+        if sched_file is not None:
+            if st.button("🔄 Restaurar Datos"):
+                success, msg = load_schedule_from_json(sched_file)
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        
+        st.markdown("---")
+        
+        # Exportar
+        if st.session_state.workers_data:
+            # Prepare full export data
+            export_data = st.session_state.config.copy()
+            # Ensure dates are strings
+            if isinstance(export_data.get('start_date'), datetime):
+                export_data['start_date'] = export_data['start_date'].isoformat()
+            if isinstance(export_data.get('end_date'), datetime):
+                export_data['end_date'] = export_data['end_date'].isoformat()
+            
+            # Add schedule if exists
+            if st.session_state.schedule:
+                # Convert schedule keys (datetime) to strings
+                sched_export = {}
+                for k, v in st.session_state.schedule.items():
+                    sched_export[k.isoformat()] = v
+                export_data['schedule'] = sched_export
+            
+            # Export button
+            st.download_button(
+                label="💾 Descargar Respaldo Completo (JSON)",
+                data=json.dumps(export_data, indent=2, ensure_ascii=False),
+                file_name=f"schedule_full_export_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
     
     # Período de reparto (Fecha Inicial - Fecha Final)
     st.subheader("📅 Período de Reparto")
