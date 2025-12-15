@@ -1,6 +1,6 @@
 """
 Validador de tolerancia de shifts
-Valida que los shifts asignados estén dentro del rango de tolerancia +/-8% del target_shift
+Valida que los shifts asignados estén dentro del rango de tolerancia +/-10% del target_shift
 """
 import logging
 from typing import Dict, List, Tuple, Optional, Any
@@ -10,7 +10,7 @@ class ShiftToleranceValidator:
     """Validador para asegurar que los shifts asignados respeten la tolerancia por fases
     
     Sistema de tolerancia por fases:
-    - Fase 1 (Initial): ±8% (objetivo estricto)
+    - Fase 1 (Initial): ±10% (objetivo estricto)
     - Fase 2 (Emergency): ±12% (límite absoluto, solo si cobertura < 95%)
     
     IMPORTANTE: Este validador verifica contra los límites configurados.
@@ -28,7 +28,7 @@ class ShiftToleranceValidator:
         self.workers_data = scheduler.workers_data
         self.schedule = scheduler.schedule
         # Phase 1 tolerance: ±8% (strict target)
-        self.tolerance_percentage = 8.0
+        self.tolerance_percentage = 10.0
         # Phase 2 tolerance: ±12% (absolute maximum)
         self.emergency_tolerance_percentage = 12.0
         
