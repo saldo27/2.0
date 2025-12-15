@@ -22,7 +22,7 @@ datas += collect_data_files('streamlit')
 # ===== INCLUIR TODOS LOS MÓDULOS DE TU APLICACIÓN =====
 # Lista completa de archivos . py del repositorio saldo27/2.0
 app_modules = [
-    'adaptative_iterarions.py',
+    'adaptive_iterations.py',
     'adjustment_utils.py',
     'advanced_distribution_engine',
     'app_streamlit.py',
@@ -52,7 +52,7 @@ app_modules = [
     'real_time_engine.py',
     'real_time_ui.py',
     'scheduler.py',
-    'scheduler_builder.py',
+    'schedule_builder.py',
     'scheduler_config.py',
     'scheduler_core.py,'
     'shift_tolerance_validator.py',
