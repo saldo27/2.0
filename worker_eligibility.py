@@ -4,7 +4,7 @@ import logging
 class WorkerEligibilityTracker:
     """Helper class to track and manage worker eligibility for assignments"""
     
-    def __init__(self, workers_data, holidays, gap_between_shifts=1, max_consecutive_weekends=2, 
+    def __init__(self, workers_data, holidays, gap_between_shifts=3, max_consecutive_weekends=3, 
                  start_date=None, end_date=None, date_utils=None, scheduler=None):
         """
         Initialize the worker eligibility tracker
@@ -12,8 +12,8 @@ class WorkerEligibilityTracker:
         Args:
             workers_data: List of worker dictionaries
             holidays: List of holiday dates
-            gap_between_shifts: Minimum days between shifts (default: 1)
-            max_consecutive_weekends: Maximum consecutive weekend/holiday shifts allowed (default: 2)
+            gap_between_shifts: Minimum days between shifts (default: 3)
+            max_consecutive_weekends: Maximum consecutive weekend/holiday shifts allowed (default: 3)
             start_date: Schedule start date (optional)
             end_date: Schedule end date (optional)
             date_utils: DateTimeUtils instance for date parsing (optional)
