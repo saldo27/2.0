@@ -122,14 +122,27 @@ hiddenimports = [
     'plotly.subplots',
     'altair',
     
-    # PDF generation
+    # PDF generation - MÁS ESPECÍFICO
     'reportlab',
-    'reportlab. lib',
-    'reportlab. lib.colors',
+    'reportlab.lib',
+    'reportlab.lib.colors',
     'reportlab.lib.pagesizes',
-    'reportlab.platypus',
-    'reportlab. lib.styles',
+    'reportlab.lib.styles',           # ← Asegurar que está
     'reportlab.lib.units',
+    'reportlab.lib.enums',            # ← Agregar
+    'reportlab.platypus',
+    'reportlab.platypus.paragraph',   # ← Agregar
+    'reportlab.platypus. tables',      # ← Agregar
+    'reportlab.pdfbase',              # ← Agregar
+    'reportlab.pdfbase. pdfmetrics',   # ← Agregar
+    'reportlab.pdfbase._fontdata',    # ← Agregar
+    'reportlab. rl_config',            # ← Agregar
+
+    # Validators
+    'validators',                      # ← Asegurar que está
+    'validators.domain',               # ← Agregar
+    'validators.email',                # ← Agregar
+    'validators.url',                  # ← Agregar
     
     # Other dependencies
     'pydeck',
