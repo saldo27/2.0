@@ -792,7 +792,7 @@ def show_license_info():
             st.caption("📧 Contacto: luisherrerapara.com")
         
         # ===== AGREGAR ESTO AL FINAL (dentro del if DEMO, BORRAR EN DEFINITIVO) =====
-        ""st.sidebar.markdown("---")
+        """"st.sidebar.markdown("---")
         ""if st.sidebar.checkbox("🔧 Modo Desarrollador", value=False):
             ""if st.sidebar.button("🔄 Resetear DEMO"):
                 ""license_manager. reset_demo()
@@ -825,14 +825,19 @@ if not st.session_state.can_use:
     ### Has alcanzado el límite de la versión DEMO
     
     La versión DEMO permite **10 generaciones de horarios** para que puedas 
-    evaluar todas las funcionalidades de GuardiasApp.
+    evaluar todas las funcionalidades de GuardiasApp. 
     """)
     
-    st.info(f"""
-    **Estadísticas de uso:**
-    - ✅ Generaciones realizadas: **{license_manager.get_usage_stats()['uses']}**
-    - 📅 Primer uso: **{license_manager.get_usage_stats()['first_use'][: 10] if license_manager.get_usage_stats()['first_use'] else 'N/A'}**
-    """)
+    # Obtener estadísticas
+    stats = license_manager.get_usage_stats()
+    uses = stats['uses']
+    first_use = stats['first_use'][:10] if stats['first_use'] else 'N/A'
+    
+    # Mostrar info
+    st.info(f"""**Estadísticas de uso:**
+- ✅ Generaciones realizadas: **{uses}**
+- 📅 Primer uso: **{first_use}**
+""")
     
     st.markdown("---")
     st.markdown("### 🔑 Activar Licencia Completa")
@@ -849,7 +854,7 @@ if not st.session_state.can_use:
             
             submit = st.form_submit_button("🚀 Activar Licencia", use_container_width=True)
             
-            if submit and license_key:
+            if submit and license_key: 
                 success, message = license_manager. activate_license(license_key)
                 if success:
                     st.success(message)
@@ -862,13 +867,13 @@ if not st.session_state.can_use:
     
     with col2:
         st.markdown("""
-        **Beneficios Licencia Completa:**
-        - ♾️ Generaciones ilimitadas
-        - 👥 Trabajadores ilimitados
-        - 📅 Días ilimitados
-        - 📄 PDFs sin marca de agua
-        - 🆘 Soporte prioritario
-        """)
+**Beneficios Licencia Completa:**
+- ♾️ Generaciones ilimitadas
+- 👥 Trabajadores ilimitados
+- 📅 Días ilimitados
+- 📄 PDFs sin marca de agua
+- 🆘 Soporte prioritario
+""")
     
     st.markdown("---")
     st.info("**¿Necesitas una licencia?**\n\n📧 Contacta:  luisherrerapara@gmail.com")
