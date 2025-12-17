@@ -1227,7 +1227,7 @@ with tab1:
         for idx, worker in enumerate(st.session_state.workers_data):
             # Título del trabajador
             if worker.get('auto_calculate_shifts', True):
-                title = f"👤 {worker['id']} - Objetivo: 🔄 Automático ({worker.get('work_percentage', 1)*100:.0f}%)"
+                title = f"👤 {worker['id']} - Objetivo: 🔄 Automático ({worker.get('work_percentage', 1):.0f}%)"
             else:
                 title = f"👤 {worker['id']} - Objetivo: {worker.get('target_shifts', 0)} turnos (manual)"
             
@@ -1236,7 +1236,7 @@ with tab1:
                 
                 with col_info:
                     # Información básica
-                    st.write(f"**Porcentaje jornada:** {worker.get('work_percentage', 1)*100:.0f}%")
+                    st.write(f"**Porcentaje jornada:** {worker.get('work_percentage', 1):.0f}%")
                     
                     # Mostrar objetivo de turnos claramente
                     if worker.get('auto_calculate_shifts', True):
@@ -1972,14 +1972,10 @@ with tab5:
                         with col_m1:
                             st.metric("Total Médicos", len(sim_workers), delta=len(sim_workers)-len(st.session_state.workers_data))
                         with col_m2:
-                            current_shifts_per_day = st.session_state.config['num_shifts']
-                            sim_shifts_per_day = sim_config['num_shifts']
-                            st.metric("Guardias/Día", sim_shifts_per_day, delta=sim_shifts_per_day - current_shifts_per_day)
-                        with col_m3:
                             base_avg_month = calc_avg_shifts_month(base_scheduler)
                             sim_avg_month = calc_avg_shifts_month(sim_scheduler)
-                            st.metric("Guardias/Mes (Avg)", f"{sim_avg_month:.1f}", delta=f"{sim_avg_month - base_avg_month:.1f}")
-                        with col_m4:
+                            st.metric("Guardias/Mes (Avg)", f"{sim_avg_month:.1f}", delta=f"{sim_avg_month - base_avg_month:. 1f}")
+                        with col_m3:
                             # Calcular desviación promedio absoluta
                             def calc_avg_dev(sch):
                                 stats_data = sch.stats.calculate_statistics()
