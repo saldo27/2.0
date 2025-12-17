@@ -8,12 +8,15 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
+import streamlit as st
+import pandas as pd
 import json
 import copy
 import logging
 import os
 from pathlib import Path
 import traceback
+from license_manager import license_manager
 
 # Importar módulos del scheduler
 from scheduler import Scheduler
@@ -75,6 +78,14 @@ if 'generation_log' not in st.session_state:
     st.session_state.generation_log = []
 if 'config' not in st.session_state:
     st.session_state.config = SchedulerConfig.get_default_config()
+
+if 'license_checked' not in st.session_state:
+    st.session_state.license_checked = True
+    can_use, message, remaining = license_manager.can_use()
+    st.session_state.can_use = can_use
+    st. session_state.license_message = message
+    st. session_state.uses_remaining = remaining
+    st.session_state.limitations = license_manager.get_limitations()
 
 # Real-time features
 if 'real_time_enabled' not in st.session_state:
@@ -273,6 +284,26 @@ def load_schedule_from_json(uploaded_file):
 
 def generate_schedule_internal(start_date, end_date, tolerance, holidays, variable_shifts):
     """Generar el horario internamente"""
+    limitations = st.session_state.limitations
+    
+    # Verificar límite de trabajadores (DEMO)
+    if limitations['max_workers']: 
+        if len(st.session_state.workers_data) > limitations['max_workers']:
+            st.error(f"⚠️ **Limitación DEMO**:  Máximo {limitations['max_workers']} trabajadores permitidos")
+            st.info("💡 Activa la licencia completa para trabajadores ilimitados")
+            return False, f"Límite de {limitations['max_workers']} trabajadores excedido"
+    
+    # Verificar límite de días (DEMO)
+    if limitations['max_days']:
+        days = (end_date - start_date).days + 1
+        if isinstance(days, timedelta):
+            days = days.days
+        if days > limitations['max_days']:
+            st.error(f"⚠️ **Limitación DEMO**: Máximo {limitations['max_days']} días de horario permitidos")
+            st.info("💡 Activa la licencia completa para períodos ilimitados")
+            return False, f"Límite de {limitations['max_days']} días excedido"
+    # ===== FIN VALIDACIONES =====
+    
     try:
         # Validar datos de entrada
         if not st.session_state.workers_data:
@@ -349,9 +380,21 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
             status_text.info("⚙️ Ejecutando: Distribución Inicial → Optimización Iterativa → Balanceo")
             success = scheduler.generate_schedule()
         
+        with st.spinner("🚀 Ejecutando motor de optimización avanzado..."):
+            status_text. info("⚙️ Ejecutando:  Distribución Inicial → Optimización Iterativa → Balanceo")
+            success = scheduler.generate_schedule()
+        
         if success:
-            # Activar características de tiempo real (Smart Swapping, Undo/Redo)
-            # Esto iguala el comportamiento de main.py
+            if limitations['mode'] == 'DEMO':
+                uses = license_manager.increment_usage()
+                st.session_state. uses_remaining = license_manager.DEMO_MAX_USES - uses
+                
+                if st.session_state. uses_remaining <= 3:
+                    st.warning(f"⚠️ **Atención**: Solo quedan **{st.session_state.uses_remaining}** usos en modo DEMO")
+                
+                st.info(f"✅ Generación #{uses} completada.  Quedan {st.session_state.uses_remaining} usos.")
+            
+            # Activar características de tiempo real
             if hasattr(scheduler, 'enable_real_time_features'):
                 scheduler.enable_real_time_features()
                 
@@ -703,11 +746,134 @@ def get_predictive_insights():
     st.session_state.analytics_insights = insights
     return insights
 
+
+def show_license_info():
+    """Mostrar información de licencia en sidebar"""
+    st.sidebar.markdown("---")
+    
+    limitations = st.session_state.limitations
+    
+    if limitations['mode'] == 'DEMO': 
+        st.sidebar.warning("🔓 **MODO DEMO**")
+        
+        with st.sidebar.expander("ℹ️ Limitaciones DEMO", expanded=True):
+            st.write(f"👥 Máx. trabajadores: **{limitations['max_workers']}**")
+            st.write(f"📅 Máx. días horario: **{limitations['max_days']}**")
+            st.write(f"🎯 Usos restantes: **{st.session_state.uses_remaining}/{license_manager.DEMO_MAX_USES}**")
+            if limitations['watermark']:
+                st.write(f"💧 Marca de agua en PDFs")
+        
+        if st.session_state.uses_remaining is not None and st.session_state.uses_remaining <= 3:
+            st.sidebar.error(f"⚠️ Solo quedan **{st.session_state.uses_remaining}** usos!")
+        
+        st.sidebar.markdown("---")
+        
+        with st.sidebar.expander("🔑 Activar Licencia", expanded=False):
+            with st.form("activation_sidebar"):
+                license_key = st.text_input(
+                    "Clave de Licencia:",
+                    placeholder="GP-XXXX-XXXX-XXXX",
+                    max_chars=19
+                )
+                
+                submit = st.form_submit_button("Activar", use_container_width=True)
+                
+                if submit and license_key:
+                    success, message = license_manager.activate_license(license_key)
+                    if success:
+                        st.success(message)
+                        st.balloons()
+                        import time
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st. error(message)
+            
+            st.caption("📧 Contacto: luisherrerapara.com")
+        
+        # ===== AGREGAR ESTO AL FINAL (dentro del if DEMO, BORRAR EN DEFINITIVO) =====
+        ""st.sidebar.markdown("---")
+        ""if st.sidebar.checkbox("🔧 Modo Desarrollador", value=False):
+            ""if st.sidebar.button("🔄 Resetear DEMO"):
+                ""license_manager. reset_demo()
+                ""st. sidebar.success("✅ Demo reseteado")
+                ""import time
+                ""time.sleep(1)
+                ""st.rerun()
+        # ===== FIN =====
+    
+    else:
+        st. sidebar. success("✅ **LICENCIA COMPLETA**")
+        st.sidebar.caption("🎉 Todas las funciones desbloqueadas")
+
+
 # ==================== INTERFAZ PRINCIPAL ====================
 
 # Header
 st.title("📅 Sistema de Generación de Guardias")
 st.markdown("---")
+
+# ===== AGREGAR AQUÍ:  Mostrar info y verificar bloqueo =====
+# Mostrar info de licencia en sidebar
+show_license_info()
+
+# Verificar si puede usar la aplicación
+if not st.session_state.can_use:
+    st.error("🔒 **Límite de Usos Alcanzado**")
+    
+    st.markdown("""
+    ### Has alcanzado el límite de la versión DEMO
+    
+    La versión DEMO permite **10 generaciones de horarios** para que puedas 
+    evaluar todas las funcionalidades de GuardiasApp.
+    """)
+    
+    st.info(f"""
+    **Estadísticas de uso:**
+    - ✅ Generaciones realizadas: **{license_manager.get_usage_stats()['uses']}**
+    - 📅 Primer uso: **{license_manager.get_usage_stats()['first_use'][: 10] if license_manager.get_usage_stats()['first_use'] else 'N/A'}**
+    """)
+    
+    st.markdown("---")
+    st.markdown("### 🔑 Activar Licencia Completa")
+    
+    col1, col2 = st. columns([2, 1])
+    
+    with col1:
+        with st.form("activation_form_main"):
+            license_key = st.text_input(
+                "Introduce tu clave de licencia:",
+                placeholder="GP-XXXX-XXXX-XXXX",
+                help="Ejemplo: GP-AB12-CD34-5678"
+            )
+            
+            submit = st.form_submit_button("🚀 Activar Licencia", use_container_width=True)
+            
+            if submit and license_key:
+                success, message = license_manager. activate_license(license_key)
+                if success:
+                    st.success(message)
+                    st.balloons()
+                    import time
+                    time. sleep(2)
+                    st.rerun()
+                else:
+                    st.error(message)
+    
+    with col2:
+        st.markdown("""
+        **Beneficios Licencia Completa:**
+        - ♾️ Generaciones ilimitadas
+        - 👥 Trabajadores ilimitados
+        - 📅 Días ilimitados
+        - 📄 PDFs sin marca de agua
+        - 🆘 Soporte prioritario
+        """)
+    
+    st.markdown("---")
+    st.info("**¿Necesitas una licencia?**\n\n📧 Contacta:  luisherrerapara@gmail.com")
+    
+    st.stop()  # Detener ejecución
 
 # Sidebar - Configuración y Controles
 with st.sidebar:
@@ -839,7 +1005,7 @@ with st.sidebar:
     st.session_state.config['num_shifts'] = num_shifts
     
     # Variable shifts (períodos con diferente número de guardias)
-    with st.expander("📊 Períodos con guardias variables"):
+    with st.expander("📊 Períodos con guardias/día variables"):
         st.markdown("**Configurar días con diferente número de guardias**")
         
         variable_shifts_text = st.text_area(
@@ -1072,7 +1238,7 @@ with tab1:
                 target_shifts = 0  # Se calculará después
             
             # Períodos de trabajo personalizados (actualizado para soportar múltiples rangos)
-            st.markdown("**📅 Períodos de Trabajo**")
+            st.markdown("**📅 ¿Su Período de Trabajo difieren del general?**")
             work_periods = st.text_area(
                 "Rangos de fechas disponibles (uno por línea o separados por punto y coma)",
                 value=st.session_state.get('form_work_periods', ''),
@@ -1171,8 +1337,7 @@ with tab1:
                     'auto_calculate_shifts': auto_calculate
                 }
                 
-                # Removed obsolete custom period logic (replaced by work_periods)
-                
+                  
                 # Verificar si ya existe
                 existing_idx = None
                 for idx, w in enumerate(st.session_state.workers_data):
@@ -1974,7 +2139,7 @@ with tab5:
                         with col_m2:
                             base_avg_month = calc_avg_shifts_month(base_scheduler)
                             sim_avg_month = calc_avg_shifts_month(sim_scheduler)
-                            st.metric("Guardias/Mes (Avg)", f"{sim_avg_month:.1f}", delta=f"{sim_avg_month - base_avg_month:. 1f}")
+                            st.metric("Guardias/Mes (Avg)", f"{sim_avg_month:.1f}", delta=f"{sim_avg_month - base_avg_month:.1f}")
                         with col_m3:
                             # Calcular desviación promedio absoluta
                             def calc_avg_dev(sch):
