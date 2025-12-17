@@ -51,7 +51,7 @@ app_modules = [
     'progress_monitor.py',
     'real_time_engine.py',
     'real_time_ui.py',
-    'scheduler. py',
+    'scheduler.py',
     'schedule_builder.py',
     'scheduler_config.py',
     'scheduler_core.py',  
@@ -244,4 +244,5 @@ coll = COLLECT(
     upx=True,
     upx_exclude=[],
     name='GuardiasApp',
+
 )
