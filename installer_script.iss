@@ -19,6 +19,8 @@ AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
+SetupIconFile=icon.ico           ; ← Icono del instalador
+UninstallDisplayIcon={app}\GuardiasApp.exe  ; ← Icono del desinstalador
 LicenseFile=LICENSE. txt
 InfoBeforeFile=README.txt
 OutputDir=installer_output
@@ -55,3 +57,4 @@ Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Fil
 [Run]
 ; Ejecutar la aplicación después de instalar (opcional)
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
