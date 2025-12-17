@@ -24,11 +24,11 @@ datas += collect_data_files('streamlit')
 app_modules = [
     'adaptive_iterations.py',
     'adjustment_utils.py',
-    'advanced_distribution_engine',
+    'advanced_distribution_engine.py', 
     'app_streamlit.py',
     'backtracking_manager.py',
     'balance_validator.py',
-    'change_tracker.py,'
+    'change_tracker.py',  
     'collaboration_manager.py',
     'constraint_checker.py',
     'data_manager.py',
@@ -41,7 +41,7 @@ app_modules = [
     'incremental_updater.py',
     'iterative_optimizer.py',
     'live_validator.py',
-    'main.py',
+    'main. py',
     'operation_prioritizer.py',
     'optimization_metrics.py',
     'pdf_exporter.py',
@@ -51,12 +51,12 @@ app_modules = [
     'progress_monitor.py',
     'real_time_engine.py',
     'real_time_ui.py',
-    'scheduler.py',
+    'scheduler. py',
     'schedule_builder.py',
     'scheduler_config.py',
-    'scheduler_core.py,'
+    'scheduler_core.py',  
     'shift_tolerance_validator.py',
-    'statistics.py',
+    'statistics_calculator.py',  
     'strict_balance_optimizer.py',
     'utilities.py',
     'validate_config.py',
@@ -81,6 +81,16 @@ excludes=[
     'torch.utils.tensorboard',  # ← Agregar
     'tensorboard',              # ← Agregar
     'tensorflow',               # ← Agregar (por si acaso)
+    'notebook',              # ← Agregar
+    'notebook.services',     # ← Agregar
+    'jupyter',               # ← Agregar
+    'ipython',               # ← Agregar
+    'django',                          # ← Agregar
+    'django.db',                       # ← Agregar
+    'django.db.backends',              # ← Agregar
+    'django.db.backends.oracle',       # ← Agregar
+    'sqlalchemy',                      # ← Agregar (por si acaso)
+    'flask',                           # ← Agregar (por si acaso)
 ],
 
 # Agregar cada módulo con ruta absoluta
