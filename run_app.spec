@@ -92,6 +92,8 @@ excludes=[
     'django.db.backends.oracle',       # ← Agregar
     'sqlalchemy',                      # ← Agregar (por si acaso)
     'flask',                           # ← Agregar (por si acaso)
+    'shapely',              # ← AGREGAR ESTA LÍNEA
+    'shapely.geos',         # ← AGREGAR ESTA LÍNEA
 ],
 
 # Agregar cada módulo con ruta absoluta

@@ -1,0 +1,31 @@
+LICENCIA DE USO - GuardiasApp v2.0
+
+Copyright (c) 2025 [Luis Herrera Para]
+
+TÉRMINOS Y CONDICIONES: 
+
+1. VERSIÓN DEMO: 
+   - Limitada a 10 generaciones de horarios
+   - Máximo 15 trabajadores
+   - Máximo 31 días de período
+   - Solo para evaluación
+
+2. VERSIÓN COMPLETA:
+   - Requiere clave de licencia válida
+   - Funcionalidades ilimitadas
+   - Uso comercial permitido
+
+3. RESTRICCIONES:
+   - No redistribuir sin autorización
+   - No realizar ingeniería inversa
+   - No eliminar marcas de copyright
+
+4. GARANTÍA:
+   - El software se proporciona "TAL CUAL"
+   - Sin garantías expresas o implícitas
+
+5. CONTACTO:
+   - Email: luisherrerapara@gmail.com
+   - Web: https://github.com/saldo27/2.0
+
+Al instalar este software, aceptas estos términos.
