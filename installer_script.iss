@@ -29,6 +29,8 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64
+SetupIconFile=icon.ico           ; ← Icono del instalador
+UninstallDisplayIcon={app}\GuardiasApp.exe  ; ← Icono del desinstalador
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
