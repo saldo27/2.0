@@ -789,21 +789,21 @@ def show_license_info():
                     else:
                         st. error(message)
             
-            st.caption("📧 Contacto: luisherrerapara.com")
+            st.caption("📧 Contacto: luisherrerapara@gmail.com")
         
-        # ===== AGREGAR ESTO AL FINAL (dentro del if DEMO, BORRAR EN DEFINITIVO) =====
-        """"st.sidebar.markdown("---")
-        ""if st.sidebar.checkbox("🔧 Modo Desarrollador", value=False):
-            ""if st.sidebar.button("🔄 Resetear DEMO"):
-                ""license_manager. reset_demo()
-                ""st. sidebar.success("✅ Demo reseteado")
-                ""import time
-                ""time.sleep(1)
-                ""st.rerun()
+        # ===== MODO DESARROLLADOR (comentado para producción) =====
+        # st.sidebar.markdown("---")
+        # if st.sidebar.checkbox("🔧 Modo Desarrollador", value=False):
+        #     if st.sidebar.button("🔄 Resetear DEMO"):
+        #         license_manager. reset_demo()
+        #         st.sidebar.success("✅ Demo reseteado")
+        #         import time
+        #         time.sleep(1)
+        #         st.rerun()
         # ===== FIN =====
     
     else:
-        st. sidebar. success("✅ **LICENCIA COMPLETA**")
+        st. sidebar.success("✅ **LICENCIA COMPLETA**")
         st.sidebar.caption("🎉 Todas las funciones desbloqueadas")
 
 
@@ -1243,7 +1243,7 @@ with tab1:
                 target_shifts = 0  # Se calculará después
             
             # Períodos de trabajo personalizados (actualizado para soportar múltiples rangos)
-            st.markdown("**📅 ¿Su Período de Trabajo difieren del general?**")
+            st.markdown("**📅 ¿Sus Períodos de Trabajo difieren del general?**")
             work_periods = st.text_area(
                 "Rangos de fechas disponibles (uno por línea o separados por punto y coma)",
                 value=st.session_state.get('form_work_periods', ''),

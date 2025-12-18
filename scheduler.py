@@ -11,7 +11,7 @@ from constraint_checker import ConstraintChecker
 from schedule_builder import ScheduleBuilder
 from data_manager import DataManager
 from utilities import DateTimeUtils
-from statistics import StatisticsCalculator
+from statistics_calculator import StatisticsCalculator
 from exceptions import SchedulerError
 from worker_eligibility import WorkerEligibilityTracker
 
