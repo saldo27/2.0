@@ -1,6 +1,3 @@
-from kivy.app import App
-from kivy.uix.popup import Popup
-from kivy.uix.label import Label
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape, letter # Keep A4 if needed elsewhere
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
