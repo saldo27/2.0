@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import copy_metadata, collect_all
+from PyInstaller.utils.hooks import copy_metadata, collect_all, collect_submodules
 import os
 
 block_cipher = None
@@ -13,7 +13,7 @@ datas += copy_metadata('reportlab')
 try:
     jaraco_datas, jaraco_binaries, jaraco_hiddenimports = collect_all('jaraco')
     datas += jaraco_datas
-except:
+except: 
     jaraco_hiddenimports = []
 
 try:
@@ -22,13 +22,28 @@ try:
 except:
     pkg_hiddenimports = []
 
+# ===== RECOLECTAR TODOS LOS SUBMÓDULOS DE STREAMLIT =====
+streamlit_submodules = collect_submodules('streamlit.runtime')
+streamlit_submodules += collect_submodules('streamlit.web')
+print(f"Submódulos de Streamlit encontrados: {len(streamlit_submodules)}")
+# ========================================================
+
+# ===== AGREGAR ARCHIVOS ESTÁTICOS DE STREAMLIT =====
+import streamlit
+streamlit_dir = os.path.dirname(streamlit.__file__)
+streamlit_static = os.path.join(streamlit_dir, 'static')
+if os.path.exists(streamlit_static):
+    datas. append((streamlit_static, 'streamlit/static'))
+    print(f"Agregando Streamlit static desde: {streamlit_static}")
+# ===================================================
+
 # ===== MÓDULOS ESENCIALES =====
 essential_modules = [
     'app_streamlit.py',
     'scheduler.py',
     'scheduler_config.py',
     'scheduler_core.py',
-    'utilities. py',
+    'utilities.py',
     'exceptions.py',
     'statistics_calculator.py',
     'constraint_checker.py',
@@ -58,32 +73,13 @@ for module in essential_modules:
 
 # ===== EXCLUSIONES =====
 excludes = [
-    'PyQt5', 
-    'PyQt6', 
-    'PySide2', 
-    'PySide6',
-    'tkinter', 
-    'wx', 
-    'kivy', 
-    'kivymd', 
-    'pygame',
-    'MySQLdb',
-    'psycopg2',
-    'matplotlib', 
-    'torch', 
-    'tensorflow', 
-    'sklearn',
-    'langchain', 
-    'openai', 
-    'transformers',
-    'IPython', 
-    'jupyter', 
-    'notebook',
-    'pytest', 
-    'unittest', 'doctest',
-    'flask', 
-    'django', 
-    'fastapi',
+    'PyQt5', 'PyQt6', 'PySide2', 'PySide6',
+    'tkinter', 'wx', 'kivy', 'kivymd', 'pygame',
+    'matplotlib', 'torch', 'tensorflow', 'sklearn',
+    'langchain', 'openai', 'transformers',
+    'IPython', 'jupyter', 'notebook',
+    'pytest', 'unittest', 'doctest',
+    'flask', 'django', 'fastapi',
     'streamlit.hello',
     'streamlit.external.langchain',
     'typeguard',
@@ -93,25 +89,23 @@ excludes = [
 # ===== HIDDENIMPORTS =====
 hiddenimports = [
     'streamlit',
-    'streamlit.web.cli',
-    'streamlit.runtime.scriptrunner',
-    'streamlit.runtime.state',
+    'streamlit. web.cli',
     'pandas',
     'pandas.core',
     'numpy',
     'plotly. graph_objects',
     'plotly.express',
     'reportlab',
-    'reportlab.lib',
-    'reportlab.platypus',
+    'reportlab. lib',
+    'reportlab. platypus',
     'email',
     'email.mime',
     'importlib_metadata',
-] + jaraco_hiddenimports + pkg_hiddenimports
+] + streamlit_submodules + jaraco_hiddenimports + pkg_hiddenimports  # ← AGREGAR streamlit_submodules
 
 # ===== ANALYSIS =====
 a = Analysis(
-    [os.path.join(SPEC_DIR, 'run_app.py')],
+    [os. path.join(SPEC_DIR, 'run_app.py')],
     pathex=[SPEC_DIR],
     binaries=[],
     datas=datas,
@@ -126,7 +120,7 @@ a = Analysis(
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a. pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,

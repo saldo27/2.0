@@ -17,8 +17,6 @@ import os
 from pathlib import Path
 import traceback
 from license_manager import license_manager
-
-# Importar módulos del scheduler
 from scheduler import Scheduler
 from scheduler_config import SchedulerConfig, setup_logging
 from utilities import DateTimeUtils
