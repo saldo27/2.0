@@ -75,25 +75,13 @@ excludes=[
     'tkinter', 
     'matplotlib', 
     'kivy',
-    'streamlit.external. langchain',
+    'streamlit. external.langchain',
     'langchain',
-    'torch',                    # ← Agregar
-    'torch.utils',              # ← Agregar
-    'torch.utils.tensorboard',  # ← Agregar
-    'tensorboard',              # ← Agregar
-    'tensorflow',               # ← Agregar (por si acaso)
-    'notebook',              # ← Agregar
-    'notebook.services',     # ← Agregar
-    'jupyter',               # ← Agregar
-    'ipython',               # ← Agregar
-    'django',                          # ← Agregar
-    'django.db',                       # ← Agregar
-    'django.db.backends',              # ← Agregar
-    'django.db.backends.oracle',       # ← Agregar
-    'sqlalchemy',                      # ← Agregar (por si acaso)
-    'flask',                           # ← Agregar (por si acaso)
-    'shapely',              # ← AGREGAR ESTA LÍNEA
-    'shapely.geos',         # ← AGREGAR ESTA LÍNEA
+    'shapely',
+    'shapely.geos',
+    'pkg_resources',              # ← AGREGAR
+    'pkg_resources.py2_warn',     # ← AGREGAR
+    'pkg_resources.extern',       # ← AGREGAR
 ],
 
 # Agregar cada módulo con ruta absoluta
@@ -193,8 +181,8 @@ hiddenimports = [
 
 # ===== ANALYSIS =====
 a = Analysis(
-    [os.path.join(SPEC_DIR, 'run_app.py')],  # Ruta absoluta
-    pathex=[SPEC_DIR],  # Agregar directorio al path
+    [os.path.join(SPEC_DIR, 'run_app.py')],
+    pathex=[SPEC_DIR],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
@@ -208,15 +196,19 @@ a = Analysis(
         'tkinter', 
         'matplotlib', 
         'kivy',
-        'streamlit.external. langchain',
+        'streamlit.external.langchain',
         'langchain',
+        'shapely',
+        'shapely. geos',
+        'pkg_resources',          # ← AGREGAR
+        'pkg_resources.py2_warn', # ← AGREGAR
+        'pkg_resources.extern',   # ← AGREGAR
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
-
 pyz = PYZ(a. pure, a.zipped_data, cipher=block_cipher)
 
 # ===== EXE (ONE-DIRECTORY MODE) =====
