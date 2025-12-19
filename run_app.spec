@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import copy_metadata, collect_all, collect_submodules
+from PyInstaller.utils.hooks import copy_metadata, collect_all, collect_submodules, collect_data_files
 import os
+import glob
 
 block_cipher = None
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
@@ -13,7 +14,7 @@ datas += copy_metadata('reportlab')
 try:
     jaraco_datas, jaraco_binaries, jaraco_hiddenimports = collect_all('jaraco')
     datas += jaraco_datas
-except: 
+except:  
     jaraco_hiddenimports = []
 
 try:
@@ -22,31 +23,22 @@ try:
 except:
     pkg_hiddenimports = []
 
-# ===== RECOLECTAR TODOS LOS SUBMÓDULOS DE STREAMLIT =====
-streamlit_submodules = collect_submodules('streamlit. runtime')
-streamlit_submodules += collect_submodules('streamlit.web')
-print(f"Submódulos de Streamlit encontrados: {len(streamlit_submodules)}")
-# ========================================================
-
-# ===== AGREGAR ARCHIVOS ESTÁTICOS DE STREAMLIT =====
-import streamlit
-import glob
-
-streamlit_dir = os.path.dirname(streamlit.__file__)
-streamlit_static = os.path.join(streamlit_dir, 'static')
-if os.path.exists(streamlit_static):
-    datas.append((streamlit_static, 'streamlit/static'))
-    print(f"Agregando Streamlit static desde:  {streamlit_static}")
-# ===================================================
+# ===== RECOLECTAR STREAMLIT COMPLETO =====
+streamlit_datas = collect_data_files('streamlit', include_py_files=True)
+datas += streamlit_datas
+streamlit_hiddenimports = collect_submodules('streamlit')
+print(f"Streamlit: {len(streamlit_hiddenimports)} submódulos incluidos")
+# =========================================
 
 # ===== INCLUIR TODOS LOS ARCHIVOS .PY DEL PROYECTO =====
 py_files = glob.glob(os.path.join(SPEC_DIR, '*.py'))
-for py_file in py_files:
-    basename = os.path.basename(py_file)
-    if basename != 'run_app.py': 
-        datas.append((py_file, '.'))
+for py_file in py_files: 
+    basename = os.path. basename(py_file)
+    if basename != 'run_app.py':
+        datas. append((py_file, '.'))
         print(f"Incluido:  {basename}")
 # ========================================================
+
 # ===== EXCLUSIONES =====
 excludes = [
     'PyQt5', 'PyQt6', 'PySide2', 'PySide6',
@@ -56,16 +48,12 @@ excludes = [
     'IPython', 'jupyter', 'notebook',
     'pytest', 'unittest', 'doctest',
     'flask', 'django', 'fastapi',
-    'streamlit.hello',
-    'streamlit.external.langchain',
+    'streamlit. hello',
     'typeguard',
-    'setuptools._vendor.typeguard',
 ]
 
 # ===== HIDDENIMPORTS =====
 hiddenimports = [
-    'streamlit',
-    'streamlit. web.cli',
     'pandas',
     'pandas.core',
     'numpy',
@@ -77,11 +65,11 @@ hiddenimports = [
     'email',
     'email.mime',
     'importlib_metadata',
-] + streamlit_submodules + jaraco_hiddenimports + pkg_hiddenimports  # ← AGREGAR streamlit_submodules
+] + streamlit_hiddenimports + jaraco_hiddenimports + pkg_hiddenimports
 
 # ===== ANALYSIS =====
 a = Analysis(
-    [os. path.join(SPEC_DIR, 'run_app.py')],
+    [os.path.join(SPEC_DIR, 'run_app.py')],
     pathex=[SPEC_DIR],
     binaries=[],
     datas=datas,
