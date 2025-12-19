@@ -23,54 +23,30 @@ except:
     pkg_hiddenimports = []
 
 # ===== RECOLECTAR TODOS LOS SUBMÓDULOS DE STREAMLIT =====
-streamlit_submodules = collect_submodules('streamlit.runtime')
+streamlit_submodules = collect_submodules('streamlit. runtime')
 streamlit_submodules += collect_submodules('streamlit.web')
 print(f"Submódulos de Streamlit encontrados: {len(streamlit_submodules)}")
 # ========================================================
 
 # ===== AGREGAR ARCHIVOS ESTÁTICOS DE STREAMLIT =====
 import streamlit
+import glob
+
 streamlit_dir = os.path.dirname(streamlit.__file__)
 streamlit_static = os.path.join(streamlit_dir, 'static')
 if os.path.exists(streamlit_static):
-    datas. append((streamlit_static, 'streamlit/static'))
-    print(f"Agregando Streamlit static desde: {streamlit_static}")
+    datas.append((streamlit_static, 'streamlit/static'))
+    print(f"Agregando Streamlit static desde:  {streamlit_static}")
 # ===================================================
 
-# ===== MÓDULOS ESENCIALES =====
-essential_modules = [
-    'app_streamlit.py',
-    'scheduler.py',
-    'scheduler_config.py',
-    'scheduler_core.py',
-    'utilities.py',
-    'exceptions.py',
-    'statistics_calculator.py',
-    'constraint_checker.py',
-    'balance_validator.py',
-    'worker_eligibility.py',
-    'iterative_optimizer.py',
-    'adjustment_utils.py',
-    'pdf_exporter.py',
-    'license_manager.py',
-    'performance_cache.py',
-    'real_time_engine.py',
-    'change_tracker.py',
-    'incremental_updater.py',
-    'live_validator.py',
-    'event_bus.py',
-    'predictive_analytics.py',
-    'predictive_optimizer.py',
-    'demand_forecaster.py',
-    'historical_data_manager.py',
-]
-
-for module in essential_modules:
-    module_path = os.path.join(SPEC_DIR, module)
-    if os.path.exists(module_path):
-        datas.append((module_path, '.'))
-        print(f"✓ {module}")
-
+# ===== INCLUIR TODOS LOS ARCHIVOS .PY DEL PROYECTO =====
+py_files = glob.glob(os.path.join(SPEC_DIR, '*.py'))
+for py_file in py_files:
+    basename = os.path.basename(py_file)
+    if basename != 'run_app.py': 
+        datas.append((py_file, '.'))
+        print(f"Incluido:  {basename}")
+# ========================================================
 # ===== EXCLUSIONES =====
 excludes = [
     'PyQt5', 'PyQt6', 'PySide2', 'PySide6',
