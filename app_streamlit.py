@@ -3,13 +3,18 @@ Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 """
 
+Copilot said: Los módulos siguen sin cargarse a pesar
+Los módulos siguen sin cargarse a pesar de estar en hiddenimports. Esto significa que están en el ejecutable pero no se importan automáticamente.
+
+Solución Definitiva: Importar Explícitamente en app_streamlit.py
+Abre app_streamlit.py y agrega estos imports justo después de los imports existentes:
+
+Python
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
-import streamlit as st
-import pandas as pd
 import json
 import copy
 import logging
@@ -20,6 +25,40 @@ from license_manager import license_manager
 from scheduler import Scheduler
 from scheduler_config import SchedulerConfig, setup_logging
 from utilities import DateTimeUtils
+
+# ===== IMPORTS FORZADOS PARA PYINSTALLER =====
+# Estos módulos se importan dinámicamente en otros archivos,
+# pero PyInstaller necesita verlos explícitamente aquí
+import scheduler_core
+import iterative_optimizer
+import predictive_optimizer
+import balance_validator
+import adjustment_utils
+import pdf_exporter
+print("✓ Módulos críticos importados explícitamente")
+# ==============================================
+
+# Configurar logging
+setup_logging()
+
+# === DEBUG:  Verificar módulos cargados ===
+import sys
+print("=" * 50)
+print("MÓDULOS CARGADOS EN EL EJECUTABLE:")
+modules_to_check = [
+    'scheduler', 'scheduler_core', 'schedule_builder',
+    'iterative_optimizer', 'predictive_optimizer',
+    'constraint_checker', 'balance_validator',
+    'worker_eligibility', 'adjustment_utils',
+    'data_manager', 'statistics_calculator'
+]
+for mod in modules_to_check: 
+    if mod in sys.modules:
+        print(f"✓ {mod}")
+    else:
+        print(f"✗ {mod} - NO CARGADO")
+print("=" * 50)
+# =========================================
 
 # Configurar logging
 setup_logging()

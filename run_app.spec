@@ -62,9 +62,20 @@ hiddenimports = [
     'reportlab',
     'reportlab. lib',
     'reportlab. platypus',
+    'reportlab.pdfbase',           # ← AGREGAR
+    'reportlab.pdfbase.ttfonts',   # ← AGREGAR
+    'reportlab.pdfbase.pdfmetrics', # ← AGREGAR
+    'reportlab.lib.colors',        # ← AGREGAR
+    'reportlab.lib.pagesizes',     # ← AGREGAR
     'email',
     'email.mime',
     'importlib_metadata',
+    'scheduler_core',
+    'iterative_optimizer',
+    'predictive_optimizer',
+    'balance_validator',
+    'adjustment_utils',
+    'pdf_exporter',
 ] + streamlit_hiddenimports + jaraco_hiddenimports + pkg_hiddenimports
 
 # ===== ANALYSIS =====
