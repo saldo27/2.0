@@ -779,8 +779,8 @@ def show_license_info():
             with st.form("activation_sidebar"):
                 license_key = st.text_input(
                     "Clave de Licencia:",
-                    placeholder="GP-XXXX-XXXX-XXXX",
-                    max_chars=19
+                    placeholder="GP-XXXX-XXXX-XXXX-XXXX",
+                    max_chars=25
                 )
                 
                 submit = st.form_submit_button("Activar", use_container_width=True)

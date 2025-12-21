@@ -1,5 +1,5 @@
 ================================================================================
-                    GuardiasApp - Sistema de Generación de Horarios
+                    GuardiasApp - plicación para Distribución de Guardias
                                   Versión 2.0
 ================================================================================
 
