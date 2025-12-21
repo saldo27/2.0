@@ -62,15 +62,16 @@ hiddenimports = [
     'reportlab',
     'reportlab. lib',
     'reportlab. platypus',
-    'reportlab.pdfbase',           # ← AGREGAR
-    'reportlab.pdfbase.ttfonts',   # ← AGREGAR
-    'reportlab.pdfbase.pdfmetrics', # ← AGREGAR
-    'reportlab.lib.colors',        # ← AGREGAR
-    'reportlab.lib.pagesizes',     # ← AGREGAR
+    'reportlab.pdfbase',           
+    'reportlab.pdfbase.ttfonts',   
+    'reportlab.pdfbase.pdfmetrics',
+    'reportlab.lib.colors',        
+    'reportlab.lib.pagesizes',     
     'email',
     'email.mime',
     'importlib_metadata',
     'scheduler_core',
+    'schedule_builder',
     'iterative_optimizer',
     'predictive_optimizer',
     'balance_validator',
@@ -107,7 +108,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

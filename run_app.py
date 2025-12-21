@@ -12,10 +12,10 @@ os.environ['STREAMLIT_SERVER_HEADLESS'] = 'true'
 os.environ['STREAMLIT_GLOBAL_DEVELOPMENT_MODE'] = 'false'
 
 # ===== HABILITAR LOGS CON UTF-8 =====
-if getattr(sys, 'frozen', False):
-    log_dir = os. path.dirname(sys. executable)
-    sys.stdout = open(os.path.join(log_dir, 'streamlit_stdout.log'), 'w', encoding='utf-8', buffering=1)
-    sys.stderr = open(os.path. join(log_dir, 'streamlit_stderr.log'), 'w', encoding='utf-8', buffering=1)
+#if getattr(sys, 'frozen', False):
+#    log_dir = os. path.dirname(sys. executable)
+#    sys.stdout = open(os.path.join(log_dir, 'streamlit_stdout.log'), 'w', encoding='utf-8', buffering=1)
+#    sys.stderr = open(os.path. join(log_dir, 'streamlit_stderr.log'), 'w', encoding='utf-8', buffering=1)
 # =====================================
 
 # Solucionar sys.stdin
