@@ -59,6 +59,13 @@ hiddenimports = [
     'numpy',
     'plotly. graph_objects',
     'plotly.express',
+    'plotly.io',           # ← Módulo principal de I/O
+    'plotly.io.json',      # ← Submódulo JSON (sin guion bajo)
+    'orjson',              # ← Librería de serialización JSON rápi
+    'plotly.subplots',
+    'plotly.validators',
+    # orjson para serialización rápida
+    'orjson',
     'reportlab',
     'reportlab. lib',
     'reportlab. platypus',
