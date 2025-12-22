@@ -1,5 +1,5 @@
 ================================================================================
-                    GuardiasApp - plicación para Distribución de Guardias
+                    GuardiasApp - Aplicación para Distribución de Guardias
                                   Versión 2.0
 ================================================================================
 
