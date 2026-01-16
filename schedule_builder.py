@@ -4327,21 +4327,48 @@ class ScheduleBuilder:
         
     def _balance_target_shifts_aggressively(self):
         """Balance workers to meet their exact target_shifts, focusing on largest deviations first"""
-        logging.info("Starting aggressive target balancing...")
-        changes_made = 0
+        logging.info("=" * 60)
+        logging.info("Starting AGGRESSIVE target balancing...")
+        logging.info("=" * 60)
+        total_changes = 0
+        
+        # Run multiple passes until no more changes can be made
+        max_passes = 5
+        for pass_num in range(1, max_passes + 1):
+            logging.info(f"\n--- Balance Pass {pass_num}/{max_passes} ---")
+            changes_this_pass = self._execute_balance_pass(pass_num)
+            total_changes += changes_this_pass
+            
+            if changes_this_pass == 0:
+                logging.info(f"No changes in pass {pass_num}, stopping early")
+                break
+            
+            logging.info(f"Pass {pass_num}: {changes_this_pass} changes made")
+        
+        # Final summary
+        self._log_balance_summary()
+        
+        logging.info(f"Aggressive target balancing COMPLETE: {total_changes} total changes")
+        return total_changes
     
-        # Calculate deviations for all workers
-        worker_deviations = []
+    def _execute_balance_pass(self, pass_num):
+        """Execute a single pass of balance operations"""
+        changes_made = 0
+        
+        # Calculate current deviations
         overloaded_workers = []
         underloaded_workers = []
         
         for worker in self.workers_data:
             worker_id = worker['id']
             target = worker['target_shifts']
+            if target <= 0:
+                continue
+                
             all_assignments = self.worker_assignments.get(worker_id, set())
             total = len(all_assignments)
             
-            # CRITICAL: target_shifts ya tiene mandatory restados
+            # Exclude mandatory from count
             mandatory_dates = set()
             mandatory_str = worker.get('mandatory_days', '')
             if mandatory_str:
@@ -4350,47 +4377,174 @@ class ScheduleBuilder:
                 except Exception:
                     pass
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
-            current = total - mandatory_assigned  # Solo non-mandatory
+            current = total - mandatory_assigned
             
             deviation = current - target
             deviation_pct = (deviation / target * 100) if target > 0 else 0
             
-            # Track workers by type
-            if deviation > 0:
+            if deviation >= 1:  # At least 1 shift over
                 overloaded_workers.append((worker_id, deviation, target, current, deviation_pct))
-            elif deviation < 0:
+            elif deviation <= -1:  # At least 1 shift under
                 underloaded_workers.append((worker_id, deviation, target, current, deviation_pct))
+        
+        # Sort
+        overloaded_workers.sort(key=lambda x: x[1], reverse=True)
+        underloaded_workers.sort(key=lambda x: x[1])  # Most negative first
+        
+        if pass_num == 1:
+            logging.info(f"Workers with EXCESS: {len(overloaded_workers)}")
+            for w_id, dev, tgt, cur, pct in overloaded_workers[:5]:
+                logging.info(f"  {w_id}: {cur}/{tgt} ({pct:+.0f}%)")
+            logging.info(f"Workers with DEFICIT: {len(underloaded_workers)}")
+            for w_id, dev, tgt, cur, pct in underloaded_workers[:5]:
+                logging.info(f"  {w_id}: {cur}/{tgt} ({pct:+.0f}%)")
+        
+        if not overloaded_workers or not underloaded_workers:
+            logging.info("No workers to balance (missing overloaded or underloaded)")
+            return 0
+        
+        # Try to move shifts from overloaded to underloaded
+        for over_id, over_dev, over_tgt, over_cur, over_pct in overloaded_workers:
+            if over_dev <= 0:
+                continue
+                
+            # Get all dates this worker has (excluding mandatory)
+            worker_data = next((w for w in self.workers_data if w['id'] == over_id), None)
+            mandatory_dates = set()
+            if worker_data and worker_data.get('mandatory_days'):
+                try:
+                    mandatory_dates = set(self.date_utils.parse_dates(worker_data['mandatory_days']))
+                except:
+                    pass
             
-            # Process workers with any deviation
-            if abs(deviation) > 0.3:
-                worker_deviations.append((worker_id, deviation, target, current, deviation_pct))
-                logging.debug(f"Worker {worker_id}: current={current}, target={target}, deviation={deviation:+.1f} ({deviation_pct:+.1f}%)")
-    
-        # Sort by absolute deviation (largest first)
-        worker_deviations.sort(key=lambda x: abs(x[1]), reverse=True)
-        overloaded_workers.sort(key=lambda x: x[1], reverse=True)  # Most overloaded first
-        underloaded_workers.sort(key=lambda x: x[1])  # Most underloaded first (most negative)
+            transferable_dates = [d for d in self.worker_assignments.get(over_id, set()) 
+                                  if d not in mandatory_dates]
+            random.shuffle(transferable_dates)
+            
+            shifts_to_move = min(int(over_dev), 3)  # Move up to 3 per pass
+            moved = 0
+            
+            for date in transferable_dates:
+                if moved >= shifts_to_move:
+                    break
+                
+                # Try each underloaded worker
+                for under_id, under_dev, under_tgt, under_cur, under_pct in underloaded_workers:
+                    if under_dev >= 0:
+                        continue  # No longer underloaded
+                    
+                    success, reason = self._try_transfer_shift(over_id, under_id, date)
+                    if success:
+                        moved += 1
+                        changes_made += 1
+                        logging.info(f"✅ Transferred {date.strftime('%Y-%m-%d')}: {over_id} → {under_id}")
+                        # Update deviation tracking
+                        under_dev += 1
+                        break
+                    else:
+                        logging.debug(f"❌ Transfer blocked {over_id}→{under_id} on {date.strftime('%Y-%m-%d')}: {reason}")
         
-        logging.info(f"Found {len(worker_deviations)} workers with deviations to balance")
-        logging.info(f"  - Overloaded: {len(overloaded_workers)} workers")
-        logging.info(f"  - Underloaded: {len(underloaded_workers)} workers")
-        
-        # PHASE 1: Redistribute from overloaded workers
-        for worker_id, deviation, target, current, deviation_pct in overloaded_workers:
-            excess_to_redistribute = max(1, int(deviation))
-            logging.info(f"Phase 1: Redistributing {excess_to_redistribute} excess shifts from {worker_id} ({deviation_pct:+.1f}%)")
-            changes_made += self._try_redistribute_excess_shifts(worker_id, excess_to_redistribute)
-        
-        # PHASE 2: For severely underloaded workers, try to "steal" from workers with positive deviation
-        # This handles cases where the standard redistribution didn't help enough
-        for worker_id, deviation, target, current, deviation_pct in underloaded_workers:
-            if deviation_pct < -15:  # Worker is >15% under their target
-                shifts_needed = min(abs(int(deviation)), 3)  # Try to recover up to 3 shifts
-                logging.info(f"Phase 2: Worker {worker_id} needs {shifts_needed} more shifts ({deviation_pct:+.1f}%)")
-                changes_made += self._try_steal_shifts_for_worker(worker_id, shifts_needed, overloaded_workers)
-    
-        logging.info(f"Aggressive target balancing: {changes_made} changes made")
         return changes_made
+    
+    def _try_transfer_shift(self, from_worker, to_worker, date):
+        """
+        Try to transfer a shift from one worker to another.
+        Returns (success, reason) tuple.
+        """
+        # Check if we can modify the source assignment
+        if not self._can_modify_assignment(from_worker, date, "balance_transfer"):
+            return False, "mandatory_protected"
+        
+        try:
+            post = self.schedule[date].index(from_worker)
+        except (ValueError, KeyError):
+            return False, "not_in_schedule"
+        
+        # Check if target already works this date
+        if to_worker in self.schedule.get(date, []):
+            return False, "already_assigned"
+        
+        # Check basic assignment constraints
+        if not self._can_assign_worker(to_worker, date, post):
+            return False, "basic_constraints"
+        
+        # Check 7/14 pattern
+        if self._violates_7_14_pattern(to_worker, date):
+            return False, "7_14_pattern"
+        
+        # Check incompatibilities with others
+        others_on_date = [w for idx, w in enumerate(self.schedule.get(date, [])) 
+                         if w is not None and idx != post and w != from_worker]
+        if not self._check_incompatibility_with_list(to_worker, others_on_date):
+            return False, "incompatibility"
+        
+        # Check monthly limit (but be more lenient - allow if worker has global deficit)
+        to_worker_data = next((w for w in self.workers_data if w['id'] == to_worker), None)
+        if to_worker_data:
+            target = to_worker_data.get('target_shifts', 0)
+            all_assignments = self.worker_assignments.get(to_worker, set())
+            mandatory_dates = set()
+            if to_worker_data.get('mandatory_days'):
+                try:
+                    mandatory_dates = set(self.date_utils.parse_dates(to_worker_data['mandatory_days']))
+                except:
+                    pass
+            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+            current_non_mandatory = len(all_assignments) - mandatory_assigned
+            global_deficit = target - current_non_mandatory
+            
+            # Only check monthly limit if worker doesn't have global deficit
+            if global_deficit <= 0:
+                if self._would_exceed_monthly_limit(to_worker, date):
+                    return False, "monthly_limit"
+        
+        # Make the transfer
+        self.schedule[date][post] = to_worker
+        self.worker_assignments[from_worker].remove(date)
+        self.worker_assignments.setdefault(to_worker, set()).add(date)
+        
+        # Update tracking
+        self.scheduler._update_tracking_data(from_worker, date, post, removing=True)
+        self.scheduler._update_tracking_data(to_worker, date, post)
+        
+        return True, "success"
+    
+    def _log_balance_summary(self):
+        """Log final balance summary after all passes"""
+        logging.info("\n" + "=" * 60)
+        logging.info("BALANCE SUMMARY - Final State")
+        logging.info("=" * 60)
+        
+        deviations = []
+        for worker in self.workers_data:
+            worker_id = worker['id']
+            target = worker['target_shifts']
+            if target <= 0:
+                continue
+                
+            all_assignments = self.worker_assignments.get(worker_id, set())
+            mandatory_dates = set()
+            if worker.get('mandatory_days'):
+                try:
+                    mandatory_dates = set(self.date_utils.parse_dates(worker['mandatory_days']))
+                except:
+                    pass
+            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+            current = len(all_assignments) - mandatory_assigned
+            
+            deviation = current - target
+            deviation_pct = (deviation / target * 100) if target > 0 else 0
+            deviations.append((worker_id, current, target, deviation, deviation_pct))
+        
+        # Log workers still with significant deviation
+        problem_workers = [(w, c, t, d, p) for w, c, t, d, p in deviations if abs(p) > 10]
+        if problem_workers:
+            logging.warning(f"⚠️ {len(problem_workers)} workers still have >10% deviation:")
+            for w_id, cur, tgt, dev, pct in sorted(problem_workers, key=lambda x: abs(x[4]), reverse=True):
+                symbol = "📈" if dev > 0 else "📉"
+                logging.warning(f"  {symbol} {w_id}: {cur}/{tgt} ({pct:+.1f}%)")
+        else:
+            logging.info("✅ All workers within 10% tolerance")
 
     def _try_steal_shifts_for_worker(self, underloaded_worker_id, shifts_needed, overloaded_workers):
         """
