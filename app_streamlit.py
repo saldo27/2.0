@@ -806,7 +806,7 @@ def show_license_info():
                     max_chars=25
                 )
                 
-                submit = st.form_submit_button("Activar", use_container_width=True)
+                submit = st.form_submit_button("Activar", width='stretch')
                 
                 if submit and license_key:
                     success, message = license_manager.activate_license(license_key)
@@ -882,7 +882,7 @@ if not st.session_state.can_use:
                 help="Ejemplo: GP-AB12-CD34-5678"
             )
             
-            submit = st.form_submit_button("🚀 Activar Licencia", use_container_width=True)
+            submit = st.form_submit_button("🚀 Activar Licencia", width='stretch')
             
             if submit and license_key: 
                 success, message = license_manager. activate_license(license_key)
@@ -1756,7 +1756,7 @@ with tab2:
             st.subheader("📋 Calendario Detallado")
             st.dataframe(
                 df,
-                use_container_width=True,
+                width='stretch',
                 height=600,
                 hide_index=True
             )
@@ -1943,7 +1943,7 @@ with tab3:
                 return ''
             
             styled_df = stats_df.style.map(color_deviation, subset=['Desv. %'])
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            st.dataframe(styled_df, width='stretch', hide_index=True)
             
             # Gráfico de barras
             st.markdown("---")
@@ -1970,7 +1970,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Gráfico de desviación
             st.markdown("---")
@@ -1986,7 +1986,7 @@ with tab3:
             )
             
             fig2.update_layout(height=400)
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
 
 # ==================== TAB 4: VERIFICACIÓN ====================
 with tab4:
@@ -2125,7 +2125,7 @@ with tab5:
                     markers=True
                 )
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 
                 # Statistics
                 col_avg, col_max, col_min = st.columns(3)
