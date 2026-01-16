@@ -145,12 +145,26 @@ class AdvancedDistributionEngine:
         }
         
         # Calcular déficit de cada trabajador
+        # CRITICAL: target_shifts ya tiene mandatory restados, comparar con non-mandatory
         worker_deficit = {}
         for worker in self.scheduler.workers_data:
             worker_id = worker['id']
-            current = len(self.scheduler.worker_assignments.get(worker_id, set()))
+            all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
+            current = len(all_assignments)
             target = worker.get('target_shifts', 0)
-            deficit = max(0, target - current)
+            
+            # Contar mandatory asignados para calcular non-mandatory
+            mandatory_dates = set()
+            mandatory_str = worker.get('mandatory_days', '')
+            if mandatory_str and hasattr(self.builder, 'date_utils'):
+                try:
+                    mandatory_dates = set(self.builder.date_utils.parse_dates(mandatory_str))
+                except Exception:
+                    pass
+            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+            non_mandatory_assigned = current - mandatory_assigned
+            
+            deficit = max(0, target - non_mandatory_assigned)
             
             if deficit > 0:
                 worker_deficit[worker_id] = {
@@ -408,14 +422,27 @@ class AdvancedDistributionEngine:
     
     def _calculate_global_balance_bonus(self, worker_id: str) -> float:
         """Bonus basado en el balance global del trabajador vs otros"""
-        current = len(self.scheduler.worker_assignments.get(worker_id, set()))
+        all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
+        current = len(all_assignments)
         worker_data = next((w for w in self.scheduler.workers_data if w['id'] == worker_id), None)
         
         if not worker_data:
             return 0
         
         target = worker_data.get('target_shifts', 0)
-        deficit = target - current
+        
+        # CRITICAL: Excluir mandatory para calcular déficit correctamente
+        mandatory_dates = set()
+        mandatory_str = worker_data.get('mandatory_days', '')
+        if mandatory_str and hasattr(self.builder, 'date_utils'):
+            try:
+                mandatory_dates = set(self.builder.date_utils.parse_dates(mandatory_str))
+            except Exception:
+                pass
+        mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+        non_mandatory_assigned = current - mandatory_assigned
+        
+        deficit = target - non_mandatory_assigned
         
         # Bonus muy alto para trabajadores con déficit significativo
         if deficit >= 3:
@@ -644,7 +671,7 @@ class AdvancedDistributionEngine:
     # ========================================
     
     def _try_assign_with_validation(self, worker_id: str, date: datetime, post: int) -> bool:
-        """Intentar asignación con validación completa"""
+        """Intentar asignación con validación completa incluyendo monthly balance y weekends"""
         try:
             # Asegurar que el schedule tiene la estructura correcta
             if date not in self.scheduler.schedule:
@@ -656,6 +683,31 @@ class AdvancedDistributionEngine:
             # Verificar que el slot está vacío
             if self.scheduler.schedule[date][post] is not None:
                 return False
+            
+            # NEW: Validate monthly balance before assigning
+            worker_data = next((w for w in self.scheduler.workers_data if w['id'] == worker_id), None)
+            if worker_data and hasattr(self.builder, '_get_expected_monthly_target'):
+                expected_monthly = self.builder._get_expected_monthly_target(worker_data, date.year, date.month)
+                shifts_this_month = sum(
+                    1 for d in self.scheduler.worker_assignments.get(worker_id, set())
+                    if d.year == date.year and d.month == date.month
+                )
+                
+                # Check if would exceed monthly limit
+                work_pct = worker_data.get('work_percentage', 100)
+                monthly_tolerance = 1 if work_pct >= 100 else 0
+                max_monthly = expected_monthly + monthly_tolerance
+                
+                if shifts_this_month + 1 > max_monthly + 1:  # +1 for rounding
+                    logging.debug(f"Advanced engine: {worker_id} blocked by monthly limit ({shifts_this_month + 1} > {max_monthly + 1})")
+                    return False
+            
+            # NEW: Validate consecutive weekends
+            if date.weekday() >= 4:  # Weekend
+                if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
+                    if self.builder._would_exceed_weekend_limit_simulated(worker_id, date, self.scheduler.worker_assignments):
+                        logging.debug(f"Advanced engine: {worker_id} blocked by consecutive weekend limit")
+                        return False
             
             # Asignar
             self.scheduler.schedule[date][post] = worker_id

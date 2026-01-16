@@ -57,7 +57,17 @@ class DateTimeUtils:
             return datetime.utcnow()
         
     def parse_dates(self, date_str: str) -> List[datetime]:
-        """Parse semicolon-separated dates (optimized)"""
+        """
+        Parse semicolon-separated individual dates only.
+        Use parse_date_ranges() for date ranges.
+        
+        Args:
+            date_str: String with individual dates separated by semicolons
+                     Example: '05-03-2026;10-03-2026;15-03-2026'
+        
+        Returns:
+            List of datetime objects
+        """
         if not date_str:
             return []
 

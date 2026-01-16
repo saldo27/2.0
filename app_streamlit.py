@@ -30,16 +30,22 @@ import pdf_exporter
 print("✓ Módulos críticos importados explícitamente")
 # ==============================================
 
-# Configurar logging
-setup_logging()
-
-# Configuración de la página
+# Configuración de la página DEBE ser lo primero
 st.set_page_config(
     page_title="Aplicación para Distribución de Guardias",
     page_icon="📅",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Configurar logging (solo una vez por sesión)
+@st.cache_resource
+def initialize_logging():
+    """Initialize logging only once per session to avoid infinite rerun loops"""
+    setup_logging()
+    return True
+
+initialize_logging()
 
 # Custom CSS para mejor apariencia
 st.markdown("""
@@ -113,6 +119,12 @@ if 'optimization_recommendations' not in st.session_state:
     st.session_state.optimization_recommendations = []
 if 'analytics_insights' not in st.session_state:
     st.session_state.analytics_insights = []
+
+# File upload tracking to prevent infinite rerun loops
+if 'file_upload_counter' not in st.session_state:
+    st.session_state.file_upload_counter = 0
+if 'schedule_upload_counter' not in st.session_state:
+    st.session_state.schedule_upload_counter = 0
 
 # Funciones auxiliares
 def load_workers_from_file(uploaded_file):
@@ -387,10 +399,6 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
             status_text.info("⚙️ Ejecutando: Distribución Inicial → Optimización Iterativa → Balanceo")
             success = scheduler.generate_schedule()
         
-        with st.spinner("🚀 Ejecutando motor de optimización avanzado..."):
-            status_text. info("⚙️ Ejecutando:  Distribución Inicial → Optimización Iterativa → Balanceo")
-            success = scheduler.generate_schedule()
-        
         if success:
             if limitations['mode'] == 'DEMO':
                 uses = license_manager.increment_usage()
@@ -452,7 +460,17 @@ def get_worker_statistics():
     
     stats = []
     for worker_id, data in core_stats['workers'].items():
-        target = data['target_shifts']
+        # Obtener worker data para acceder a _raw_target y _mandatory_count
+        worker_data = next((w for w in scheduler.workers_data if w['id'] == worker_id), None)
+        
+        # target_shifts es el ajustado (después de restar mandatory)
+        # Queremos mostrar el objetivo TOTAL (raw_target) que incluye mandatory
+        if worker_data and '_raw_target' in worker_data:
+            target = worker_data['_raw_target']  # Objetivo total incluyendo mandatory
+        else:
+            # Fallback: si no existe _raw_target, usar target_shifts
+            target = data['target_shifts']
+        
         current = data['total_shifts']
         deviation = current - target
         deviation_pct = (deviation / target * 100) if target > 0 else 0
@@ -894,12 +912,13 @@ with st.sidebar:
     # Importación y Exportación
     with st.expander("📂 Importar / Exportar / Backup", expanded=False):
         # Importar
-        sched_file = st.file_uploader("Cargar JSON Completo", type="json", key="sidebar_importer")
+        sched_file = st.file_uploader("Cargar JSON Completo", type="json", key=f"schedule_uploader_{st.session_state.schedule_upload_counter}")
         if sched_file is not None:
             if st.button("🔄 Restaurar Datos"):
                 success, msg = load_schedule_from_json(sched_file)
                 if success:
                     st.success(msg)
+                    st.session_state.schedule_upload_counter += 1
                     st.rerun()
                 else:
                     st.error(msg)
@@ -946,6 +965,15 @@ with st.sidebar:
     
     # Período de reparto (Fecha Inicial - Fecha Final)
     st.subheader("📅 Período de Reparto")
+    
+    # Aplicar configuración de calendario Lunes-Domingo
+    st.markdown("""
+        <style>
+        [role="presentation"] {
+            direction: ltr;
+        }
+        </style>
+    """, unsafe_allow_html=True)
     
     col1, col2 = st.columns(2)
     with col1:
@@ -1370,11 +1398,12 @@ with tab1:
         st.subheader("Gestión de Datos")
         
         # Cargar desde archivo
-        uploaded_file = st.file_uploader("📁 Cargar desde JSON", type=['json'])
+        uploaded_file = st.file_uploader("📁 Cargar desde JSON", type=['json'], key=f"worker_uploader_{st.session_state.file_upload_counter}")
         if uploaded_file is not None:
             success, message = load_workers_from_file(uploaded_file)
             if success:
                 st.success(message)
+                st.session_state.file_upload_counter += 1
                 st.rerun()
             else:
                 st.error(message)

@@ -70,8 +70,9 @@ class BalanceValidator:
             if target_shifts == 0:
                 continue
             
-            # Contar turnos asignados
-            assigned_shifts = self._count_worker_shifts(worker_id, schedule)
+            # Contar turnos asignados (excluyendo mandatory)
+            # CRITICAL: target_shifts ya tiene mandatory restados
+            assigned_shifts = self._count_worker_shifts(worker_id, schedule, worker)
             
             # Calcular desviación
             deviation = assigned_shifts - target_shifts
@@ -133,16 +134,46 @@ class BalanceValidator:
             'is_balanced': len(violations['critical']) == 0 and len(violations['extreme']) == 0
         }
     
-    def _count_worker_shifts(self, worker_id: str, schedule: Dict) -> int:
-        """Cuenta los turnos asignados a un trabajador"""
+    def _count_worker_shifts(self, worker_id: str, schedule: Dict, worker_data: Dict = None) -> int:
+        """
+        Cuenta los turnos asignados a un trabajador, excluyendo mandatory si se proporciona worker_data.
+        
+        Args:
+            worker_id: ID del trabajador
+            schedule: Diccionario del horario
+            worker_data: Datos del trabajador (opcional) - si se proporciona, excluye mandatory
+            
+        Returns:
+            int: Número de turnos non-mandatory asignados
+        """
         count = 0
+        mandatory_dates = set()
+        
+        # Si hay worker_data, obtener las fechas mandatory para excluirlas
+        if worker_data and worker_data.get('mandatory_days'):
+            mandatory_str = worker_data.get('mandatory_days', '')
+            mandatory_dates = set(p.strip() for p in mandatory_str.split(',') if p.strip())
         
         for date, assignments in schedule.items():
             if assignments:
-                for worker in assignments:
-                    # Comparar con diferentes formatos de ID
-                    if worker == worker_id or worker == f"Worker {worker_id}" or str(worker) == str(worker_id):
-                        count += 1
+                # Verificar si esta fecha es mandatory
+                is_mandatory = False
+                if mandatory_dates:
+                    try:
+                        check_date = date if isinstance(date, datetime) else datetime.strptime(str(date), "%Y-%m-%d")
+                        date_str1 = check_date.strftime('%d-%m-%Y')
+                        date_str2 = check_date.strftime('%Y-%m-%d')
+                        if date_str1 in mandatory_dates or date_str2 in mandatory_dates:
+                            is_mandatory = True
+                    except:
+                        pass
+                
+                # Solo contar si NO es mandatory
+                if not is_mandatory:
+                    for worker in assignments:
+                        # Comparar con diferentes formatos de ID
+                        if worker == worker_id or worker == f"Worker {worker_id}" or str(worker) == str(worker_id):
+                            count += 1
         
         return count
     

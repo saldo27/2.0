@@ -66,6 +66,10 @@ class ScheduleBuilder:
         self.use_strict_mode = True  # Default: strict for initial fill
         self.relaxation_level_override = None  # None = use method parameter, or set to force level
         
+        # Tiebreaker strategy for equal scores
+        # Options: 'alphabetical_asc', 'alphabetical_desc', 'random'
+        self.tiebreaker_strategy = 'alphabetical_asc'
+        
         # Build performance caches
         self._build_optimization_caches()
 
@@ -408,9 +412,38 @@ class ScheduleBuilder:
         if target_shifts <= 0:
             return False  # No target, no tolerance check
         
-        # Calculate current assignments
-        current_assignments = len(self.worker_assignments.get(worker_id, set()))
-        assignments_after = current_assignments + 1
+        # Calculate current assignments EXCLUDING mandatory shifts
+        # Mandatory shifts don't count toward tolerance limits
+        all_assignments = self.worker_assignments.get(worker_id, set())
+        current_assignments = len(all_assignments)
+        
+        # Count mandatory shifts already assigned
+        mandatory_count = 0
+        mandatory_str = worker_data.get('mandatory_days', '')
+        if mandatory_str:
+            try:
+                mandatory_dates = self.date_utils.parse_dates(mandatory_str)
+                mandatory_count = sum(1 for d in all_assignments if d in mandatory_dates)
+            except Exception:
+                pass
+        
+        # Non-mandatory assignments only
+        non_mandatory_assignments = current_assignments - mandatory_count
+        assignments_after = non_mandatory_assignments + 1
+        
+        # Check if the new assignment is itself mandatory
+        is_new_mandatory = False
+        if mandatory_str:
+            try:
+                mandatory_dates = self.date_utils.parse_dates(mandatory_str)
+                is_new_mandatory = date in mandatory_dates
+            except Exception:
+                pass
+        
+        # If this is a mandatory assignment, NEVER block it
+        if is_new_mandatory:
+            logging.debug(f"✅ MANDATORY: {worker_id} mandatory shift on {date.strftime('%Y-%m-%d')}, bypassing tolerance")
+            return False
         
         # Phase-based tolerance system:
         # Phase 1 (objective): ±10% tolerance
@@ -438,15 +471,18 @@ class ScheduleBuilder:
             work_pct_msg = f" (part-time {work_percentage}%)" if work_percentage < 100 else ""
             if allow_relaxation:
                 logging.warning(f"⚠️ BLOCKED even with relaxation: {worker_id}{work_pct_msg} would have {assignments_after} shifts "
-                              f"(max allowed: {max_allowed}, target: {target_shifts})")
+                              f"(max allowed: {max_allowed}, target: {target_shifts}) "
+                              f"[current={current_assignments}, mandatory={mandatory_count}, non-mand={non_mandatory_assignments}]")
             else:
                 logging.debug(f"🚫 BLOCKED: {worker_id}{work_pct_msg} would exceed +{tolerance*100:.1f}% tolerance "
-                            f"({assignments_after} > {max_allowed}, target: {target_shifts})")
+                            f"({assignments_after} > {max_allowed}, target: {target_shifts}) "
+                            f"[current={current_assignments}, mandatory={mandatory_count}, non-mand={non_mandatory_assignments}]")
             return True  # SIEMPRE BLOQUEAR
         
         # If worker is BELOW target, encourage assignment (never block)
         if assignments_after < target_shifts:
-            logging.debug(f"✅ ENCOURAGED: {worker_id} below target ({assignments_after} < {target_shifts}), should prioritize")
+            logging.debug(f"✅ ENCOURAGED: {worker_id} below target ({assignments_after} < {target_shifts}), "
+                        f"[current={current_assignments}, mandatory={mandatory_count}, non-mand={non_mandatory_assignments}]")
             return False  # Definitely OK
         
         # Check weekend tolerance if this is a weekend
@@ -604,10 +640,23 @@ class ScheduleBuilder:
                 return False
             
             # Check if worker has significant target_shifts deficit
+            # CRITICAL: target_shifts already has mandatory subtracted, so compare to non-mandatory only
             assignments = sorted(list(self.worker_assignments.get(worker_id, [])))
             current_assignments = len(assignments)
             target_shifts = worker.get('target_shifts', 0)
-            target_deficit = max(0, target_shifts - current_assignments)
+            
+            # Count mandatory already assigned
+            mandatory_dates = set()
+            mandatory_str = worker.get('mandatory_days', '')
+            if mandatory_str:
+                try:
+                    mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
+                except Exception:
+                    pass
+            mandatory_assigned = sum(1 for d in assignments if d in mandatory_dates)
+            non_mandatory_assigned = current_assignments - mandatory_assigned
+            
+            target_deficit = max(0, target_shifts - non_mandatory_assigned)
             high_deficit = target_deficit >= 2  # Worker needs 2+ more shifts
             
             # Check minimum gap and 7-14 day pattern
@@ -916,10 +965,10 @@ class ScheduleBuilder:
                 # Calculate days between this weekend and the previous one
                 days_diff = (d_val - prev_weekend).days
             
-                # Checking if they are adjacent weekend dates (7-10 days apart)
+                # Checking if they are adjacent weekend dates (typically 7 days apart)
                 # A weekend is consecutive to the previous if it's the next calendar weekend
-                # This is typically 7 days apart, but could be 6-8 days depending on which weekend days
-                if 5 <= days_diff <= 10:
+                # Strict check: 6-8 days (not 5-10) to avoid false positives
+                if 6 <= days_diff <= 8:
                     current_group.append(d_val)
                 else:
                     # Not consecutive, save the current group and start a new one
@@ -931,16 +980,17 @@ class ScheduleBuilder:
         if len(current_group) > 1:
             consecutive_groups.append(current_group)
     
-        # Find the longest consecutive sequence
+        # Find the longest consecutive sequence INCLUDING the new date we're about to add
         max_consecutive = 0
         if consecutive_groups:
             max_consecutive = max(len(group) for group in consecutive_groups)
         else:
             max_consecutive = 1  # No consecutive weekends found, or only single weekends
     
-        # Check if maximum consecutive weekend count is exceeded
+        # CRITICAL FIX: Check if maximum consecutive weekend count WOULD BE exceeded
+        # The date is ALREADY in weekend_dates because we added it earlier
         if max_consecutive > max_weekend_count:
-            logging.debug(f"Weekend limit exceeded: Worker {worker_id} would have {max_consecutive} consecutive weekend shifts (max allowed: {max_weekend_count})")
+            logging.debug(f"Weekend limit WOULD BE exceeded: Worker {worker_id} would have {max_consecutive} consecutive weekend shifts (max allowed: {max_weekend_count})")
             return True
     
         return False
@@ -1004,13 +1054,28 @@ class ScheduleBuilder:
             return monthly_targets_config[month_key]
         
         # Calcular dinámicamente desde objetivo global
-        overall_target = worker_config.get('target_shifts', 0)
+        # CRÍTICO: Usar _raw_target (objetivo TOTAL) para distribución mensual
+        # Luego restamos los mandatory del mes específico
+        if '_raw_target' in worker_config:
+            overall_target = worker_config['_raw_target']  # Incluye mandatory
+        else:
+            # Fallback: reconstruir desde target_shifts + mandatory
+            overall_target = worker_config.get('target_shifts', 0)
+            if worker_config.get('mandatory_days'):
+                try:
+                    all_mandatory = self.date_utils.parse_dates(worker_config['mandatory_days'])
+                    mandatory_in_period = sum(
+                        1 for d in all_mandatory
+                        if self.start_date <= d <= self.end_date
+                    )
+                    overall_target += mandatory_in_period
+                except Exception:
+                    pass
+        
         if overall_target == 0:
             return 0
         
-        # Ajustar por work_percentage (para trabajadores a tiempo parcial)
-        work_percentage = worker_config.get('work_percentage', 100) / 100
-        adjusted_overall_target = overall_target * work_percentage
+        adjusted_overall_target = overall_target
         
         # Calcular número de meses en el periodo
         from datetime import date as date_class
@@ -1066,8 +1131,47 @@ class ScheduleBuilder:
         # Objetivo mensual = (objetivo_global / total_meses) * fracción_del_mes
         expected_monthly = (adjusted_overall_target / total_month_weight) * month_fraction
         
-        # Redondear al entero más cercano
-        return round(expected_monthly)
+        # Contar mandatory shifts de este mes específico para logging
+        mandatory_this_month = 0
+        if worker_config and worker_config.get('mandatory_days'):
+            try:
+                mandatory_dates = self.date_utils.parse_dates(worker_config['mandatory_days'])
+                mandatory_this_month = sum(
+                    1 for d in mandatory_dates 
+                    if d.year == year and d.month == month
+                )
+            except Exception:
+                pass
+        
+        # El objetivo mensual TOTAL incluye mandatory
+        # CRÍTICO: Si hay mandatory en este mes, el límite debe ser más flexible
+        # para permitir que el trabajador complete su objetivo global
+        total_monthly_target = round(expected_monthly)
+        
+        # AJUSTE CRÍTICO: Si mandatory > expected_monthly, aumentar el límite
+        # Esto previene que trabajadores con muchos mandatory sean bloqueados
+        if mandatory_this_month > total_monthly_target:
+            total_monthly_target = mandatory_this_month
+            logging.warning(f"MONTHLY ADJUST - Worker {worker_config.get('id', 'unknown')}: "
+                          f"Increased monthly target to {total_monthly_target} to accommodate "
+                          f"{mandatory_this_month} mandatory shifts (was {round(expected_monthly)})")
+        
+        # CRÍTICO: Si el objetivo mensual es 0 pero hay días en el mes, asegurar al menos 1
+        # Esto previene que meses cortos tengan objetivo 0 y bloqueen todas las asignaciones
+        if total_monthly_target == 0 and month_fraction > 0:
+            # Si el mes tiene alguna fracción, permitir al menos 1 turno
+            total_monthly_target = 1
+            logging.debug(f"MONTHLY ADJUST - Worker {worker_config.get('id', 'unknown')}: "
+                        f"Month {year}-{month:02d} has fraction {month_fraction:.2f}, setting min target to 1")
+        
+        # DEBUG: Log monthly target calculation
+        work_percentage = worker_config.get('work_percentage', 100) if worker_config else 100
+        if work_percentage < 100 or mandatory_this_month > 0:
+            logging.debug(f"MONTHLY TARGET - Worker {worker_config.get('id', 'unknown')} ({work_percentage}%): "
+                        f"Month {year}-{month:02d} = {total_monthly_target} total "
+                        f"(includes {mandatory_this_month} mandatory) - raw calculation: {expected_monthly:.2f}")
+        
+        return total_monthly_target
 
     def _calculate_monthly_target_score(self, worker, date, relaxation_level):
         """Calculate score based on monthly targets"""
@@ -1077,9 +1181,10 @@ class ScheduleBuilder:
         worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
         
         # Calcular objetivo mensual esperado dinámicamente
+        # Esto ya incluye los mandatory esperados para el mes
         expected_monthly_target = self._get_expected_monthly_target(worker_config, date.year, date.month)
         
-        # Calculate current shifts assigned in this month
+        # Calculate current shifts assigned in this month (TODOS los turnos, incluyendo mandatory)
         shifts_this_month = sum(
             1 for assigned_date in self.scheduler.worker_assignments.get(worker_id, [])
             if assigned_date.year == date.year and assigned_date.month == date.month
@@ -1090,42 +1195,132 @@ class ScheduleBuilder:
         base_tolerance = max(1, round(expected_monthly_target * 0.12))
         
         # Calculate global deficit for deficit compensation
+        # Para el déficit global, SÍ excluimos mandatory porque target_shifts ya los tiene restados
         overall_target = worker_config.get('target_shifts', 0) if worker_config else 0
-        current_total_shifts = len(self.scheduler.worker_assignments.get(worker_id, set()))
+        
+        # Get mandatory dates for deficit calculation only
+        mandatory_dates = set()
+        if worker_config and worker_config.get('mandatory_days'):
+            try:
+                mandatory_dates = set(self.date_utils.parse_dates(worker_config['mandatory_days']))
+            except Exception:
+                pass
+        
+        all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
+        mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+        current_total_shifts = len(all_assignments) - mandatory_assigned  # Solo no-mandatory para comparar con target_shifts
+        
         deficit_pct = ((overall_target - current_total_shifts) / overall_target * 100) if overall_target > 0 else 0
         
-        # Deficit compensation: If worker has >20% global deficit, allow extra monthly shifts
-        deficit_bonus = 0
-        if deficit_pct > 20:
-            deficit_bonus = round((deficit_pct - 20) / 10)  # +1 shift per 10% deficit
-            logging.debug(f"Worker {worker_id}: DEFICIT COMPENSATION - "
-                        f"deficit={deficit_pct:.1f}%, allowing +{deficit_bonus} extra shifts in {date.strftime('%Y-%m')}")
+        # MONTHLY TOLERANCE: Stricter for part-time workers
+        work_percentage = worker_config.get('work_percentage', 100) if worker_config else 100
         
-        # Calculate effective monthly max
-        effective_max_monthly = expected_monthly_target + base_tolerance + deficit_bonus + relaxation_level
+        # Count mandatory shifts in this specific month
+        mandatory_this_month = 0
+        if worker_config and worker_config.get('mandatory_days'):
+            try:
+                mandatory_dates_all = set(self.date_utils.parse_dates(worker_config['mandatory_days']))
+                mandatory_this_month = sum(
+                    1 for d in mandatory_dates_all
+                    if d.year == date.year and d.month == date.month
+                )
+            except Exception:
+                pass
+        
+        if work_percentage < 100:
+            # Part-time workers: NO tolerance - use ceil/floor rounding only
+            # This ensures stricter monthly balance for reduced schedules
+            tolerance_pct = 0.0
+            base_tolerance = 0  # No extra tolerance
+        else:
+            # Full-time workers: ±10% tolerance
+            tolerance_pct = 0.10
+            base_tolerance = max(1, round(expected_monthly_target * tolerance_pct))
+        
+        # Deficit compensation: Only if worker has >25% global deficit
+        deficit_bonus = 0
+        if deficit_pct > 25:
+            deficit_bonus = 1  # Allow only +1 extra shift even with high deficit
+            logging.debug(f"Worker {worker_id}: DEFICIT COMPENSATION - "
+                        f"deficit={deficit_pct:.1f}%, allowing +{deficit_bonus} extra shift in {date.strftime('%Y-%m')}")
+        
+        # CRITICAL FIX: If this month has many mandatory shifts, we need to allow FEWER normal shifts
+        # The expected_monthly_target already accounts for total shifts (mandatory + normal)
+        # So we should NOT reduce the limit when there are mandatory - the limit IS the total
+        # The issue is that workers with high mandatory concentration shouldn't be blocked
+        
+        # Calculate effective monthly max (STRICT)
+        # The expected_monthly_target is already the TOTAL for this month
+        effective_max_monthly = expected_monthly_target + base_tolerance + deficit_bonus
+        
+        # CRITICAL FIX: If worker has high GLOBAL deficit (>3 shifts), don't block by monthly limit
+        # Priority is completing the global objective, not perfect monthly distribution
+        global_deficit_shifts = overall_target - current_total_shifts
+        if global_deficit_shifts >= 3:
+            # Worker needs 3+ more shifts globally - increase monthly limit significantly
+            effective_max_monthly += min(global_deficit_shifts, 5)  # Add up to 5 extra slots
+            logging.debug(f"Worker {worker_id}: HIGH GLOBAL DEFICIT ({global_deficit_shifts} shifts needed) - "
+                        f"relaxing monthly limit from {expected_monthly_target} to {effective_max_monthly}")
+        
+        # Secondary adjustment: If this month has MANY mandatory (>50% of expected), give extra tolerance
+        # to avoid blocking the worker who legitimately needs more shifts globally
+        elif mandatory_this_month > 0 and expected_monthly_target > 0:
+            mandatory_pct_of_month = mandatory_this_month / expected_monthly_target
+            if mandatory_pct_of_month > 0.5:  # More than half of monthly target is mandatory
+                # Allow extra room since mandatory already fills much of the month
+                mandatory_bonus = min(2, mandatory_this_month)  # Max +2 extra tolerance
+                effective_max_monthly += mandatory_bonus
+                logging.debug(f"Worker {worker_id}: MANDATORY HEAVY MONTH - "
+                            f"{mandatory_this_month} mandatory ({mandatory_pct_of_month*100:.0f}% of target), "
+                            f"adding +{mandatory_bonus} tolerance")
         
         # Si no hay objetivo, permitir al menos algunos turnos
         if expected_monthly_target == 0:
             effective_max_monthly = 3 + relaxation_level
         
-        # Check if adding this shift would exceed monthly limit
-        if shifts_this_month + 1 > effective_max_monthly:
-            if relaxation_level < 1:
-                logging.debug(f"Worker {worker_id}: BLOCKED by monthly limit - "
-                            f"month {date.strftime('%Y-%m')}: {shifts_this_month + 1} > {effective_max_monthly:.0f} "
-                            f"(target={expected_monthly_target:.1f}, base_tol={base_tolerance}, deficit_bonus={deficit_bonus}, relax={relaxation_level})")
+        # ALWAYS block monthly limit violations (even with relaxation)
+        # EXCEPT if worker has very high global deficit (>20%)
+        should_block_monthly = shifts_this_month + 1 > effective_max_monthly
+        
+        if should_block_monthly:
+            # Check if worker has CRITICAL global deficit that overrides monthly limits
+            if deficit_pct > 20 and global_deficit_shifts >= 2:
+                # Critical deficit - allow exceeding monthly limit to catch up
+                logging.info(f"⚠️ Worker {worker_id}: OVERRIDING monthly limit due to CRITICAL deficit "
+                           f"({deficit_pct:.1f}%, needs {global_deficit_shifts} more shifts) - "
+                           f"month {date.strftime('%Y-%m')}: {shifts_this_month + 1} > {effective_max_monthly:.0f}")
+                # Don't block, but apply heavy penalty to still prefer balanced distribution
+                score -= 5000  # Heavy penalty but not blocking
+            else:
+                # Enhanced logging to debug Luis H issue
+                logging.warning(f"🚫 Worker {worker_id} ({work_percentage}%): BLOCKED by monthly limit - "
+                            f"month {date.strftime('%Y-%m')}: would have {shifts_this_month + 1} (max: {effective_max_monthly:.0f}) "
+                            f"[target={expected_monthly_target:.1f}, tol={base_tolerance}, bonus={deficit_bonus}] "
+                            f"GLOBAL: total_shifts={len(all_assignments)}, target_shifts={overall_target}, deficit={deficit_pct:.1f}%")
                 return float('-inf')
         
-        # Calculate score based on monthly target
+        # =========================================================================
+        # MONTHLY SCORING BASADO EN RATIO (% completitud mensual)
+        # =========================================================================
+        # Esto asegura distribución equitativa entre meses
+        # Un trabajador con 0/5 en un mes tiene prioridad sobre uno con 3/5
+        # =========================================================================
         score = 0
         if expected_monthly_target > 0:
-            if shifts_this_month < expected_monthly_target:
-                # Necesita más turnos para alcanzar objetivo
-                score += (expected_monthly_target - shifts_this_month) * 2000
-            elif shifts_this_month == expected_monthly_target:
-                # Justo en el objetivo
-                score += 500
-            # Si está por encima del objetivo, score = 0 (neutral)
+            monthly_completion_ratio = shifts_this_month / expected_monthly_target
+            
+            if monthly_completion_ratio < 1.0:
+                # Below monthly target - HUGE bonus inversely proportional to completion
+                # 0% complete = 50,000 pts, 50% = 25,000 pts, 90% = 5,000 pts
+                monthly_ratio_score = (1 - monthly_completion_ratio) * 50000
+                score += monthly_ratio_score
+            elif monthly_completion_ratio == 1.0:
+                # At target - moderate bonus
+                score += 5000
+            else:
+                # Above target - PENALTY proportional to excess
+                excess_ratio = monthly_completion_ratio - 1.0
+                score -= excess_ratio * 30000  # Heavy penalty for exceeding monthly target
             
         return score
     
@@ -1150,9 +1345,21 @@ class ScheduleBuilder:
         - Part-time workers (<100%) get STRONGER penalties for excess
         - Never penalize workers with deficit
         """
-        current_total_shifts = len(self.worker_assignments.get(worker_id, set()))
+        all_assignments = self.worker_assignments.get(worker_id, set())
+        total_shifts = len(all_assignments)
         overall_target_shifts = worker_config.get('target_shifts', 0) if worker_config else 0
         work_percentage = worker_config.get('work_percentage', 100) if worker_config else 100
+        
+        # CRITICAL: target_shifts ya tiene mandatory restados
+        # Debemos comparar con non-mandatory assigned
+        mandatory_dates = set()
+        if worker_config and worker_config.get('mandatory_days'):
+            try:
+                mandatory_dates = set(self.date_utils.parse_dates(worker_config['mandatory_days']))
+            except Exception:
+                pass
+        mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+        current_total_shifts = total_shifts - mandatory_assigned  # Solo non-mandatory
         
         if overall_target_shifts <= 0:
             return 0
@@ -1178,99 +1385,39 @@ class ScheduleBuilder:
         # Count after potential assignment
         shifts_after_assignment = current_total_shifts + 1
         
-        # CRITICAL: Calculate deficit - how far below target
-        deficit = adjusted_target - current_total_shifts
-        
-        # Give MASSIVE bonus to workers with significant deficit
-        if deficit >= 3:
-            # Workers 3+ shifts below target get HUGE priority
-            bonus = 15000 + (deficit * 3000)  # 3 below = 24000, 4 below = 27000, etc.
-            logging.debug(f"Worker {worker_id}: CRITICAL DEFICIT bonus +{bonus} "
-                        f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit})")
-            return bonus
-        elif deficit >= 2:
-            # Workers 2 shifts below target get very high priority
-            bonus = 12000  # Aumentado de 8000
-            logging.debug(f"Worker {worker_id}: HIGH DEFICIT bonus +{bonus} "
-                        f"(current: {current_total_shifts}, target: {adjusted_target}, deficit: {deficit})")
-            return bonus
-        elif deficit >= 1:
-            # Workers 1 shift below target get high priority
-            return 8000  # Aumentado de 5000
-        
-        # CRITICAL: Block ONLY if would exceed tolerance limit (not just target)
-        # Workers can go up to max_allowed (target + tolerance)
-        if shifts_after_assignment > max_allowed:
-            # HARD BLOCK - would exceed tolerance limit
-            logging.debug(f"Worker {worker_id}: BLOCKED by tolerance limit - would have {shifts_after_assignment} "
-                        f"(max allowed: {max_allowed}, target: {adjusted_target}, tolerance: ±{tolerance*100:.0f}%)")
-            return float('-inf')
-        
-        # Apply graduated penalties as worker approaches tolerance limit
-        if current_total_shifts >= adjusted_target:
-            # Worker at or above target - apply penalty to encourage deficit workers
-            # But still allow up to max_allowed
-            excess = current_total_shifts - adjusted_target
-            if excess >= 2:
-                penalty = 15000  # Heavy penalty for 2+ above target
-                logging.debug(f"Worker {worker_id}: HEAVY penalty for being {excess} above target "
-                            f"(current: {current_total_shifts}, target: {adjusted_target})")
-                return -penalty
-            else:
-                # At target+1, moderate penalty
-                penalty = 8000
-                logging.debug(f"Worker {worker_id}: Moderate penalty for being at target+1 "
-                            f"(current: {current_total_shifts}, target: {adjusted_target})")
-                return -penalty
-        
-        # Block assignments that would violate upper tolerance
-        if shifts_after_assignment > max_allowed:
-            if self.use_strict_mode or relaxation_level < 2:
-                # Hard block in strict mode or at low relaxation levels
-                logging.debug(f"Worker {worker_id}: BLOCKED - would exceed +{tolerance*100:.0f}% tolerance "
-                            f"({shifts_after_assignment} > {max_allowed}, target: {adjusted_target})")
+        # =========================================================================
+        # OVERALL SCORING BASADO EN RATIO (% completitud global)
+        # =========================================================================
+        if adjusted_target > 0:
+            completion_ratio = current_total_shifts / adjusted_target
+            
+            # CRITICAL: Block if would exceed tolerance limit
+            if shifts_after_assignment > max_allowed:
+                logging.debug(f"Worker {worker_id}: BLOCKED by tolerance limit - would have {shifts_after_assignment} "
+                            f"(max allowed: {max_allowed}, target: {adjusted_target}, tolerance: ±{tolerance*100:.0f}%)")
                 return float('-inf')
+            
+            # Score based on completion ratio (inverted: lower ratio = higher score)
+            if completion_ratio < 1.0:
+                # Below target - bonus inversely proportional to completion
+                # 0% = 30,000 pts, 50% = 15,000 pts, 80% = 6,000 pts
+                ratio_bonus = (1 - completion_ratio) * 30000
+                
+                # Extra boost for very incomplete workers (<70%)
+                if completion_ratio < 0.7:
+                    ratio_bonus += (0.7 - completion_ratio) * 20000
+                
+                return ratio_bonus
+            elif completion_ratio <= 1.0 + tolerance:
+                # At or slightly above target but within tolerance
+                excess_ratio = completion_ratio - 1.0
+                return -excess_ratio * 15000  # Moderate penalty
             else:
-                # At high relaxation, allow with severe penalty
-                excess = shifts_after_assignment - max_allowed
-                # EXTRA penalty for part-time workers
-                base_penalty = 5000
-                if work_percentage < 100:
-                    # Part-time workers get 2x-3x penalty multiplier
-                    multiplier = 2.0 + (100 - work_percentage) / 50.0  # 50% = 3x, 75% = 2.5x, 90% = 2.2x
-                    penalty = excess * base_penalty * multiplier
-                    logging.debug(f"Worker {worker_id}: EXTRA HEAVY penalty for part-time ({work_percentage}%) "
-                                f"exceeding tolerance (penalty: {penalty:.0f}, multiplier: {multiplier:.1f}x)")
-                else:
-                    penalty = excess * base_penalty
-                    logging.debug(f"Worker {worker_id}: Heavy penalty for exceeding tolerance at relaxation={relaxation_level} "
-                                f"(penalty: {penalty})")
-                return -penalty
+                # Above tolerance - heavy penalty (but not blocking if already handled)
+                excess_ratio = completion_ratio - 1.0
+                return -excess_ratio * 25000
         
-        # CRITICAL: Encourage workers BELOW target - HUGE bonus for large deficits
-        if shifts_after_assignment < adjusted_target:
-            deficit = adjusted_target - shifts_after_assignment
-            # MASSIVE bonus for workers far from target (e.g., 33/55 = 22 deficit)
-            bonus = deficit * 3000  # Increased from 1000 to 3000
-            logging.debug(f"Worker {worker_id}: HUGE BONUS for deficit ({shifts_after_assignment} < {adjusted_target}, bonus: {bonus})")
-            return bonus
-        elif shifts_after_assignment == adjusted_target:
-            # Good - exactly at target
-            return 500
-        else:
-            # Above target but within tolerance
-            excess = shifts_after_assignment - adjusted_target
-            # Enhanced penalty scale for part-time workers
-            if work_percentage < 100:
-                # Progressive penalty: stronger for part-time workers
-                penalty_multiplier = 1.5 + (100 - work_percentage) / 100.0  # 50% = 2x, 75% = 1.75x
-                penalty = excess * 100 * penalty_multiplier
-                logging.debug(f"Worker {worker_id} (part-time {work_percentage}%): Enhanced penalty for excess "
-                            f"({shifts_after_assignment} > {overall_target_shifts}, penalty: {penalty:.0f})")
-            else:
-                # Standard small penalty for full-time
-                penalty = excess * 100
-            return -penalty
+        return 0
     
     def _check_gap_constraints(self, worker, date, relaxation_level):
         """
@@ -1291,9 +1438,22 @@ class ScheduleBuilder:
             return True
         
         # Check if worker has significant target_shifts deficit
+        # CRITICAL: target_shifts already has mandatory subtracted, so compare to non-mandatory only
         current_assignments = len(assignments)
         target_shifts = worker.get('target_shifts', 0)
-        target_deficit = max(0, target_shifts - current_assignments)
+        
+        # Count mandatory already assigned
+        mandatory_dates = set()
+        mandatory_str = worker.get('mandatory_days', '')
+        if mandatory_str:
+            try:
+                mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
+            except Exception:
+                pass
+        mandatory_assigned = sum(1 for d in assignments if d in mandatory_dates)
+        non_mandatory_assigned = current_assignments - mandatory_assigned
+        
+        target_deficit = max(0, target_shifts - non_mandatory_assigned)
         high_deficit = target_deficit >= 2  # Worker needs 2+ more shifts
         
         work_percentage = worker.get('work_percentage', 100)
@@ -1337,11 +1497,12 @@ class ScheduleBuilder:
         """
         Calculate score based on target shifts and mandatory assignments.
         
-        CRITICAL: Never block workers with deficit. Always encourage filling targets.
+        CRITICAL: target_shifts already has mandatory subtracted.
+        We need to compare it against non-mandatory assignments only.
         """
         worker_id = worker['id']
         current_shifts = len(self.worker_assignments[worker_id])
-        target_shifts = worker.get('target_shifts', 0)
+        target_shifts = worker.get('target_shifts', 0)  # Already has mandatory subtracted
         
         # Count mandatory shifts that are already assigned
         mandatory_shifts_assigned = sum(
@@ -1354,31 +1515,40 @@ class ScheduleBuilder:
             if d not in self.worker_assignments[worker_id]
         )
         
-        # Calculate non-mandatory shifts target
-        non_mandatory_target = target_shifts - len(mandatory_dates)
+        # IMPORTANT: target_shifts already has mandatory subtracted
+        # So we compare it to non-mandatory assignments only
         non_mandatory_assigned = current_shifts - mandatory_shifts_assigned
         
-        # Check if we've already met or exceeded non-mandatory target
-        shift_difference = non_mandatory_target - non_mandatory_assigned
-        
-        # REMOVED: The restrictive check that was blocking assignments
-        # Old logic: if (non_mandatory_assigned + mandatory_shifts_remaining >= target_shifts and relaxation_level < 2):
-        #     return float('-inf')
-        # This was TOO restrictive and prevented workers from reaching their targets
-        
-        # Calculate score based on shift difference
+        # =========================================================================
+        # TARGET SHIFT SCORING BASADO EN RATIO (% completitud)
+        # =========================================================================
+        # Esto asegura que un trabajador con objetivo 19 al 50% tiene MAYOR prioridad
+        # que un trabajador con objetivo 10 al 50%, porque proporcionalmente necesita más
+        # =========================================================================
         score = 0
-        if shift_difference <= 0:
-            # Worker has met non-mandatory target
-            if relaxation_level == 0:
-                score -= 5000 * abs(shift_difference)  # Reduced from 8000
-            elif relaxation_level == 1:
-                score -= 3000 * abs(shift_difference)  # Reduced from 5000
+        if target_shifts > 0:
+            completion_ratio = non_mandatory_assigned / target_shifts
+            
+            if completion_ratio < 1.0:
+                # Below target - HUGE bonus inversely proportional to completion
+                # 0% complete = 30,000 pts, 50% = 15,000 pts, 80% = 6,000 pts
+                ratio_score = (1 - completion_ratio) * 30000
+                
+                # Extra boost for very incomplete workers (<60%)
+                if completion_ratio < 0.6:
+                    ratio_score += (0.6 - completion_ratio) * 15000
+                
+                score = ratio_score
+                logging.debug(f"TARGET RATIO SCORE: {worker_id} ratio={completion_ratio:.2f} ({non_mandatory_assigned}/{target_shifts}) -> score={score:.0f}")
             else:
-                score -= 1000 * abs(shift_difference)  # Reduced from 2000
-        else:
-            # Prioritize workers who are furthest below target
-            score += shift_difference * 3000  # Increased from 2000 to 3000
+                # At or above target - penalty proportional to excess
+                excess_ratio = completion_ratio - 1.0
+                if relaxation_level == 0:
+                    score = -excess_ratio * 20000
+                elif relaxation_level == 1:
+                    score = -excess_ratio * 15000
+                else:
+                    score = -excess_ratio * 10000
             
         return score
 
@@ -1408,13 +1578,27 @@ class ScheduleBuilder:
         try:
             worker_id = worker['id']
             
+            # Calculate shift deficit early for logging purposes
+            current_shifts = len(self.worker_assignments[worker_id])
+            target_shifts = worker.get('target_shifts', 0)
+            worker_data = next((w for w in self.workers_data if w['id'] == worker_id), None)
+            mandatory_dates = set()
+            if worker_data and worker_data.get('mandatory_days'):
+                try:
+                    mandatory_dates = set(self.date_utils.parse_dates(worker_data['mandatory_days']))
+                except Exception:
+                    pass
+            mandatory_assigned = sum(1 for d in self.worker_assignments[worker_id] if d in mandatory_dates)
+            non_mandatory_assigned = current_shifts - mandatory_assigned
+            shift_deficit = max(0, target_shifts - non_mandatory_assigned)
+            
             # Check hard constraints first
             if not self._check_hard_constraints(worker_id, date, post):
                 logging.debug(f"    🚫 {worker_id}: BLOCKED by hard constraints")
                 return float('-inf')
             
             # Check for mandatory shifts
-            mandatory_score, mandatory_dates = self._check_mandatory_assignment(worker, date)
+            mandatory_score, mandatory_dates_check = self._check_mandatory_assignment(worker, date)
             if mandatory_score is not None:
                 return mandatory_score
             
@@ -1425,13 +1609,18 @@ class ScheduleBuilder:
                 return score
             
             # Check gap constraints
-            if not self._check_gap_constraints(worker, date, relaxation_level):
+            gap_ok = self._check_gap_constraints(worker, date, relaxation_level)
+            if not gap_ok:
+                if worker_id in ['LUIS H', 'M.JOSE'] and shift_deficit > 2:
+                    logging.info(f"    ⚠️ {worker_id}: BLOCKED by gap constraints despite deficit={shift_deficit}")
                 logging.debug(f"    🚫 {worker_id}: BLOCKED by gap constraints (min gap or 7/14 pattern)")
                 return float('-inf')
             
             # Calculate monthly target score
             monthly_score = self._calculate_monthly_target_score(worker, date, relaxation_level)
             if monthly_score == float('-inf'):
+                if worker_id in ['LUIS H', 'M.JOSE'] and shift_deficit > 2:
+                    logging.info(f"    ⚠️ {worker_id}: BLOCKED by monthly target despite deficit={shift_deficit}")
                 logging.debug(f"    🚫 {worker_id}: BLOCKED by monthly target (exceeded monthly max)")
                 return float('-inf')
             score += monthly_score
@@ -1440,6 +1629,8 @@ class ScheduleBuilder:
             worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
             overall_score = self._calculate_overall_target_score(worker_id, worker_config, relaxation_level)
             if overall_score == float('-inf'):
+                if worker_id in ['LUIS H', 'M.JOSE'] and shift_deficit > 2:
+                    logging.info(f"    ⚠️ {worker_id}: BLOCKED by overall target (exceeded +10% tolerance) despite deficit={shift_deficit}")
                 logging.debug(f"    🚫 {worker_id}: BLOCKED by overall target (exceeded +10% tolerance)")
                 return float('-inf')
             score += overall_score
@@ -1457,35 +1648,88 @@ class ScheduleBuilder:
         """
         Calculate additional scoring factors like weekend balance and weekly distribution.
         Now includes ±10% tolerance validation for weekend shifts.
-        Prioritizes maximum spacing between shifts (gap maximization).
+        FIXED: Fair distribution prioritizes workers with shift deficit over gap maximization.
+        CRITICAL: Correctly handles mandatory shifts in deficit calculation.
         """
         worker_id = worker['id']
         score = 0
         
-        # Gap Distance Score - Favor MAXIMUM spacing between shifts
-        # The system should prioritize larger gaps, not smaller ones
+        # PRIMARY SCORING: Target Shift Deficit
+        # Workers who need more shifts should be heavily prioritized
+        # IMPORTANT: target_shifts already has mandatory subtracted
+        current_shifts = len(self.worker_assignments[worker_id])
+        target_shifts = worker.get('target_shifts', 0)  # Already excludes mandatory
+        
+        # Count mandatory shifts already assigned to exclude from deficit calculation
+        worker_data = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        mandatory_dates = set()
+        if worker_data and worker_data.get('mandatory_days'):
+            try:
+                mandatory_dates = set(self.date_utils.parse_dates(worker_data['mandatory_days']))
+            except Exception:
+                pass
+        
+        mandatory_assigned = sum(1 for d in self.worker_assignments[worker_id] if d in mandatory_dates)
+        non_mandatory_assigned = current_shifts - mandatory_assigned
+        
+        # Calculate deficit based on non-mandatory shifts only
+        shift_deficit = max(0, target_shifts - non_mandatory_assigned)
+        
+        # =========================================================================
+        # NUEVO SISTEMA: SCORING BASADO EN RATIO (% completitud)
+        # =========================================================================
+        # El ratio permite comparar justamente trabajadores con diferentes objetivos
+        # Ejemplo: Luis H con 7/13 (54%) vs Worker X con 4/8 (50%)
+        # Worker X tiene prioridad porque tiene menor completitud
+        #
+        # FORMULA: completion_ratio = (non_mandatory_assigned / target_shifts)
+        # SCORE:   (1 - completion_ratio) * 100000 (inverted so lower ratio = higher score)
+        # =========================================================================
+        
+        if target_shifts > 0:
+            # Calculate completion ratio (0.0 to 1.0+)
+            completion_ratio = non_mandatory_assigned / target_shifts
+            
+            # Inverted ratio: workers with lower completion get MUCH higher scores
+            # Scale: 0% complete = 100,000 pts, 50% = 50,000 pts, 100% = 0 pts
+            ratio_score = (1 - completion_ratio) * 100000
+            
+            # Apply square to give even MORE priority to very incomplete workers
+            # This helps Luis H (54% complete) vs workers who are 70-80% complete
+            if completion_ratio < 0.8:
+                # Boost for significantly incomplete workers
+                incompleteness_boost = (0.8 - completion_ratio) * 50000
+                ratio_score += incompleteness_boost
+            
+            score += ratio_score
+            
+            # DEBUG: Log ratio for specific workers
+            if worker_id in ['LUIS H', 'M.JOSE'] or completion_ratio < 0.7:
+                logging.info(f"📊 RATIO SCORING - {worker_id}: ratio={completion_ratio:.2f} ({non_mandatory_assigned}/{target_shifts}), "
+                            f"ratio_score={ratio_score:.0f}, total_so_far={score:.0f}")
+        elif shift_deficit > 0:
+            # Fallback for workers without target (shouldn't happen)
+            score += shift_deficit * 5000
+        
+        # SECONDARY SCORING: Gap Distance Score
+        # Gap should be a tiebreaker, not the primary factor
+        # REDUCED from 50 to 10 points per day to ensure ratio dominates
         assignments = self.worker_assignments[worker_id]
         if assignments:
-            # Find the most recent assignment
             most_recent = max(assignments)
             days_since_last = (date - most_recent).days
-            
-            # Bonus increases with distance (exponential growth to favor larger gaps)
-            # Base multiplier: 150 points per day
-            # Exponential bonus for gaps > minimum requirement
             min_gap = self.gap_between_shifts + 1
             
-            if days_since_last > min_gap:
-                # Extra days beyond minimum get exponentially higher scores
-                extra_days = days_since_last - min_gap
-                gap_bonus = 150 * days_since_last  # Base linear component
-                gap_bonus += (extra_days ** 1.5) * 100  # Exponential component for large gaps
-                score += gap_bonus
-            else:
-                # Even minimum gaps get some bonus (though they should already pass constraint)
-                score += days_since_last * 100
+            # Minimal LINEAR bonus: 10 points per day of gap
+            # This ensures workers with any valid gap are secondary to ratio
+            gap_bonus = days_since_last * 10
+            score += gap_bonus
+        else:
+            # Worker has NO assignments yet - MAXIMUM priority
+            # Give them a bigger bonus than any gap could provide
+            score += 1000  # New worker bonus
         
-        # Weekend Balance Score with ±10% tolerance enforcement
+        # TERTIARY SCORING: Weekend Balance Score with ±10% tolerance enforcement
         if self._is_weekend_or_holiday(date):
             # Count current weekend assignments
             weekend_assignments = sum(
@@ -1493,14 +1737,45 @@ class ScheduleBuilder:
                 if self._is_weekend_or_holiday(d)
             )
             
-            # Calculate weekend target based on overall target
+            # Calculate weekend target based on overall target AND work_percentage
             worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
             if worker_config:
-                total_target = worker_config.get('target_shifts', 0)
+                # Use _raw_target if available (includes mandatory)
+                if '_raw_target' in worker_config:
+                    total_target = worker_config['_raw_target']
+                else:
+                    total_target = worker_config.get('target_shifts', 0)
+                    # Add back mandatory if not using _raw_target
+                    if worker_config.get('mandatory_days'):
+                        try:
+                            mand_dates = self.date_utils.parse_dates(worker_config['mandatory_days'])
+                            mand_in_period = sum(1 for d in mand_dates if self.start_date <= d <= self.end_date)
+                            total_target += mand_in_period
+                        except Exception:
+                            pass
+                
                 if total_target > 0:
-                    # Estimate weekend percentage (approximately 3/7 days are Fri-Sun)
-                    weekend_percentage = 3.0 / 7.0
-                    weekend_target = total_target * weekend_percentage
+                    # Calculate REAL weekend percentage from the actual period
+                    # Count all Fri/Sat/Sun + holidays + pre-holidays in the period
+                    if not hasattr(self, '_cached_weekend_percentage'):
+                        total_days_in_period = (self.end_date - self.start_date).days + 1
+                        weekend_days_count = sum(
+                            1 for single_date in (self.start_date + timedelta(days=i) 
+                                                  for i in range(total_days_in_period))
+                            if self._is_weekend_or_holiday(single_date)
+                        )
+                        self._cached_weekend_percentage = weekend_days_count / total_days_in_period
+                        logging.info(f"Calculated weekend percentage: {self._cached_weekend_percentage*100:.1f}% "
+                                    f"({weekend_days_count}/{total_days_in_period} days)")
+                    
+                    weekend_percentage = self._cached_weekend_percentage
+                    
+                    # Adjust by work_percentage - part-time workers should have proportionally fewer weekends
+                    work_pct = worker_config.get('work_percentage', 100) / 100.0
+                    # Apply power function for smoother reduction for part-time
+                    # Example: 50% worker gets 0.5^0.8 = 0.574, so if 45% weekends * 0.574 = 26%
+                    adjusted_work_pct = work_pct ** 0.8  # Less aggressive than sqrt but still reduces
+                    weekend_target = total_target * weekend_percentage * adjusted_work_pct
                     
                     # Calculate tolerance using phase system
                     # Phase 1: ±10%, Phase 2: ±12%
@@ -1523,6 +1798,42 @@ class ScheduleBuilder:
                     # Count after potential assignment
                     weekend_after = weekend_assignments + 1
                     
+                    # CRITICAL: Check consecutive weekends and penalize heavily if approaching limit
+                    # This prevents exceeding max_consecutive_weekends
+                    if self._is_weekend_or_holiday(date):
+                        # Check current consecutive weekend streak
+                        weekend_dates_list = sorted([d for d in self.worker_assignments[worker_id] 
+                                                     if self._is_weekend_or_holiday(d)])
+                        
+                        max_weekend_limit = self.scheduler.max_consecutive_weekends
+                        work_pct_val = worker_config.get('work_percentage', 100)
+                        if work_pct_val < 70:
+                            max_weekend_limit = max(1, int(self.scheduler.max_consecutive_weekends * work_pct_val / 100))
+                        
+                        # Count current consecutive streak ending at this date
+                        consecutive_count = 1  # This weekend
+                        for i in range(len(weekend_dates_list) - 1, -1, -1):
+                            prev_weekend = weekend_dates_list[i]
+                            days_diff = (date - prev_weekend).days
+                            if 6 <= days_diff <= 8:  # Consecutive weekend
+                                consecutive_count += 1
+                            else:
+                                break
+                        
+                        # Apply graduated penalties as we approach the limit
+                        if consecutive_count >= max_weekend_limit:
+                            # At or over limit - should have been blocked by hard constraints
+                            # But add extreme penalty just in case
+                            logging.warning(f"Worker {worker_id}: At weekend consecutive limit ({consecutive_count}/{max_weekend_limit})")
+                            score -= 50000  # Extreme penalty
+                        elif consecutive_count == max_weekend_limit - 1:
+                            # One away from limit - heavy penalty
+                            score -= 15000
+                            logging.debug(f"Worker {worker_id}: Near weekend limit ({consecutive_count}/{max_weekend_limit}) - heavy penalty")
+                        elif consecutive_count == max_weekend_limit - 2:
+                            # Two away from limit - moderate penalty
+                            score -= 5000
+                    
                     # STRICT: Block weekend assignments that would violate ±10% tolerance
                     if weekend_after > max_weekend_allowed:
                         if relaxation_level < 2:
@@ -1537,15 +1848,15 @@ class ScheduleBuilder:
                     elif weekend_after < weekend_target:
                         # Bonus for workers below weekend target
                         deficit = weekend_target - weekend_after
-                        score += deficit * 800
+                        score += deficit * 200  # Reduced from 800 (secondary priority)
                     else:
                         # Small penalty for being above target but within tolerance
                         if weekend_after > weekend_target:
                             excess = weekend_after - weekend_target
-                            score -= excess * 300
+                            score -= excess * 150  # Reduced penalty (secondary priority)
             else:
                 # No config, use simple penalty
-                score -= weekend_assignments * 300
+                score -= weekend_assignments * 100  # Reduced from 300
         else:
             # For non-weekend days, check if worker is below weekend target
             # and give small penalty to encourage weekend assignments
@@ -1555,14 +1866,41 @@ class ScheduleBuilder:
             )
             worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
             if worker_config:
-                total_target = worker_config.get('target_shifts', 0)
+                # Use _raw_target if available (includes mandatory)
+                if '_raw_target' in worker_config:
+                    total_target = worker_config['_raw_target']
+                else:
+                    total_target = worker_config.get('target_shifts', 0)
+                    # Add back mandatory if not using _raw_target
+                    if worker_config.get('mandatory_days'):
+                        try:
+                            mand_dates = self.date_utils.parse_dates(worker_config['mandatory_days'])
+                            mand_in_period = sum(1 for d in mand_dates if self.start_date <= d <= self.end_date)
+                            total_target += mand_in_period
+                        except Exception:
+                            pass
+                
                 if total_target > 0:
-                    weekend_percentage = 3.0 / 7.0
-                    weekend_target = total_target * weekend_percentage
+                    # Use cached weekend percentage (calculated in primary weekend scoring)
+                    if not hasattr(self, '_cached_weekend_percentage'):
+                        total_days_in_period = (self.end_date - self.start_date).days + 1
+                        weekend_days_count = sum(
+                            1 for single_date in (self.start_date + timedelta(days=i) 
+                                                  for i in range(total_days_in_period))
+                            if self._is_weekend_or_holiday(single_date)
+                        )
+                        self._cached_weekend_percentage = weekend_days_count / total_days_in_period
+                    
+                    weekend_percentage = self._cached_weekend_percentage
+                    
+                    # Adjust by work_percentage with power function
+                    work_pct = worker_config.get('work_percentage', 100) / 100.0
+                    adjusted_work_pct = work_pct ** 0.8
+                    weekend_target = total_target * weekend_percentage * adjusted_work_pct
                     if weekend_assignments < weekend_target * 0.8:  # If significantly below weekend target
-                        score -= 200  # Small penalty for non-weekend when should do more weekends
+                        score -= 100  # Reduced from 200 (secondary priority)
 
-        # Weekly Balance Score - avoid concentration in some weeks
+        # QUATERNARY SCORING: Weekly Balance Score
         week_number = date.isocalendar()[1]
         week_counts = {}
         assignments = self.worker_assignments[worker_id]
@@ -1574,17 +1912,32 @@ class ScheduleBuilder:
         avg_week_count = len(assignments) / max(1, len(week_counts)) if week_counts else 0
 
         if current_week_count < avg_week_count:
-            score += 500  # Bonus for weeks with fewer assignments
+            score += 100  # Reduced from 500 (tertiary priority)
 
-        # Schedule Progression Score - adjust priority as schedule fills up
+        # FINAL: Schedule Progression Score - much reduced impact
         total_days = (self.end_date - self.start_date).days if self.end_date > self.start_date else 1
         schedule_completion = sum(len(s) for s in self.schedule.values()) / (total_days * self.num_shifts)
 
-        # Additional progression bonus
-        current_shifts = len(self.worker_assignments[worker_id])
+        # Minimal progression bonus (should not override deficit priority)
+        # CRITICAL: target_shifts already has mandatory subtracted
+        # We must exclude mandatory from current_shifts to compare correctly
+        all_assignments = self.worker_assignments[worker_id]
+        total_shifts = len(all_assignments)
         target_shifts = worker.get('target_shifts', 0)
-        shift_difference = target_shifts - current_shifts
-        score += shift_difference * 500 * schedule_completion
+        
+        # Get mandatory dates for this worker
+        worker_data = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        mandatory_dates = set()
+        if worker_data and worker_data.get('mandatory_days'):
+            try:
+                mandatory_dates = set(self.date_utils.parse_dates(worker_data['mandatory_days']))
+            except Exception:
+                pass
+        
+        mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+        non_mandatory_shifts = total_shifts - mandatory_assigned
+        shift_difference = target_shifts - non_mandatory_shifts
+        score += shift_difference * 50 * schedule_completion  # Reduced from 500
 
         return score
 
@@ -2018,9 +2371,22 @@ class ScheduleBuilder:
 
                     if score > float('-inf'):
                         # Add target_shifts priority bonus to base score
-                        current_assignments = len(self.worker_assignments.get(worker_id_val, set()))
+                        # CRITICAL: target_shifts already has mandatory subtracted
+                        all_assignments = self.worker_assignments.get(worker_id_val, set())
+                        current_assignments = len(all_assignments)
                         target_shifts = worker_data_val.get('target_shifts', 0)
-                        target_deficit = max(0, target_shifts - current_assignments)
+                        
+                        # Count mandatory already assigned
+                        mandatory_dates = set()
+                        mandatory_str = worker_data_val.get('mandatory_days', '')
+                        if mandatory_str:
+                            try:
+                                mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
+                            except Exception:
+                                pass
+                        mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+                        non_mandatory_assigned = current_assignments - mandatory_assigned
+                        target_deficit = max(0, target_shifts - non_mandatory_assigned)
                         
                         # Combine base score with target_shifts priority
                         priority_score = score + (target_deficit * 1000)  # Slightly lower bonus than swaps
@@ -2292,55 +2658,83 @@ class ScheduleBuilder:
                 if attempt == 1 and filled_this_attempt == 0:
                     logging.debug(f"Trying to fill slot: {date_val.strftime('%Y-%m-%d')} post {post_val}")
                 
-                # CRITICAL FIX: Evaluate ALL workers and assign the one with HIGHEST score
-                # This ensures workers with deficit (+25000 bonus) get priority over workers at target
-                best_worker = None
-                best_score = float('-inf')
-                valid_workers_found = 0
+                # CRITICAL FIX: Collect ALL valid candidates with their scores
+                # Then select based on score + tiebreaker strategy
+                valid_candidates = []  # List of (worker_id, score, worker_data)
                 
-                for worker_data in workers_list:
+                for position, worker_data in enumerate(workers_list):
                     worker_id = worker_data['id']
                     
                     # Check if worker can be assigned
                     score = self._calculate_worker_score(worker_data, date_val, post_val, relaxation_level=0)
                     
                     if score > float('-inf'):
-                        valid_workers_found += 1
                         # Additional incompatibility check
                         others_now = [w for i, w in enumerate(self.schedule.get(date_val, [])) 
                                      if i != post_val and w is not None]
                         
                         if not self._check_incompatibility_with_list(worker_id, others_now):
-                            if attempt == 1 and filled_this_attempt == 0 and valid_workers_found <= 3:
-                                logging.debug(f"  {worker_id}: BLOCKED by incompatibility")
                             continue
                         
                         if not self._can_assign_worker(worker_id, date_val, post_val):
-                            if attempt == 1 and filled_this_attempt == 0 and valid_workers_found <= 3:
-                                logging.debug(f"  {worker_id}: BLOCKED by _can_assign_worker")
                             continue
                         
                         # CRITICAL: Check ±8% tolerance before assignment
                         if self._would_violate_tolerance(worker_id, date_val, allow_relaxation=False):
-                            if attempt == 1 and filled_this_attempt == 0 and valid_workers_found <= 3:
-                                logging.debug(f"  {worker_id}: BLOCKED by tolerance violation")
                             continue
                         
                         # CRITICAL: Final check - ensure slot not protected
                         if self.schedule[date_val][post_val] is not None:
                             existing = self.schedule[date_val][post_val]
                             if (existing, date_val) in self._locked_mandatory or self._is_mandatory(existing, date_val):
-                                logging.warning(f"🔒 BLOCKED Initial Fill: Cannot overwrite MANDATORY {existing} on {date_val.strftime('%Y-%m-%d')} post {post_val}")
                                 continue
                         
-                        # CRITICAL: Compare scores and keep track of best worker
-                        if score > best_score:
-                            best_score = score
-                            best_worker = worker_id
-                            if attempt == 1 and filled_this_attempt == 0:
-                                logging.debug(f"  {worker_id}: NEW BEST (score={score:.0f})")
+                        # Valid candidate - add to list
+                        valid_candidates.append((worker_id, score, worker_data))
                 
-                # Assign the worker with the HIGHEST score (not the first valid one)
+                # Select best worker using score + tiebreaker strategy
+                best_worker = None
+                if valid_candidates:
+                    # Find maximum score
+                    max_score = max(candidate[1] for candidate in valid_candidates)
+                    
+                    # Use a more generous tolerance to allow tiebreaker to work
+                    # Allow ties when scores are within 5% or 500 points of maximum
+                    # This ensures tiebreaker is used when deficit differs by ≤1 shift
+                    tolerance = max(500, abs(max_score) * 0.05)
+                    tied_candidates = [c for c in valid_candidates if abs(c[1] - max_score) <= tolerance]
+                    
+                    if len(tied_candidates) == 1:
+                        # Only one candidate with max score
+                        best_worker = tied_candidates[0][0]
+                        if attempt == 1 and filled_this_attempt == 0:
+                            logging.debug(f"  {best_worker}: CLEAR WINNER (score={max_score:.0f})")
+                    else:
+                        # Multiple candidates tied - use tiebreaker strategy
+                        if self.tiebreaker_strategy == 'alphabetical_asc':
+                            # Sort A-Z
+                            tied_candidates.sort(key=lambda c: c[0])
+                            best_worker = tied_candidates[0][0]
+                            if attempt == 1 and filled_this_attempt == 0:
+                                logging.debug(f"  {best_worker}: TIEBREAKER A-Z among {len(tied_candidates)} candidates")
+                        elif self.tiebreaker_strategy == 'alphabetical_desc':
+                            # Sort Z-A
+                            tied_candidates.sort(key=lambda c: c[0], reverse=True)
+                            best_worker = tied_candidates[0][0]
+                            if attempt == 1 and filled_this_attempt == 0:
+                                logging.debug(f"  {best_worker}: TIEBREAKER Z-A among {len(tied_candidates)} candidates")
+                        elif self.tiebreaker_strategy == 'random':
+                            # Random selection (uses current random state)
+                            import random
+                            selected = random.choice(tied_candidates)
+                            best_worker = selected[0]
+                            if attempt == 1 and filled_this_attempt == 0:
+                                logging.debug(f"  {best_worker}: TIEBREAKER RANDOM among {len(tied_candidates)} candidates")
+                        else:
+                            # Fallback: first in list
+                            best_worker = tied_candidates[0][0]
+                
+                # Assign the selected worker
                 if best_worker is not None:
                     self.schedule[date_val][post_val] = best_worker
                     self.worker_assignments[best_worker].add(date_val)
@@ -2349,8 +2743,8 @@ class ScheduleBuilder:
                     made_change = True
                     
                     if attempt == 1 and filled_this_attempt == 1:
-                        logging.debug(f"  ✅ {best_worker}: ASSIGNED (best score={best_score:.0f})")
-                elif attempt == 1 and filled_this_attempt == 0 and valid_workers_found == 0:
+                        logging.debug(f"  ✅ {best_worker}: ASSIGNED")
+                elif attempt == 1 and filled_this_attempt == 0 and len(valid_candidates) == 0:
                     # Log if no valid workers found for this slot
                     logging.debug(f"  ❌ NO valid workers found (all returned -inf score)")
             
@@ -2424,9 +2818,22 @@ class ScheduleBuilder:
 
             if score_for_X > float('-inf'): # If X can be assigned
                 # Calculate target_shifts priority bonus
-                current_assignments = len(self.worker_assignments.get(worker_X_id, set()))
+                # CRITICAL: target_shifts already has mandatory subtracted
+                all_assignments = self.worker_assignments.get(worker_X_id, set())
+                current_assignments = len(all_assignments)
                 target_shifts = worker_X_data.get('target_shifts', 0)
-                target_deficit = max(0, target_shifts - current_assignments)
+                
+                # Count mandatory already assigned
+                mandatory_dates = set()
+                mandatory_str = worker_X_data.get('mandatory_days', '')
+                if mandatory_str:
+                    try:
+                        mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
+                    except Exception:
+                        pass
+                mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+                non_mandatory_assigned = current_assignments - mandatory_assigned
+                target_deficit = max(0, target_shifts - non_mandatory_assigned)
                 
                 # Combine base score with target_shifts priority
                 # Workers with higher target deficit get significant bonus
@@ -2548,6 +2955,34 @@ class ScheduleBuilder:
                         # CRITICAL: Check tolerance BEFORE assigning (±12% absolute limit)
                         if self._would_violate_tolerance(under_worker_id, date_val, allow_relaxation=True):
                             continue  # Skip if would violate ±12% limit
+                        
+                        # NEW: Check monthly balance - reject swap if it worsens monthly distribution
+                        under_worker_obj = next((w for w in self.workers_data if w['id'] == under_worker_id), None)
+                        if under_worker_obj:
+                            expected_monthly = self._get_expected_monthly_target(under_worker_obj, date_val.year, date_val.month)
+                            shifts_this_month = sum(
+                                1 for d in self.scheduler.worker_assignments.get(under_worker_id, [])
+                                if d.year == date_val.year and d.month == date_val.month
+                            )
+                            # Allow up to expected + tolerance, not just expected
+                            work_pct = under_worker_obj.get('work_percentage', 100)
+                            monthly_tolerance = 1 if work_pct >= 100 else 0
+                            max_monthly = expected_monthly + monthly_tolerance
+                            
+                            # Reject only if significantly above limit (not just at target)
+                            if shifts_this_month + 1 > max_monthly + 1:
+                                logging.debug(f"Skipping swap: {under_worker_id} would exceed monthly limit "
+                                            f"({shifts_this_month + 1} > {max_monthly + 1}) for {date_val.strftime('%Y-%m')}")
+                                continue
+                        
+                        # NEW: Check weekend limits - reject if would violate weekend percentage or consecutive weekends
+                        if self._is_weekend_or_holiday(date_val):
+                            # Check consecutive weekends
+                            if self._would_exceed_weekend_limit_simulated(under_worker_id, date_val, 
+                                                                          self.scheduler.worker_assignments):
+                                logging.debug(f"Skipping swap: {under_worker_id} would exceed weekend consecutive limit")
+                                continue
+                        
                         # CRITICAL: Verify we can modify the current assignment
                         if not self._can_modify_assignment(over_worker_id, date_val, "balance_workloads_remove"):
                             continue
@@ -2701,6 +3136,32 @@ class ScheduleBuilder:
                                          if w is not None and idx != post and w != worker_id]
                         if not self._check_incompatibility_with_list(other_worker_id, others_on_date):
                             logging.debug(f"Weekly balance swap rejected: {other_worker_id} incompatible on {date.strftime('%Y-%m-%d')}")
+                            continue
+                        
+                        # NEW: Check monthly balance - reject swap if it worsens monthly distribution
+                        other_worker_obj = next((w for w in self.workers_data if w['id'] == other_worker_id), None)
+                        if other_worker_obj:
+                            expected_monthly = self._get_expected_monthly_target(other_worker_obj, date.year, date.month)
+                            shifts_this_month = sum(
+                                1 for d in self.scheduler.worker_assignments.get(other_worker_id, [])
+                                if d.year == date.year and d.month == date.month
+                            )
+                            # Allow up to expected + tolerance
+                            work_pct = other_worker_obj.get('work_percentage', 100)
+                            monthly_tolerance = 1 if work_pct >= 100 else 0
+                            max_monthly = expected_monthly + monthly_tolerance
+                            
+                            # Reject only if significantly above limit
+                            if shifts_this_month + 1 > max_monthly + 1:
+                                logging.debug(f"Weekday swap skipped: {other_worker_id} would exceed monthly limit")
+                                continue
+                        
+                        # NEW: Check weekend limits
+                        if self._is_weekend_or_holiday(date):
+                            if self._would_exceed_weekend_limit_simulated(other_worker_id, date, 
+                                                                          self.scheduler.worker_assignments):
+                                logging.debug(f"Weekday swap skipped: {other_worker_id} would exceed weekend limit")
+                                continue
                             continue
                         
                         # CRITICAL: Check tolerance BEFORE assigning
@@ -3874,7 +4335,20 @@ class ScheduleBuilder:
         for worker in self.workers_data:
             worker_id = worker['id']
             target = worker['target_shifts']
-            current = len(self.worker_assignments.get(worker_id, []))
+            all_assignments = self.worker_assignments.get(worker_id, set())
+            total = len(all_assignments)
+            
+            # CRITICAL: target_shifts ya tiene mandatory restados
+            mandatory_dates = set()
+            mandatory_str = worker.get('mandatory_days', '')
+            if mandatory_str:
+                try:
+                    mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
+                except Exception:
+                    pass
+            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+            current = total - mandatory_assigned  # Solo non-mandatory
+            
             deviation = current - target
             # CRÍTICO: Procesar incluso desviaciones pequeñas (0.3 en vez de 0.5)
             if abs(deviation) > 0.3:
@@ -3911,7 +4385,20 @@ class ScheduleBuilder:
             if worker_id == overloaded_worker_id:
                 continue
             target = worker['target_shifts']
-            current = len(self.worker_assignments.get(worker_id, []))
+            all_assignments = self.worker_assignments.get(worker_id, set())
+            total = len(all_assignments)
+            
+            # CRITICAL: target_shifts ya tiene mandatory restados
+            mandatory_dates = set()
+            mandatory_str = worker.get('mandatory_days', '')
+            if mandatory_str:
+                try:
+                    mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
+                except Exception:
+                    pass
+            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+            current = total - mandatory_assigned  # Solo non-mandatory
+            
             if current < target:
                 deficit = target - current
                 underloaded_workers.append((worker_id, deficit))

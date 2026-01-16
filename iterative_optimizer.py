@@ -837,6 +837,98 @@ class IterativeOptimizer:
             target_shifts = worker_data.get('target_shifts', 0)
             work_percentage = worker_data.get('work_percentage', 100) / 100.0
             
+            # CRITICAL: Excluir mandatory del conteo para comparar con target_shifts
+            # target_shifts ya tiene mandatory restados
+            mandatory_count = 0
+            mandatory_str = worker_data.get('mandatory_days', '')
+            if mandatory_str:
+                try:
+                    # Parsear las fechas mandatory
+                    mandatory_parts = [p.strip() for p in mandatory_str.split(',') if p.strip()]
+                    for date_entry in schedule.keys():
+                        try:
+                            check_date = date_entry if isinstance(date_entry, datetime) else datetime.strptime(date_entry, "%Y-%m-%d")
+                            date_str = check_date.strftime('%d-%m-%Y')
+                            if date_str in mandatory_parts or check_date.strftime('%Y-%m-%d') in mandatory_parts:
+                                # Contar si este worker está asignado en esa fecha
+                                assigns = schedule.get(date_entry, [])
+                                if isinstance(assigns, list) and worker_name in assigns:
+                                    mandatory_count += 1
+                                elif isinstance(assigns, dict):
+                                    for shift_workers in assigns.values():
+                                        if isinstance(shift_workers, list) and worker_name in shift_workers:
+                                            mandatory_count += 1
+                        except:
+                            continue
+                except Exception:
+                    pass
+            
+            non_mandatory_shifts = current_shifts - mandatory_count
+            
+            # NEW: Check monthly balance - reject if would exceed monthly target
+            shifts_this_month = 0
+            for date, assignments in schedule.items():
+                try:
+                    check_date = date if isinstance(date, datetime) else datetime.strptime(date, "%Y-%m-%d")
+                    if check_date.year == shift_date.year and check_date.month == shift_date.month:
+                        if isinstance(assignments, dict):
+                            for shift, workers in assignments.items():
+                                if worker_name in workers:
+                                    shifts_this_month += 1
+                        elif isinstance(assignments, list):
+                            shifts_this_month += assignments.count(worker_name)
+                except:
+                    continue
+            
+            # Calculate expected monthly target (simplified version)
+            # Use _raw_target if available, otherwise use target_shifts
+            raw_target = worker_data.get('_raw_target', target_shifts)
+            if raw_target > 0:
+                # Simple monthly distribution: divide total by months (rough estimate)
+                # For 4-month period: target / 4
+                expected_monthly_rough = raw_target / 4.0  # Assuming ~4 months, adjust if needed
+                
+                # Add tolerance for monthly (part-time: 0%, full-time: 10%)
+                monthly_tolerance = 0.10 if work_percentage >= 1.0 else 0.0
+                max_monthly = expected_monthly_rough * (1 + monthly_tolerance)
+                
+                # Check if adding this shift would exceed monthly limit
+                if shifts_this_month + 1 > max_monthly + 1:  # +1 for rounding tolerance
+                    logging.debug(f"❌ {worker_name} blocked: Monthly limit - "
+                                f"{shifts_this_month + 1} would exceed {max_monthly:.1f} "
+                                f"(month: {shift_date.strftime('%Y-%m')})")
+                    return False
+            
+            # NEW: Check weekend consecutive limits (if this is a weekend shift)
+            is_weekend = shift_date.weekday() >= 4  # Fri/Sat/Sun
+            if is_weekend and hasattr(self, 'scheduler') and self.scheduler:
+                max_consecutive_weekends = getattr(self.scheduler, 'max_consecutive_weekends', 3)
+                
+                # Adjust for part-time workers
+                if work_percentage < 0.7:
+                    max_consecutive_weekends = max(1, int(max_consecutive_weekends * work_percentage))
+                
+                # Count consecutive weekends ending at this date
+                weekend_dates = sorted([
+                    d for d in worker_assignments 
+                    if d.weekday() >= 4
+                ])
+                
+                consecutive_count = 1  # This weekend
+                for wd in reversed(weekend_dates):
+                    days_diff = (shift_date - wd).days
+                    if 6 <= days_diff <= 8:  # Consecutive weekend (strict check)
+                        consecutive_count += 1
+                    else:
+                        break
+                
+                if consecutive_count > max_consecutive_weekends:
+                    logging.debug(f"❌ {worker_name} blocked: Consecutive weekend limit - "
+                                f"{consecutive_count} exceeds max {max_consecutive_weekends}")
+                    return False
+            
+            # Check overall tolerance
+            # CRITICAL: Usar non_mandatory_shifts para comparar con target_shifts
             if target_shifts > 0:
                 # Use Phase 2 tolerance (12%) during optimization
                 # Part-time workers get adjusted tolerance (minimum 5%)
@@ -846,9 +938,10 @@ class IterativeOptimizer:
                 max_shifts = round(target_shifts * (1 + adjusted_tolerance))
                 
                 # Check if adding this shift would exceed the limit
-                if current_shifts + 1 > max_shifts:
+                # Use non_mandatory_shifts, not current_shifts
+                if non_mandatory_shifts + 1 > max_shifts:
                     logging.debug(f"❌ {worker_name} blocked: Tolerance violation - "
-                                f"would have {current_shifts + 1}/{target_shifts} shifts "
+                                f"would have {non_mandatory_shifts + 1}/{target_shifts} shifts "
                                 f"(max: {max_shifts}, tolerance: {adjusted_tolerance*100:.1f}%)")
                     return False
             
@@ -1532,7 +1625,8 @@ class IterativeOptimizer:
                                     candidate_data = next((w for w in workers_data if w.get('id') == candidate or f"Worker {w.get('id')}" == candidate), None)
                                     if candidate_data:
                                         target = candidate_data.get('target_shifts', 0)
-                                        current = self._count_worker_shifts(candidate, optimized_schedule)
+                                        # CRITICAL: Excluir mandatory del conteo
+                                        current = self._count_worker_shifts(candidate, optimized_schedule, workers_data, exclude_mandatory=True)
                                         deficit = target - current  # Positive if under target
                                         valid_alternatives_with_priority.append((candidate, deficit))
                         
@@ -1560,7 +1654,8 @@ class IterativeOptimizer:
                                     candidate_data = next((w for w in workers_data if w.get('id') == candidate or f"Worker {w.get('id')}" == candidate), None)
                                     if candidate_data:
                                         target = candidate_data.get('target_shifts', 0)
-                                        current = self._count_worker_shifts(candidate, optimized_schedule)
+                                        # CRITICAL: Excluir mandatory del conteo
+                                        current = self._count_worker_shifts(candidate, optimized_schedule, workers_data, exclude_mandatory=True)
                                         deficit = target - current
                                         valid_alternatives_with_priority.append((candidate, deficit))
                         
@@ -1635,32 +1730,65 @@ class IterativeOptimizer:
         
         return max(0, (initial_violations - current_violations) / iterations)
     
-    def _count_worker_shifts(self, worker_name: str, schedule: Dict) -> int:
+    def _count_worker_shifts(self, worker_name: str, schedule: Dict, workers_data: List[Dict] = None, exclude_mandatory: bool = False) -> int:
         """
         Count total shifts assigned to a worker in the schedule.
         
         Args:
             worker_name: Name of the worker (e.g., "Worker 12" or "12")
             schedule: Schedule dictionary
+            workers_data: Optional - needed if exclude_mandatory=True
+            exclude_mandatory: If True, exclude mandatory shifts from count
             
         Returns:
             int: Number of shifts assigned to this worker
         """
         count = 0
+        mandatory_count = 0
+        mandatory_dates_str = set()
+        
+        # Get mandatory dates if needed
+        if exclude_mandatory and workers_data:
+            worker_data = next((w for w in workers_data if w.get('id') == worker_name or f"Worker {w.get('id')}" == worker_name), None)
+            if worker_data and worker_data.get('mandatory_days'):
+                mandatory_str = worker_data.get('mandatory_days', '')
+                mandatory_dates_str = set(p.strip() for p in mandatory_str.split(',') if p.strip())
+        
         try:
             for date_key, assignments in schedule.items():
+                # Check if this is a mandatory date
+                is_mandatory = False
+                if exclude_mandatory and mandatory_dates_str:
+                    try:
+                        check_date = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
+                        date_str1 = check_date.strftime('%d-%m-%Y')
+                        date_str2 = check_date.strftime('%Y-%m-%d')
+                        if date_str1 in mandatory_dates_str or date_str2 in mandatory_dates_str:
+                            is_mandatory = True
+                    except:
+                        pass
+                
                 if isinstance(assignments, dict):
                     # Dictionary format: {date: {'Morning': [workers], 'Afternoon': [workers]}}
                     for shift_type, workers in assignments.items():
                         if worker_name in workers:
-                            count += 1
+                            if is_mandatory:
+                                mandatory_count += 1
+                            else:
+                                count += 1
                 elif isinstance(assignments, list):
                     # List format: {date: [worker1, worker2, worker3]}
-                    count += assignments.count(worker_name)
+                    worker_count_here = assignments.count(worker_name)
+                    if is_mandatory:
+                        mandatory_count += worker_count_here
+                    else:
+                        count += worker_count_here
         except Exception as e:
             logging.error(f"Error counting shifts for {worker_name}: {e}")
         
-        return count
+        if exclude_mandatory:
+            return count  # Solo non-mandatory
+        return count + mandatory_count  # Total
     
     def _create_validation_report(self, validator, current_schedule: Dict) -> Dict:
         """
@@ -1955,6 +2083,30 @@ class IterativeOptimizer:
                                 if isinstance(shift_workers, list):
                                     current_shifts += shift_workers.count(worker_name)
                     
+                    # CRITICAL: Excluir mandatory del conteo para comparar con target_shifts
+                    mandatory_count = 0
+                    mandatory_str = worker_data.get('mandatory_days', '')
+                    if mandatory_str:
+                        try:
+                            mandatory_parts = [p.strip() for p in mandatory_str.split(',') if p.strip()]
+                            for d, assigns in schedule.items():
+                                try:
+                                    check_date = d if isinstance(d, datetime) else datetime.strptime(d, "%Y-%m-%d")
+                                    date_str = check_date.strftime('%d-%m-%Y')
+                                    if date_str in mandatory_parts or check_date.strftime('%Y-%m-%d') in mandatory_parts:
+                                        if isinstance(assigns, list) and worker_name in assigns:
+                                            mandatory_count += 1
+                                        elif isinstance(assigns, dict):
+                                            for shift_workers in assigns.values():
+                                                if isinstance(shift_workers, list) and worker_name in shift_workers:
+                                                    mandatory_count += 1
+                                except:
+                                    continue
+                        except Exception:
+                            pass
+                    
+                    non_mandatory_shifts = current_shifts - mandatory_count
+                    
                     # Use Phase 2 tolerance (12%) during optimization
                     # Part-time workers get adjusted tolerance (minimum 5%)
                     target_shifts = worker_data.get('target_shifts', 0)
@@ -1967,9 +2119,10 @@ class IterativeOptimizer:
                         max_shifts = round(target_shifts * (1 + adjusted_tolerance))
                         
                         # Check if adding this shift would exceed the limit
-                        if current_shifts + 1 > max_shifts:
+                        # Use non_mandatory_shifts, not current_shifts
+                        if non_mandatory_shifts + 1 > max_shifts:
                             logging.debug(f"   ❌ Tolerance violation prevented: {worker_name} "
-                                        f"would have {current_shifts + 1}/{target_shifts} shifts "
+                                        f"would have {non_mandatory_shifts + 1}/{target_shifts} shifts "
                                         f"(max: {max_shifts}, tolerance: {adjusted_tolerance*100:.1f}%)")
                             return False
             

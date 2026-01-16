@@ -254,15 +254,22 @@ class Scheduler:
                     # Si hay error de conversión, usar 100% por defecto
                     worker['work_percentage'] = 100
 
+            # Validate date formats in work_periods if present
+            if 'work_periods' in worker and worker['work_periods']:
+                try:
+                    self.date_utils.parse_date_ranges(worker['work_periods'])
+                except ValueError as e:
+                    raise SchedulerError(f"Invalid work_periods format for worker {worker['id']}: {str(e)}")
+
             # Validate date formats in mandatory_days if present
-            if 'mandatory_days' in worker:
+            if 'mandatory_days' in worker and worker['mandatory_days']:
                 try:
                     self.date_utils.parse_dates(worker['mandatory_days'])
                 except ValueError as e:
                     raise SchedulerError(f"Invalid mandatory_days format for worker {worker['id']}: {str(e)}")
 
             # Validate date formats in days_off if present
-            if 'days_off' in worker:
+            if 'days_off' in worker and worker['days_off']:
                 try:
                     self.date_utils.parse_date_ranges(worker['days_off'])
                 except ValueError as e:
@@ -841,21 +848,20 @@ class Scheduler:
                         logging.error(f"Failed to parse mandatory_days for {w['id']}: {e}")
                 adjusted = max(0, raw_target - mand_count)
                 w['target_shifts'] = adjusted
-                logging.info(
-                    f"Worker {w['id']}: target_shifts={raw_target} → {adjusted}"
-                    f"{' (−'+str(mand_count)+' mandatory)' if mand_count else ''}"
-                )
+                w['_raw_target'] = raw_target
+                w['_mandatory_count'] = mand_count
+                
+                # Enhanced logging for transparency
+                if mand_count > 0:
+                    logging.info(
+                        f"Worker {w['id']}: RAW target={raw_target}, "
+                        f"Mandatory={mand_count}, "
+                        f"Adjusted target_shifts={adjusted}, "
+                        f"TOTAL expected={raw_target} (mandatory + adjusted)"
+                    )
+                else:
+                    logging.info(f"Worker {w['id']}: target_shifts={adjusted}")
 
-            for i,w in enumerate(self.workers_data):
-                raw = targets[i]
-                mand_count = 0
-                if w.get('mandatory_days','').strip():
-                    mand_count = sum(1 for d in self.date_utils.parse_dates(w['mandatory_days'])
-                                     if self.start_date <= d <= self.end_date)
-            w['_raw_target']      = raw
-            w['_mandatory_count'] = mand_count
-            w['target_shifts']    = max(0, raw - mand_count)
-            
             return True
         
         except Exception as e:

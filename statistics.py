@@ -244,12 +244,27 @@ class StatisticsCalculator:
             worker_id: The worker's ID
         Returns:
             float: Ratio of assigned/target shifts (1.0 = perfect match)
+        
+        CRITICAL: target_shifts already has mandatory subtracted.
+        We must exclude mandatory from assignments to compare correctly.
         """
         worker = next(w for w in self.workers_data if w['id'] == worker_id)
         target = worker.get('target_shifts', 0)
         if target == 0:
             return 0
-        return len(self.worker_assignments[worker_id]) / target
+        
+        # Exclude mandatory shifts from count
+        all_assignments = self.worker_assignments.get(worker_id, set())
+        mandatory_dates = set()
+        if worker.get('mandatory_days') and hasattr(self, 'date_utils'):
+            try:
+                mandatory_dates = set(self.date_utils.parse_dates(worker['mandatory_days']))
+            except Exception:
+                pass
+        mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+        non_mandatory = len(all_assignments) - mandatory_assigned
+        
+        return non_mandatory / target
    
     def _calculate_post_rotation_coverage(self):
         """Calculate how well the post rotation is working across all workers"""
@@ -415,8 +430,18 @@ class StatisticsCalculator:
         
         for worker in self.workers_data:
             worker_id = worker['id']
-            assignments = len(self.worker_assignments[worker_id])
+            all_assignments = self.worker_assignments.get(worker_id, set())
             target = worker.get('target_shifts', 0)
+            
+            # Exclude mandatory shifts from count (target already has mandatory subtracted)
+            mandatory_dates = set()
+            if worker.get('mandatory_days') and hasattr(self, 'date_utils'):
+                try:
+                    mandatory_dates = set(self.date_utils.parse_dates(worker['mandatory_days']))
+                except Exception:
+                    pass
+            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+            assignments = len(all_assignments) - mandatory_assigned
             
             # Calculate basic satisfaction score
             if target > 0:

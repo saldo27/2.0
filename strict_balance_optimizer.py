@@ -138,13 +138,29 @@ class StrictBalanceOptimizer:
         for worker in self.workers_data:
             worker_id = worker['id']
             target = worker.get('target_shifts', 0)
-            assigned = len(self.worker_assignments.get(worker_id, set()))
-            deviation = assigned - target
+            all_assignments = self.worker_assignments.get(worker_id, set())
+            total_assigned = len(all_assignments)
+            
+            # CRITICAL: target_shifts ya tiene mandatory restados
+            # Debemos comparar con non-mandatory assigned
+            mandatory_dates = set()
+            mandatory_str = worker.get('mandatory_days', '')
+            if mandatory_str and hasattr(self.builder, 'date_utils'):
+                try:
+                    mandatory_dates = set(self.builder.date_utils.parse_dates(mandatory_str))
+                except Exception:
+                    pass
+            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+            non_mandatory_assigned = total_assigned - mandatory_assigned
+            
+            deviation = non_mandatory_assigned - target
             
             worker_details[worker_id] = {
                 'name': worker.get('name', worker_id),
                 'target': target,
-                'assigned': assigned,
+                'assigned': non_mandatory_assigned,  # Solo non-mandatory
+                'total_assigned': total_assigned,     # Total incluyendo mandatory
+                'mandatory': mandatory_assigned,
                 'deviation': deviation,
                 'work_percentage': worker.get('work_percentage', 100)
             }
@@ -178,8 +194,22 @@ class StrictBalanceOptimizer:
             if target == 0:
                 continue
             
-            assigned = len(self.worker_assignments.get(worker_id, set()))
-            deviation = assigned - target
+            all_assignments = self.worker_assignments.get(worker_id, set())
+            total_assigned = len(all_assignments)
+            
+            # CRITICAL: target_shifts ya tiene mandatory restados
+            # Debemos comparar con non-mandatory assigned
+            mandatory_dates = set()
+            mandatory_str = worker.get('mandatory_days', '')
+            if mandatory_str and hasattr(self.builder, 'date_utils'):
+                try:
+                    mandatory_dates = set(self.builder.date_utils.parse_dates(mandatory_str))
+                except Exception:
+                    pass
+            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+            non_mandatory_assigned = total_assigned - mandatory_assigned
+            
+            deviation = non_mandatory_assigned - target
             
             if deviation > tolerance:
                 # Sobrecargado: tiene más turnos de los que debería
@@ -229,6 +259,29 @@ class StrictBalanceOptimizer:
                     
                     if score == float('-inf'):
                         continue
+                    
+                    # NEW: Additional validation for monthly balance and weekends
+                    # Validate monthly balance
+                    if hasattr(self.builder, '_get_expected_monthly_target'):
+                        expected_monthly = self.builder._get_expected_monthly_target(worker_under, date.year, date.month)
+                        shifts_this_month = sum(
+                            1 for d in self.worker_assignments.get(under_id, set())
+                            if d.year == date.year and d.month == date.month
+                        )
+                        work_pct = worker_under.get('work_percentage', 100)
+                        monthly_tolerance = 1 if work_pct >= 100 else 0
+                        max_monthly = expected_monthly + monthly_tolerance
+                        
+                        if shifts_this_month + 1 > max_monthly + 1:
+                            logging.debug(f"Strict balance: {under_id} blocked by monthly limit")
+                            continue
+                    
+                    # Validate consecutive weekends
+                    if date.weekday() >= 4:  # Weekend
+                        if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
+                            if self.builder._would_exceed_weekend_limit_simulated(under_id, date, self.worker_assignments):
+                                logging.debug(f"Strict balance: {under_id} blocked by weekend limit")
+                                continue
                     
                     # Simular el cambio
                     state = self._save_state()
@@ -321,6 +374,32 @@ class StrictBalanceOptimizer:
                             score_c = self.builder._calculate_worker_score(worker_c, date_a, post_a, relaxation_level=0)
                             
                             if score_c > float('-inf'):
+                                # NEW: Additional validation for monthly balance and weekends
+                                skip_swap = False
+                                
+                                # Validate monthly balance for C
+                                if hasattr(self.builder, '_get_expected_monthly_target'):
+                                    expected_monthly = self.builder._get_expected_monthly_target(worker_c, date_a.year, date_a.month)
+                                    shifts_this_month = sum(
+                                        1 for d in self.worker_assignments.get(under_id, set())
+                                        if d.year == date_a.year and d.month == date_a.month
+                                    )
+                                    work_pct = worker_c.get('work_percentage', 100)
+                                    monthly_tolerance = 1 if work_pct >= 100 else 0
+                                    max_monthly = expected_monthly + monthly_tolerance
+                                    
+                                    if shifts_this_month + 1 > max_monthly + 1:
+                                        skip_swap = True
+                                
+                                # Validate consecutive weekends for C
+                                if not skip_swap and date_a.weekday() >= 4:
+                                    if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
+                                        if self.builder._would_exceed_weekend_limit_simulated(under_id, date_a, self.worker_assignments):
+                                            skip_swap = True
+                                
+                                if skip_swap:
+                                    continue
+                                
                                 # Intentar el swap
                                 state = self._save_state()
                                 
@@ -387,6 +466,32 @@ class StrictBalanceOptimizer:
                     score = self.builder._calculate_worker_score(worker_under, date, post, relaxation_level=0)
                     
                     if score > float('-inf'):
+                        # NEW: Additional validation for monthly balance and weekends
+                        skip_assign = False
+                        
+                        # Validate monthly balance
+                        if hasattr(self.builder, '_get_expected_monthly_target'):
+                            expected_monthly = self.builder._get_expected_monthly_target(worker_under, date.year, date.month)
+                            shifts_this_month = sum(
+                                1 for d in self.worker_assignments.get(under_id, set())
+                                if d.year == date.year and d.month == date.month
+                            )
+                            work_pct = worker_under.get('work_percentage', 100)
+                            monthly_tolerance = 1 if work_pct >= 100 else 0
+                            max_monthly = expected_monthly + monthly_tolerance
+                            
+                            if shifts_this_month + 1 > max_monthly + 1:
+                                skip_assign = True
+                        
+                        # Validate consecutive weekends
+                        if not skip_assign and date.weekday() >= 4:
+                            if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
+                                if self.builder._would_exceed_weekend_limit_simulated(under_id, date, self.worker_assignments):
+                                    skip_assign = True
+                        
+                        if skip_assign:
+                            continue
+                        
                         # Asignar
                         self.schedule[date][post] = under_id
                         self.worker_assignments.setdefault(under_id, set()).add(date)

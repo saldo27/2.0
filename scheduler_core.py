@@ -64,13 +64,13 @@ class SchedulerCore:
         
         logging.info("SchedulerCore initialized with enhanced optimization systems and tolerance validation")
     
-    def orchestrate_schedule_generation(self, max_improvement_loops: int = 70, max_complete_attempts: int = 5) -> bool:
+    def orchestrate_schedule_generation(self, max_improvement_loops: int = 70, max_complete_attempts: int = 1) -> bool:
         """
         Main orchestration method for schedule generation workflow with multiple complete attempts.
         
         Args:
             max_improvement_loops: Maximum number of improvement iterations per attempt
-            max_complete_attempts: Maximum number of complete schedule attempts (default: 5)
+            max_complete_attempts: Maximum number of complete schedule attempts (default: 1)
             
         Returns:
             bool: True if schedule generation was successful
@@ -365,8 +365,11 @@ class SchedulerCore:
                     self.scheduler.schedule_builder.worker_assignments = self.scheduler.worker_assignments
                     # CRITICAL: Restore locked mandatory shifts
                     self.scheduler.schedule_builder._locked_mandatory = copy.deepcopy(mandatory_locked)
+                    # CRITICAL: Rebuild caches to reflect new state (prevents cache staling between attempts)
+                    self.scheduler.schedule_builder._build_optimization_caches()
                     
                 logging.info(f"Restored {len(mandatory_locked)} locked mandatory shifts")
+                logging.info(f"Rebuilt schedule builder caches for fresh attempt")
                 
                 # Log state before fill
                 empty_before = sum(1 for date, shifts in self.scheduler.schedule.items() 
@@ -420,6 +423,9 @@ class SchedulerCore:
                     'workload_imbalance': workload_imbalance,
                     'weekend_imbalance': weekend_imbalance
                 })
+                
+                # CRITICAL: Export PDF for THIS attempt (to compare different initial distributions)
+                self._export_initial_attempt_pdf(attempt_num, strategy['name'])
                 
                 # Check if this is the best so far
                 if score > best_score:
@@ -1090,14 +1096,62 @@ class SchedulerCore:
             logging.error(f"❌ Error generating initial calendar PDF: {str(e)}", exc_info=True)
             logging.info("Continuing without initial PDF export")
     
+    def _export_initial_attempt_pdf(self, attempt_num: int, strategy_name: str) -> None:
+        """
+        Export PDF for a specific initial distribution attempt.
+        This allows comparing different strategies visually.
+        
+        Args:
+            attempt_num: The attempt number
+            strategy_name: Name of the strategy used
+        """
+        try:
+            # Import PDF exporter
+            from pdf_exporter import PDFExporter
+            
+            # Prepare configuration for PDF exporter
+            schedule_config = {
+                'schedule': self.scheduler.schedule,
+                'workers_data': self.scheduler.workers_data,
+                'num_shifts': self.scheduler.num_shifts,
+                'holidays': self.scheduler.holidays
+            }
+            
+            # Create exporter instance
+            pdf_exporter = PDFExporter(schedule_config)
+            
+            # Generate filename with attempt number and strategy
+            start_date = self.scheduler.start_date
+            end_date = self.scheduler.end_date
+            period_str = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            # Clean strategy name for filename
+            strategy_clean = strategy_name.replace(' ', '_').replace('(', '').replace(')', '')[:30]
+            filename = f'schedule_INITIAL_Attempt{attempt_num:02d}_{strategy_clean}_{timestamp}.pdf'
+            
+            # Export all months to single PDF (landscape A4, one month per page)
+            result_file = pdf_exporter.export_all_months_calendar(filename=filename)
+            
+            if result_file:
+                logging.info(f"✅ Attempt {attempt_num} PDF exported: {result_file}")
+            else:
+                logging.warning(f"⚠️  Attempt {attempt_num} PDF export returned no file")
+            
+        except ImportError:
+            # Skip PDF export if module not available (only log once at first call)
+            pass
+        except Exception as e:
+            logging.warning(f"⚠️  Could not export PDF for attempt {attempt_num}: {str(e)}")
+    
     def _select_distribution_strategy(self, attempt_num: int, total_attempts: int) -> Dict[str, Any]:
         """
-        Select a distribution strategy for this attempt.
+        Select a distribution strategy for this attempt with TRUE variance.
         
-        Different strategies vary in:
-        - Worker ordering (random, balanced, sequential)
-        - Random seed
-        - Priority criteria
+        CRITICAL: Each strategy must produce MATERIALLY DIFFERENT initial schedules.
+        Strategies include:
+        - Different random seeds (ensures different slot choices)
+        - Different worker ordering (changes priority of workers)
+        - Combination approaches
         
         Args:
             attempt_num: Current attempt number (1-indexed)
@@ -1107,75 +1161,86 @@ class SchedulerCore:
             Dict with strategy configuration
         """
         strategies = [
+            # Different tiebreaker strategies - ensures variance when scores are equal
             {
-                'name': 'Balanced Sequential',
+                'name': 'Alphabetical A-Z Tiebreaker',
                 'worker_order': 'balanced',
                 'randomize': False,
                 'seed': None,
-                'description': 'Workers ordered by workload balance, deterministic assignment'
+                'tiebreaker': 'alphabetical_asc',
+                'description': 'When scores tie, prefer A-Z order'
             },
             {
-                'name': 'Random Seed A',
-                'worker_order': 'random',
-                'randomize': True,
-                'seed': 42 + attempt_num,
-                'description': 'Random worker order with specific seed for reproducibility'
+                'name': 'Alphabetical Z-A Tiebreaker',
+                'worker_order': 'balanced',
+                'randomize': False,
+                'seed': None,
+                'tiebreaker': 'alphabetical_desc',
+                'description': 'When scores tie, prefer Z-A order'
             },
             {
-                'name': 'Sequential by ID',
+                'name': f'Random Tiebreaker (Seed {1000 + attempt_num})',
+                'worker_order': 'balanced',
+                'randomize': False,
+                'seed': 1000 + attempt_num,
+                'tiebreaker': 'random',
+                'description': 'When scores tie, choose randomly'
+            },
+            {
+                'name': 'Sequential with A-Z Ties',
                 'worker_order': 'sequential',
                 'randomize': False,
                 'seed': None,
-                'description': 'Workers processed in ID order, deterministic'
+                'tiebreaker': 'alphabetical_asc',
+                'description': 'Sequential order with A-Z tiebreaker'
             },
             {
-                'name': 'Random Seed B',
-                'worker_order': 'random',
-                'randomize': True,
-                'seed': 100 + attempt_num * 7,
-                'description': 'Different random seed for variation'
-            },
-            {
-                'name': 'Reverse Sequential',
+                'name': 'Reverse with Z-A Ties',
                 'worker_order': 'reverse',
                 'randomize': False,
                 'seed': None,
-                'description': 'Workers processed in reverse ID order'
+                'tiebreaker': 'alphabetical_desc',
+                'description': 'Reverse order with Z-A tiebreaker'
             },
             {
-                'name': 'Random Seed C',
-                'worker_order': 'random',
-                'randomize': True,
-                'seed': 200 + attempt_num * 13,
-                'description': 'Another random variation'
-            },
-            {
-                'name': 'Workload Priority',
+                'name': f'Workload Priority + Random (Seed {2000 + attempt_num * 11})',
                 'worker_order': 'workload',
                 'randomize': False,
-                'seed': None,
-                'description': 'Prioritize workers with fewer assignments'
+                'seed': 2000 + attempt_num * 11,
+                'tiebreaker': 'random',
+                'description': 'Workload priority with random tiebreaker'
             },
             {
-                'name': 'Random Seed D',
-                'worker_order': 'random',
-                'randomize': True,
-                'seed': 300 + attempt_num * 17,
-                'description': 'Yet another random variation'
-            },
-            {
-                'name': 'Alternating Pattern',
+                'name': 'Alternating with A-Z Ties',
                 'worker_order': 'alternating',
                 'randomize': False,
                 'seed': None,
-                'description': 'Alternate between high and low workload workers'
+                'tiebreaker': 'alphabetical_asc',
+                'description': 'Alternating pattern with A-Z tiebreaker'
             },
             {
-                'name': 'Random Seed E',
+                'name': f'Random Order + Random Ties (Seed {3000 + attempt_num * 23})',
                 'worker_order': 'random',
                 'randomize': True,
-                'seed': 400 + attempt_num * 23,
-                'description': 'Final random variation'
+                'seed': 3000 + attempt_num * 23,
+                'tiebreaker': 'random',
+                'description': 'Fully randomized worker order and tiebreaker'
+            },
+            {
+                'name': 'Balanced with Z-A Ties',
+                'worker_order': 'balanced',
+                'randomize': False,
+                'seed': None,
+                'tiebreaker': 'alphabetical_desc',
+                'description': 'Balanced workload with Z-A tiebreaker'
+            },
+            {
+                'name': f'Random Order + A-Z Ties (Seed {4000 + attempt_num * 37})',
+                'worker_order': 'random',
+                'randomize': True,
+                'seed': 4000 + attempt_num * 37,
+                'tiebreaker': 'alphabetical_asc',
+                'description': 'Random order but alphabetical tiebreaker'
             }
         ]
         
@@ -1188,15 +1253,32 @@ class SchedulerCore:
         Perform initial schedule fill using the specified strategy.
         
         Args:
-            strategy: Strategy configuration dictionary
+            strategy: Strategy configuration dictionary including tiebreaker strategy
             
         Returns:
             bool: True if fill was successful
         """
         try:
-            # Set random seed if specified
+            # Set tiebreaker strategy in schedule_builder
+            tiebreaker = strategy.get('tiebreaker', 'alphabetical_asc')
+            self.scheduler.schedule_builder.tiebreaker_strategy = tiebreaker
+            logging.info(f"🎯 Strategy: {strategy['name']}")
+            logging.info(f"📊 Worker Order: {strategy['worker_order']}")
+            logging.info(f"🔀 Tiebreaker Strategy: {tiebreaker}")
+            
+            # Set random seed FIRST and MULTIPLE TIMES to ensure complete randomness reset
+            # This prevents stale random state from previous attempts
             if strategy.get('seed') is not None:
-                random.seed(strategy['seed'])
+                seed_value = strategy['seed']
+                random.seed(seed_value)
+                logging.info(f"🔢 Random Seed: {seed_value}")
+            else:
+                # For non-random strategies, use a predictable but different seed each time
+                # to ensure varied behavior between attempts
+                import time
+                seed_value = int((time.time() * 1000000) % 10000)
+                random.seed(seed_value)
+                logging.info(f"Set deterministic seed to {seed_value} for strategy '{strategy['name']}'")
             
             # Get worker list based on strategy
             workers_list = self._get_ordered_workers_list(strategy['worker_order'])
