@@ -1,6 +1,6 @@
 ================================================================================
                     GuardiasApp - Aplicación para Distribución de Guardias
-                                  Versión 2.0
+                                  Versión 2.1
 ================================================================================
 
 DESCRIPCIÓN:
@@ -121,8 +121,8 @@ issues en GitHub o contactar por email.
 CRÉDITOS:
 ---------
 Desarrollado por:  Luis Herrera Para
-Versión: 2.0
-Fecha:  Diciembre 2025
+Versión: 2.1
+Fecha:  Enero 2026
 
 COPYRIGHT:
 ----------
@@ -130,6 +130,16 @@ COPYRIGHT:
 
 HISTORIAL DE VERSIONES:
 ------------------------
+v2.1 (Enero 2026):
+- Interfaz mejorada de Gestión de Médicos
+- Funcionalidad de edición de trabajadores con carga automática de datos
+- Campo reactivo "Guardias/mes" que aparece/desaparece dinámicamente
+- Modo automático vs manual para cálculo de guardias
+- Mejor manejo de session_state en Streamlit
+- Validación mejorada de formularios
+- Soporte para períodos personalizados por trabajador
+- Gestión completa de incompatibilidades (global o individual)
+
 v2.0 (Dic 2025):
 - Interfaz Streamlit moderna
 - Sistema de licencias DEMO

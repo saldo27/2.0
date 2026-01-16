@@ -1246,44 +1246,98 @@ with tab1:
     with col1:
         st.subheader("Agregar/Editar Médico")
         
-        with st.form("worker_form"):
-            worker_id = st.text_input("ID del Médico *", placeholder="Ej: TRAB001")
+        # Inicializar buffers si no existen (para evitar que muestren None)
+        if "work_periods_buffer" not in st.session_state:
+            st.session_state.work_periods_buffer = ""
+        if "mandatory_dates_buffer" not in st.session_state:
+            st.session_state.mandatory_dates_buffer = ""
+        if "days_off_buffer" not in st.session_state:
+            st.session_state.days_off_buffer = ""
+        
+        # Mostrar indicador si estamos en modo edición
+        if st.session_state.get("editing_worker"):
+            st.info(f"✏️ **Modo edición:** Editando a {st.session_state.get('editing_worker')}")
+            # Inicializar el ID con el buffer
+            if "worker_id_buffer" in st.session_state and st.session_state.worker_id_buffer:
+                st.session_state.worker_id_input = st.session_state.worker_id_buffer
+        
+        # ID del Médico - FUERA DEL FORM para acceso global
+        st.markdown("**👤 Identificación**")
+        worker_id = st.text_input(
+            "ID del Médico *",
+            placeholder="Ej: TRAB001",
+            key="worker_id_input"
+        )
+        
+        # Número de Guardias - FUERA DEL FORM para REACTIVIDAD
+        st.markdown("**📊 Número de Guardias**")
+        
+        # Inicializar auto_calc_checkbox con buffer si estamos editando
+        if st.session_state.get("editing_worker") and "auto_calc_buffer" in st.session_state:
+            st.session_state.auto_calc_checkbox = st.session_state.auto_calc_buffer
+        
+        col_guards_a, col_guards_b = st.columns(2)
+        with col_guards_a:
+            auto_calculate = st.checkbox(
+                "Calcular automáticamente",
+                key="auto_calc_checkbox",
+                help="El sistema calculará la asignación según el período y porcentaje"
+            )
+        with col_guards_b:
+            # Inicializar guardias_mes_input con buffer si estamos editando
+            if st.session_state.get("editing_worker") and "guardias_mes_buffer" in st.session_state:
+                st.session_state.guardias_mes_input = st.session_state.guardias_mes_buffer
             
-            # Información básica
+            if not auto_calculate:
+                guardias_per_month = st.number_input(
+                    "Guardias/mes", 
+                    min_value=0, 
+                    key="guardias_mes_input",
+                    help="Número de guardias por mes (constraint para el período)"
+                )
+            else:
+                st.info("ℹ️ Se calcularán automáticamente")
+                guardias_per_month = 0
+        
+        # IMPORTANTE: Inicializar los valores del form con los buffers ANTES de renderizar el form
+        if st.session_state.get("editing_worker"):
+            # Si estamos editando, cargar los buffers en las keys del form
+            if "work_percentage_buffer" in st.session_state and st.session_state.work_percentage_buffer:
+                st.session_state.slider_work_percentage_form = int(st.session_state.work_percentage_buffer)
+            if "work_periods_buffer" in st.session_state and st.session_state.work_periods_buffer:
+                st.session_state.work_periods_textarea = st.session_state.work_periods_buffer
+            if "mandatory_dates_buffer" in st.session_state and st.session_state.mandatory_dates_buffer:
+                st.session_state.form_mandatory_dates_area = st.session_state.mandatory_dates_buffer
+            if "days_off_buffer" in st.session_state and st.session_state.days_off_buffer:
+                st.session_state.form_days_off_area = st.session_state.days_off_buffer
+            if "incompatible_buffer" in st.session_state:
+                st.session_state.is_incompatible_checkbox = st.session_state.incompatible_buffer
+            if "incompatible_with_buffer" in st.session_state and st.session_state.incompatible_with_buffer:
+                st.session_state.incompatible_with_multiselect = st.session_state.incompatible_with_buffer
+        
+        with st.form("worker_form"):
+            # El ID lo pasamos desde session_state
+            # Porcentaje de Jornada
             st.markdown("**📋 Información Básica**")
             col_a, col_b = st.columns(2)
             with col_a:
                 work_percentage = st.slider(
                     "Porcentaje de Jornada", 
-                    0, 100, 100,
+                    0, 100, 
+                    step=1,
+                    key="slider_work_percentage_form",
                     help="100% = tiempo completo, 50% = media jornada"
                 )
             with col_b:
-                # Calcular turnos objetivo automáticamente
-                auto_calculate = st.checkbox(
-                    "Calcular guardias automáticamente",
-                    value=True,
-                    help="El sistema calculará la asignación según el período y porcentaje"
-                )
+                st.write("")  # Espaciador
             
-            if not auto_calculate:
-                target_shifts = st.number_input(
-                    "Guardias objetivo (manual)", 
-                    min_value=0, 
-                    value=100,
-                    help="Especificar manualmente el número de guardias"
-                )
-            else:
-                st.info("ℹ️ Las guardias se calcularán automáticamente según el período configurado")
-                target_shifts = 0  # Se calculará después
-            
-            # Períodos de trabajo personalizados (actualizado para soportar múltiples rangos)
+            # Períodos de Trabajo
             st.markdown("**📅 ¿Sus Períodos de Trabajo difieren del general?**")
             work_periods = st.text_area(
                 "Rangos de fechas disponibles (uno por línea o separados por punto y coma)",
-                value=st.session_state.get('form_work_periods', ''),
                 placeholder="01-01-2026 - 31-03-2026; 01-06-2026 - 31-12-2026",
-                help="Formato: DD-MM-YYYY - DD-MM-YYYY. Si se deja vacío, se asume disponibilidad total en el período global."
+                help="Formato: DD-MM-YYYY - DD-MM-YYYY. Si se deja vacío, se asume disponibilidad total en el período global.",
+                key="work_periods_textarea"
             )
             
             # Incompatibilidades (actualizado a multiselect)
@@ -1292,20 +1346,23 @@ with tab1:
             with col_inc1:
                 is_incompatible = st.checkbox(
                     "Incompatible con todos los marcados",
-                    help="Este médico no puede coincidir con otros marcados igual"
+                    help="Este médico no puede coincidir con otros marcados igual",
+                    key="is_incompatible_checkbox"
                 )
             with col_inc2:
                 # Obtener lista de otros médicos para el multiselect
                 existing_ids = [w['id'] for w in st.session_state.workers_data if w['id'] != worker_id]
                 
-                # Intentar recuperar valores previos si existen
-                default_incomp = []
+                # Cargar valores previos si están en edición
+                default_incomp = st.session_state.get("incompatible_with_buffer", st.session_state.get("incompatible_with", []))
                 
                 incompatible_with = st.multiselect(
                     "Incompatible con IDs específicos",
                     options=existing_ids,
+                    default=default_incomp,
                     disabled=is_incompatible,
-                    help="Seleccione los médicos con los que NO puede coincidir"
+                    help="Seleccione los médicos con los que NO puede coincidir",
+                    key="incompatible_with_multiselect"
                 )
             
             # Días obligatorios
@@ -1314,7 +1371,8 @@ with tab1:
                 "Fechas obligatorias (una por línea o separadas por punto y coma)",
                 placeholder="01-12-2026; 15-12-2026; 25-12-2026",
                 height=80,
-                help="Días en los que DEBE trabajar obligatoriamente"
+                help="Días en los que DEBE trabajar obligatoriamente",
+                key="form_mandatory_dates_area"
             )
             
             # Días fuera (nueva funcionalidad)
@@ -1323,75 +1381,128 @@ with tab1:
                 "Fechas no disponibles (una por línea o separadas por punto y coma)",
                 placeholder="10-12-2026; 20-12-2026; 30-12-2026",
                 height=80,
-                help="Días en los que NO puede tener asignación de guardias (vacaciones, permisos, etc.)"
+                help="Días en los que NO puede tener asignación de guardias (vacaciones, permisos, etc.)",
+                key="form_days_off_area"
             )
             
             col_submit, col_clear = st.columns(2)
             with col_submit:
-                submit = st.form_submit_button("➕ Agregar Médico", type="primary")
+                # Cambiar texto del botón según modo edición
+                is_editing = st.session_state.get("editing_worker") is not None
+                button_label = "✏️ Actualizar Médico" if is_editing else "➕ Agregar Médico"
+                submit = st.form_submit_button(button_label, type="primary")
             with col_clear:
-                clear = st.form_submit_button("🗑️ Limpiar")
+                clear = st.form_submit_button("🗑️ Limpiar Formulario")
             
-            if submit and worker_id:
-                # Parsear incompatibilidades
-                incomp_list = []
-                if not is_incompatible and incompatible_with:
-                    incomp_list = incompatible_with
+            if submit:
+                # Obtener worker_id desde session_state (FUERA DEL FORM)
+                form_worker_id = st.session_state.get("worker_id_input", "").strip()
                 
-                # Parsear días obligatorios
-                mandatory_list = []
-                if mandatory_dates:
-                    # Normalizar separadores
-                    dates_str = mandatory_dates.replace('\n', ';').replace(',', ';')
-                    parts = [x.strip() for x in dates_str.split(';') if x.strip()]
-                    worker_data_mandatory = ';'.join(parts) # Guardar como string normalizado
+                if not form_worker_id:
+                    st.error("❌ ID del Médico es obligatorio")
                 else:
-                    worker_data_mandatory = ""
-                
-                # Parsear días fuera
-                if days_off:
-                    dates_str = days_off.replace('\n', ';').replace(',', ';')
-                    parts = [x.strip() for x in dates_str.split(';') if x.strip()]
-                    worker_data_days_off = ';'.join(parts)
-                else:
-                    worker_data_days_off = ""
+                    # Detectar si estamos editando
+                    is_editing = st.session_state.get("editing_worker") is not None
+                    # Parsear incompatibilidades
+                    incomp_list = []
+                    if not is_incompatible and incompatible_with:
+                        incomp_list = incompatible_with
+                    
+                    # Parsear días obligatorios
+                    mandatory_list = []
+                    if mandatory_dates:
+                        # Normalizar separadores
+                        dates_str = mandatory_dates.replace('\n', ';').replace(',', ';')
+                        parts = [x.strip() for x in dates_str.split(';') if x.strip()]
+                        worker_data_mandatory = ';'.join(parts) # Guardar como string normalizado
+                    else:
+                        worker_data_mandatory = ""
+                    
+                    # Parsear días fuera
+                    if days_off:
+                        dates_str = days_off.replace('\n', ';').replace(',', ';')
+                        parts = [x.strip() for x in dates_str.split(';') if x.strip()]
+                        worker_data_days_off = ';'.join(parts)
+                    else:
+                        worker_data_days_off = ""
 
-                # Parsear work periods
-                if work_periods:
-                    dates_str = work_periods.replace('\n', ';')
-                    parts = [x.strip() for x in dates_str.split(';') if x.strip()]
-                    worker_data_work_periods = ';'.join(parts)
-                else:
-                    worker_data_work_periods = ""
-                
-                # Crear/actualizar trabajador
-                worker_data = {
-                    'id': worker_id,
-                    'target_shifts': target_shifts,
-                    'work_percentage': work_percentage,       # Corrected: Scale 0-100, not 0-1
-                    'is_incompatible': is_incompatible,
-                    'incompatible_with': incomp_list,
-                    'mandatory_days': worker_data_mandatory,  # Renamed to match scheduler and used string
-                    'days_off': worker_data_days_off,         # New field
-                    'work_periods': worker_data_work_periods, # New field
-                    'auto_calculate_shifts': auto_calculate
-                }
-                
-                  
-                # Verificar si ya existe
-                existing_idx = None
-                for idx, w in enumerate(st.session_state.workers_data):
-                    if w['id'] == worker_id:
-                        existing_idx = idx
-                        break
-                
-                if existing_idx is not None:
-                    st.session_state.workers_data[existing_idx] = worker_data
-                    st.success(f"✅ Médico {worker_id} actualizado")
-                else:
-                    st.session_state.workers_data.append(worker_data)
-                    st.success(f"✅ Médico {worker_id} agregado")
-                
+                    # Parsear work periods
+                    if work_periods:
+                        dates_str = work_periods.replace('\n', ';')
+                        parts = [x.strip() for x in dates_str.split(';') if x.strip()]
+                        worker_data_work_periods = ';'.join(parts)
+                    else:
+                        worker_data_work_periods = ""
+                    
+                    # Obtener auto_calculate del session state (FUERA DEL FORM)
+                    auto_calculate_flag = st.session_state.get("auto_calc_checkbox", True)
+                    work_percentage_value = st.session_state.get("slider_work_percentage_form", 100)
+                    
+                    # Obtener target_shifts según el flag
+                    if not auto_calculate_flag:
+                        # Usar el valor del input de "Guardias/mes" (FUERA DEL FORM)
+                        target_shifts_value = st.session_state.get("guardias_mes_input", 4)
+                    else:
+                        # Será calculado automáticamente
+                        target_shifts_value = 0
+                    
+                    # Crear/actualizar trabajador
+                    worker_data = {
+                        'id': form_worker_id,
+                        'target_shifts': target_shifts_value,
+                        'work_percentage': work_percentage_value,       # Corrected: Scale 0-100, not 0-1
+                        'is_incompatible': is_incompatible,
+                        'incompatible_with': incomp_list,
+                        'mandatory_days': worker_data_mandatory,  # Renamed to match scheduler and used string
+                        'days_off': worker_data_days_off,         # New field
+                        'work_periods': worker_data_work_periods, # New field
+                        'auto_calculate_shifts': auto_calculate_flag
+                    }
+                    
+                      
+                    # Verificar si ya existe
+                    existing_idx = None
+                    for idx, w in enumerate(st.session_state.workers_data):
+                        if w['id'] == form_worker_id:
+                            existing_idx = idx
+                            break
+                    
+                    if existing_idx is not None:
+                        st.session_state.workers_data[existing_idx] = worker_data
+                        st.success(f"✅ Médico {form_worker_id} actualizado")
+                    else:
+                        st.session_state.workers_data.append(worker_data)
+                        st.success(f"✅ Médico {form_worker_id} agregado")
+                    
+                    # Limpiar estado de edición y formulario
+                    st.session_state.editing_worker = None
+                    # Limpiar buffers
+                    st.session_state.worker_id_buffer = ""
+                    st.session_state.work_percentage_buffer = 100
+                    st.session_state.auto_calc_buffer = True
+                    st.session_state.guardias_mes_buffer = 4
+                    st.session_state.work_periods_buffer = ""
+                    st.session_state.incompatible_buffer = False
+                    st.session_state.incompatible_with_buffer = []
+                    st.session_state.mandatory_dates_buffer = ""
+                    st.session_state.days_off_buffer = ""
+                    
+                    st.rerun()
+            
+            if clear:
+                # Limpiar todos los campos
+                st.session_state.editing_worker = None
+                # Limpiar buffers
+                st.session_state.worker_id_buffer = ""
+                st.session_state.work_percentage_buffer = 100
+                st.session_state.auto_calc_buffer = True
+                st.session_state.guardias_mes_buffer = 4
+                st.session_state.work_periods_buffer = ""
+                st.session_state.incompatible_buffer = False
+                st.session_state.incompatible_with_buffer = []
+                st.session_state.mandatory_dates_buffer = ""
+                st.session_state.days_off_buffer = ""
+                st.success("✅ Formulario limpiado")
                 st.rerun()
     
     with col2:
@@ -1435,7 +1546,8 @@ with tab1:
             if worker.get('auto_calculate_shifts', True):
                 title = f"👤 {worker['id']} - Objetivo: 🔄 Automático ({worker.get('work_percentage', 1):.0f}%)"
             else:
-                title = f"👤 {worker['id']} - Objetivo: {worker.get('target_shifts', 0)} turnos (manual)"
+                guardias_mes = worker.get('target_shifts', 0)
+                title = f"👤 {worker['id']} - Constraint: {guardias_mes} guardias/mes"
             
             with st.expander(title):
                 col_info, col_actions = st.columns([3, 1])
@@ -1448,7 +1560,7 @@ with tab1:
                     if worker.get('auto_calculate_shifts', True):
                         st.write(f"**🔄 Guardias objetivo:** Se calculará automáticamente según el período")
                     else:
-                        st.write(f"**🎯 Guardias objetivo:** {worker.get('target_shifts', 0)} (configurado manualmente)")
+                        st.write(f"**📊 Constraint:** {worker.get('target_shifts', 0)} guardias/mes (calculado para todo el período)")
                     
                     # Período personalizado
                     if worker.get('custom_start_date') or worker.get('custom_end_date'):
@@ -1481,10 +1593,53 @@ with tab1:
                             st.write(f"   {', '.join(worker['days_off'][:5])} ... y {days_off_count-5} más")
                 
                 with col_actions:
-                    if st.button("🗑️ Eliminar", key=f"del_{idx}"):
-                        st.session_state.workers_data.pop(idx)
-                        st.success(f"✅ {worker['id']} eliminado")
-                        st.rerun()
+                    col_edit, col_del = st.columns(2)
+                    with col_edit:
+                        if st.button("✏️ Editar", key=f"edit_{idx}"):
+                            # Cargar datos del trabajador en session_state para edición
+                            # Usar claves _buffer para evitar conflicto con widgets existentes
+                            st.session_state.worker_id_buffer = worker['id']
+                            st.session_state.work_percentage_buffer = worker.get('work_percentage', 100)
+                            st.session_state.auto_calc_buffer = worker.get('auto_calculate_shifts', True)
+                            
+                            # Guardias/mes si no es automático
+                            if not worker.get('auto_calculate_shifts', True):
+                                st.session_state.guardias_mes_buffer = worker.get('target_shifts', 4)
+                            
+                            # Parsear work_periods de string a formato normal
+                            work_periods_str = worker.get('work_periods', '')
+                            if work_periods_str:
+                                st.session_state.work_periods_buffer = work_periods_str.replace(';', '\n')
+                            else:
+                                st.session_state.work_periods_buffer = ''
+                            
+                            # Incompatibilidades
+                            st.session_state.incompatible_buffer = worker.get('is_incompatible', False)
+                            st.session_state.incompatible_with_buffer = worker.get('incompatible_with', [])
+                            
+                            # Días obligatorios
+                            mandatory_days_str = worker.get('mandatory_days', '')
+                            if mandatory_days_str:
+                                st.session_state.mandatory_dates_buffer = mandatory_days_str.replace(';', '\n')
+                            else:
+                                st.session_state.mandatory_dates_buffer = ''
+                            
+                            # Días fuera
+                            days_off_str = worker.get('days_off', '')
+                            if days_off_str:
+                                st.session_state.days_off_buffer = days_off_str.replace(';', '\n')
+                            else:
+                                st.session_state.days_off_buffer = ''
+                            
+                            # Establecer modo de edición
+                            st.session_state.editing_worker = worker['id']
+                            st.rerun()
+                    
+                    with col_del:
+                        if st.button("🗑️ Eliminar", key=f"del_{idx}"):
+                            st.session_state.workers_data.pop(idx)
+                            st.success(f"✅ {worker['id']} eliminado")
+                            st.rerun()
     else:
         st.info("ℹ️ No hay trabajadores configurados. Agregue trabajadores usando el formulario arriba.")
 

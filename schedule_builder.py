@@ -1569,12 +1569,16 @@ class ScheduleBuilder:
             worker: The worker to evaluate
             date: The date to assign
             post: The post number to assign
-            relaxation_level: Level of constraint relaxation (0=strict, 1=moderate, 2=lenient)
+            relaxation_level: Level of constraint relaxation (0=strict, 1=moderate)
+                             Note: Level 2+ disabled to preserve monthly/weekend balance
     
         Returns:
             float: Score for this worker-date-post combination, higher is better
                   Returns float('-inf') if assignment is invalid
         """
+        # Cap relaxation level at 1 to prevent balance issues
+        relaxation_level = min(relaxation_level, 1)
+        
         try:
             worker_id = worker['id']
             
@@ -1993,8 +1997,12 @@ class ScheduleBuilder:
         Args:
             date: The date to assign
             post: The post number to assign
-            relaxation_level: Level of constraint relaxation (0=strict, 1=moderate, 2=lenient)
+            relaxation_level: Level of constraint relaxation (0=strict, 1=moderate)
+                             Note: Level 2+ disabled to preserve monthly/weekend balance
         """
+        # Cap relaxation level at 1 to prevent balance issues
+        relaxation_level = min(relaxation_level, 1)
+        
         candidates = []
         logging.debug(f"Looking for candidates for {date.strftime('%d-%m-%Y')}, post {post}")
 
@@ -2357,9 +2365,10 @@ class ScheduleBuilder:
             assigned_this_post_pass1 = False
             
             # Iterate through relaxation levels for direct fill
-            # Max relaxation level can be a config, e.g., self.scheduler.config.get('max_direct_fill_relaxation', 3)
-            # For now, let's assume up to 2 (0, 1, 2)
-            for relax_lvl_attempt in range(3): 
+            # Max relaxation level limited to 1 to preserve monthly and weekend balance
+            # Level 0 = strict, Level 1 = moderate (slight gap reduction only)
+            # Level 2+ disabled to prevent balance issues
+            for relax_lvl_attempt in range(2):  # Only 0 and 1 
                 pass1_candidates = []
                 logging.debug(f"  [Pass 1 Attempt] Date: {date_val.strftime('%Y-%m-%d')}, Post: {post_val}, Relaxation Level: {relax_lvl_attempt}")
 
@@ -4632,6 +4641,180 @@ class ScheduleBuilder:
                 
                 changes += 1
                 logging.info(f"Stole shift on {date.strftime('%Y-%m-%d')} from {overloaded_id} to {underloaded_worker_id}")
+        
+        # Si no logramos robar suficientes turnos directamente, intentar a 3 bandas
+        if changes < shifts_needed:
+            three_way_changes = self._try_steal_three_way(
+                underloaded_worker_id, 
+                shifts_needed - changes, 
+                overloaded_workers
+            )
+            changes += three_way_changes
+        
+        return changes
+    
+    def _try_steal_three_way(self, underloaded_worker_id, shifts_needed, overloaded_workers):
+        """
+        Intenta "robar" turnos usando un intermediario cuando el robo directo no es posible.
+        
+        Patrón: A (sobrecargado) → C (intermediario equilibrado) → B (subcargado)
+        - A tiene turno en fecha_A que no puede dar directamente a B
+        - C (equilibrado) puede tomar el turno de A en fecha_A
+        - C tiene un turno en fecha_C que puede dar a B
+        - Resultado: A -1, C igual, B +1
+        
+        CONSTRAINTS VERIFIED:
+        - _can_assign_worker: days off, incompatibilities, gap, 7/14 pattern, weekend limits
+        - _would_violate_tolerance: ±12% global tolerance
+        - _violates_7_14_pattern: same weekday pattern
+        - _check_incompatibility_with_list: incompatibilities with others on date
+        - _would_exceed_monthly_limit: monthly balance
+        - _would_imbalance_weekends: weekend distribution
+        """
+        changes = 0
+        underloaded_worker = next((w for w in self.workers_data if w['id'] == underloaded_worker_id), None)
+        if not underloaded_worker:
+            return 0
+        
+        # Obtener trabajadores equilibrados que puedan servir de intermediarios
+        intermediaries = []
+        for worker in self.workers_data:
+            w_id = worker['id']
+            if w_id == underloaded_worker_id:
+                continue
+            
+            target = worker.get('target_shifts', 0)
+            if target <= 0:
+                continue
+            
+            # Calcular desviación actual
+            all_assignments = self.worker_assignments.get(w_id, set())
+            mandatory_dates = set()
+            if worker.get('mandatory_days'):
+                try:
+                    mandatory_dates = set(self.date_utils.parse_dates(worker['mandatory_days']))
+                except:
+                    pass
+            non_mandatory = len(all_assignments) - sum(1 for d in all_assignments if d in mandatory_dates)
+            deviation = non_mandatory - target
+            
+            # Solo intermediarios equilibrados o ligeramente positivos (-1 a +2)
+            if -1 <= deviation <= 2:
+                intermediaries.append((w_id, worker, deviation))
+        
+        # Ordenar por desviación (preferir los más cercanos a 0)
+        intermediaries.sort(key=lambda x: abs(x[2]))
+        
+        for overloaded_id, excess, _, _, _ in overloaded_workers:
+            if changes >= shifts_needed:
+                break
+            if excess <= 0:
+                continue
+            
+            # Turnos del sobrecargado que podría ceder
+            overloaded_assignments = list(self.worker_assignments.get(overloaded_id, []))
+            random.shuffle(overloaded_assignments)
+            
+            for date_a in overloaded_assignments[:15]:
+                if changes >= shifts_needed:
+                    break
+                
+                if not self._can_modify_assignment(overloaded_id, date_a, "three_way_steal"):
+                    continue
+                
+                try:
+                    post_a = self.schedule[date_a].index(overloaded_id)
+                except (ValueError, KeyError):
+                    continue
+                
+                # Intentar con cada intermediario
+                for c_id, worker_c, c_dev in intermediaries[:10]:
+                    if c_id == overloaded_id:
+                        continue
+                    
+                    # C ya trabaja en date_a?
+                    if c_id in self.schedule.get(date_a, []):
+                        continue
+                    
+                    # C puede tomar el turno de A en date_a?
+                    if not self._can_assign_worker(c_id, date_a, post_a):
+                        continue
+                    
+                    if self._would_violate_tolerance(c_id, date_a, allow_relaxation=True):
+                        continue
+                    
+                    if self._violates_7_14_pattern(c_id, date_a):
+                        continue
+                    
+                    others_a = [w for idx, w in enumerate(self.schedule.get(date_a, [])) 
+                               if w is not None and idx != post_a and w != overloaded_id]
+                    if not self._check_incompatibility_with_list(c_id, others_a):
+                        continue
+                    
+                    # Buscar un turno de C que pueda dar a B
+                    c_assignments = list(self.worker_assignments.get(c_id, []))
+                    random.shuffle(c_assignments)
+                    
+                    for date_c in c_assignments[:15]:
+                        if date_c == date_a:
+                            continue
+                        
+                        if not self._can_modify_assignment(c_id, date_c, "three_way_intermediary"):
+                            continue
+                        
+                        try:
+                            post_c = self.schedule[date_c].index(c_id)
+                        except (ValueError, KeyError):
+                            continue
+                        
+                        # B ya trabaja en date_c?
+                        if underloaded_worker_id in self.schedule.get(date_c, []):
+                            continue
+                        
+                        # B puede tomar el turno de C en date_c?
+                        if not self._can_assign_worker(underloaded_worker_id, date_c, post_c):
+                            continue
+                        
+                        if self._would_violate_tolerance(underloaded_worker_id, date_c, allow_relaxation=True):
+                            continue
+                        
+                        if self._violates_7_14_pattern(underloaded_worker_id, date_c):
+                            continue
+                        
+                        others_c = [w for idx, w in enumerate(self.schedule.get(date_c, [])) 
+                                   if w is not None and idx != post_c and w != c_id]
+                        if not self._check_incompatibility_with_list(underloaded_worker_id, others_c):
+                            continue
+                        
+                        if self._would_exceed_monthly_limit(underloaded_worker_id, date_c):
+                            continue
+                        
+                        if self._would_imbalance_weekends(underloaded_worker_id, date_c, c_id):
+                            continue
+                        
+                        # ¡Intercambio válido a 3 bandas!
+                        # Paso 1: A pierde turno en date_a, C lo toma
+                        self.schedule[date_a][post_a] = c_id
+                        self.worker_assignments[overloaded_id].remove(date_a)
+                        self.worker_assignments.setdefault(c_id, set()).add(date_a)
+                        
+                        # Paso 2: C pierde turno en date_c, B lo toma
+                        self.schedule[date_c][post_c] = underloaded_worker_id
+                        self.worker_assignments[c_id].remove(date_c)
+                        self.worker_assignments.setdefault(underloaded_worker_id, set()).add(date_c)
+                        
+                        # Actualizar tracking
+                        self.scheduler._update_tracking_data(overloaded_id, date_a, post_a, removing=True)
+                        self.scheduler._update_tracking_data(c_id, date_a, post_a)
+                        self.scheduler._update_tracking_data(c_id, date_c, post_c, removing=True)
+                        self.scheduler._update_tracking_data(underloaded_worker_id, date_c, post_c)
+                        
+                        changes += 1
+                        logging.info(f"Three-way steal: {overloaded_id}({date_a.strftime('%m-%d')})→{c_id}→{underloaded_worker_id}({date_c.strftime('%m-%d')})")
+                        break  # Encontramos uno, salir del loop de c_assignments
+                    
+                    if changes >= shifts_needed:
+                        break  # Ya tenemos suficientes
         
         return changes
     

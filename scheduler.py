@@ -775,92 +775,131 @@ class Scheduler:
     def _calculate_target_shifts(self):
         """
         Recalculate each worker's target_shifts by:
-          1) Counting slots they can work (based on work_periods & days_off)
-          2) Weighting those slots by their work_percentage
-          3) Allocating all schedule slots proportionally (largest‐remainder rounding)
+          1) For workers with auto_calculate_shifts=True:
+             - Count slots they can work (based on work_periods & days_off)
+             - Weight those slots by their work_percentage
+             - Allocate all schedule slots proportionally (largest‐remainder rounding)
+          
+          2) For workers with auto_calculate_shifts=False:
+             - Use target_shifts as "guardias/mes" and multiply by number of months in period
         """
         try:
             logging.info("Calculating target shifts based on availability and percentage")
 
-            # 1) Total open slots in the schedule (variable shifts considered)
-            total_slots = sum(len(slots) for slots in self.schedule.values())
-            if total_slots <= 0:
-                logging.warning("No slots in schedule; skipping allocation")
-                return False
+            # Separate workers by auto_calculate flag
+            auto_calc_workers = [w for w in self.workers_data if w.get('auto_calculate_shifts', True)]
+            manual_workers = [w for w in self.workers_data if not w.get('auto_calculate_shifts', True)]
 
-            # 2) Compute available_slots per worker
-            available_slots = {}
-            for w in self.workers_data:
-                wid = w['id']
-                wp = w.get('work_periods','').strip()
-                dp = w.get('days_off','').strip()
-                work_ranges = (self.date_utils.parse_date_ranges(wp) 
-                               if wp else [(self.start_date, self.end_date)])
-                off_ranges  = (self.date_utils.parse_date_ranges(dp) 
-                               if dp else [])
-                count = 0
-                for date, slots in self.schedule.items():
-                    in_work = any(s <= date <= e for s, e in work_ranges)
-                    in_off  = any(s <= date <= e for s, e in off_ranges)
-                    if in_work and not in_off:
-                        count += len(slots)
-                available_slots[wid] = count
-                logging.debug(f"Worker {wid}: available_slots={count}")
-
-            # 3) Build weight = available_slots * (work_percentage/100)
-            weights = []
-            for w in self.workers_data:
-                wid = w['id']
-                pct = 1.0
-                try:
-                    pct = float(str(w.get('work_percentage',100)).strip())/100.0
-                except Exception:
-                    logging.warning(f"Worker {wid} invalid work_percentage; defaulting to 100%")
-                pct = max(0.0, pct)
-                weights.append(available_slots.get(wid,0) * pct)
-
-            total_weight = sum(weights) or 1.0
-
-            # 4) Compute exact fractional targets
-            exact_targets = [wgt/total_weight*total_slots for wgt in weights]
-
-            # 5) Largest-remainder rounding
-            floors = [int(x) for x in exact_targets]
-            remainder = int(total_slots - sum(floors))
-            fracs = sorted(enumerate(exact_targets),
-                           key=lambda ix: exact_targets[ix[0]] - floors[ix[0]],
-                           reverse=True)
-            targets = floors[:]
-            for idx, _ in fracs[:remainder]:
-                targets[idx] += 1
-
-            # 6) Assign and log (subtract out mandatory days so they're not extra)
-            for i, w in enumerate(self.workers_data):
-                raw_target = targets[i]
-                mand_count = 0
-                mand_str = w.get('mandatory_days', '').strip()
-                if mand_str:
-                    try:
-                        mand_dates = self.date_utils.parse_dates(mand_str)
-                        mand_count = sum(1 for d in mand_dates
-                                         if self.start_date <= d <= self.end_date)
-                    except Exception as e:
-                        logging.error(f"Failed to parse mandatory_days for {w['id']}: {e}")
-                adjusted = max(0, raw_target - mand_count)
-                w['target_shifts'] = adjusted
-                w['_raw_target'] = raw_target
-                w['_mandatory_count'] = mand_count
-                
-                # Enhanced logging for transparency
-                if mand_count > 0:
-                    logging.info(
-                        f"Worker {w['id']}: RAW target={raw_target}, "
-                        f"Mandatory={mand_count}, "
-                        f"Adjusted target_shifts={adjusted}, "
-                        f"TOTAL expected={raw_target} (mandatory + adjusted)"
-                    )
+            # 1) AUTOMATIC CALCULATION for auto_calc_workers
+            if auto_calc_workers:
+                # Total open slots in the schedule (variable shifts considered)
+                total_slots = sum(len(slots) for slots in self.schedule.values())
+                if total_slots <= 0:
+                    logging.warning("No slots in schedule; skipping allocation")
                 else:
-                    logging.info(f"Worker {w['id']}: target_shifts={adjusted}")
+                    # Compute available_slots per worker
+                    available_slots = {}
+                    for w in auto_calc_workers:
+                        wid = w['id']
+                        wp = w.get('work_periods','').strip()
+                        dp = w.get('days_off','').strip()
+                        work_ranges = (self.date_utils.parse_date_ranges(wp) 
+                                       if wp else [(self.start_date, self.end_date)])
+                        off_ranges  = (self.date_utils.parse_date_ranges(dp) 
+                                       if dp else [])
+                        count = 0
+                        for date, slots in self.schedule.items():
+                            in_work = any(s <= date <= e for s, e in work_ranges)
+                            in_off  = any(s <= date <= e for s, e in off_ranges)
+                            if in_work and not in_off:
+                                count += len(slots)
+                        available_slots[wid] = count
+                        logging.debug(f"Worker {wid}: available_slots={count}")
+
+                    # Build weight = available_slots * (work_percentage/100)
+                    weights = []
+                    for w in auto_calc_workers:
+                        wid = w['id']
+                        pct = 1.0
+                        try:
+                            pct = float(str(w.get('work_percentage',100)).strip())/100.0
+                        except Exception:
+                            logging.warning(f"Worker {wid} invalid work_percentage; defaulting to 100%")
+                        pct = max(0.0, pct)
+                        weights.append(available_slots.get(wid,0) * pct)
+
+                    total_weight = sum(weights) or 1.0
+
+                    # Compute exact fractional targets
+                    exact_targets = [wgt/total_weight*total_slots for wgt in weights]
+
+                    # Largest-remainder rounding
+                    floors = [int(x) for x in exact_targets]
+                    remainder = int(total_slots - sum(floors))
+                    fracs = sorted(enumerate(exact_targets),
+                                   key=lambda ix: exact_targets[ix[0]] - floors[ix[0]],
+                                   reverse=True)
+                    targets = floors[:]
+                    for idx, _ in fracs[:remainder]:
+                        targets[idx] += 1
+
+                    # Assign targets for auto_calc workers
+                    for i, w in enumerate(auto_calc_workers):
+                        raw_target = targets[i]
+                        mand_count = 0
+                        mand_str = w.get('mandatory_days', '').strip()
+                        if mand_str:
+                            try:
+                                mand_dates = self.date_utils.parse_dates(mand_str)
+                                mand_count = sum(1 for d in mand_dates
+                                                 if self.start_date <= d <= self.end_date)
+                            except Exception as e:
+                                logging.error(f"Failed to parse mandatory_days for {w['id']}: {e}")
+                        adjusted = max(0, raw_target - mand_count)
+                        w['target_shifts'] = adjusted
+                        w['_raw_target'] = raw_target
+                        w['_mandatory_count'] = mand_count
+                        
+                        if mand_count > 0:
+                            logging.info(
+                                f"Worker {w['id']} (AUTO): RAW target={raw_target}, "
+                                f"Mandatory={mand_count}, Adjusted target_shifts={adjusted}"
+                            )
+                        else:
+                            logging.info(f"Worker {w['id']} (AUTO): target_shifts={adjusted}")
+
+            # 2) MANUAL CALCULATION for manual_workers (guardias/mes)
+            if manual_workers:
+                # Calculate number of months in the period
+                months_in_period = (self.end_date.year - self.start_date.year) * 12 + \
+                                   (self.end_date.month - self.start_date.month) + 1
+                
+                logging.info(f"Manual target calculation: {months_in_period} months in period")
+                
+                for w in manual_workers:
+                    wid = w['id']
+                    guardias_per_mes = w.get('target_shifts', 0)
+                    raw_target = guardias_per_mes * months_in_period
+                    
+                    mand_count = 0
+                    mand_str = w.get('mandatory_days', '').strip()
+                    if mand_str:
+                        try:
+                            mand_dates = self.date_utils.parse_dates(mand_str)
+                            mand_count = sum(1 for d in mand_dates
+                                             if self.start_date <= d <= self.end_date)
+                        except Exception as e:
+                            logging.error(f"Failed to parse mandatory_days for {wid}: {e}")
+                    
+                    adjusted = max(0, raw_target - mand_count)
+                    w['target_shifts'] = adjusted
+                    w['_raw_target'] = raw_target
+                    w['_mandatory_count'] = mand_count
+                    
+                    logging.info(
+                        f"Worker {wid} (MANUAL): {guardias_per_mes} guardias/mes * {months_in_period} meses = {raw_target}, "
+                        f"Mandatory={mand_count}, Adjusted target_shifts={adjusted}"
+                    )
 
             return True
         

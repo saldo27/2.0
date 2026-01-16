@@ -2,7 +2,7 @@
 ; Generado con Inno Setup
 
 #define MyAppName "GuardiasApp"
-#define MyAppVersion "2.0"
+#define MyAppVersion "2.1"
 #define MyAppPublisher "Luis Herrera Para"
 #define MyAppURL "https://github.com/saldo27/2.0"
 #define MyAppExeName "GuardiasApp.exe"
