@@ -1,6 +1,8 @@
 """
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
+
+Versión: 2.1 (Enero 2026)
 """
 import streamlit as st
 import pandas as pd
@@ -17,6 +19,9 @@ from license_manager import license_manager
 from scheduler import Scheduler
 from scheduler_config import SchedulerConfig, setup_logging
 from utilities import DateTimeUtils
+
+# Constante de versión
+APP_VERSION = "2.1"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -835,7 +840,7 @@ def show_license_info():
 # ==================== INTERFAZ PRINCIPAL ====================
 
 # Header
-st.title("📅 Sistema de Generación de Guardias")
+st.title(f"📅 Sistema de Generación de Guardias - v{APP_VERSION}")
 st.markdown("---")
 
 # ===== AGREGAR AQUÍ:  Mostrar info y verificar bloqueo =====
@@ -1257,9 +1262,20 @@ with tab1:
         # Mostrar indicador si estamos en modo edición
         if st.session_state.get("editing_worker"):
             st.info(f"✏️ **Modo edición:** Editando a {st.session_state.get('editing_worker')}")
-            # Inicializar el ID con el buffer
-            if "worker_id_buffer" in st.session_state and st.session_state.worker_id_buffer:
-                st.session_state.worker_id_input = st.session_state.worker_id_buffer
+            
+            # Solo cargar buffers UNA VEZ (cuando buffers_loaded es False)
+            if not st.session_state.get("buffers_loaded", False):
+                # Inicializar el ID con el buffer
+                if "worker_id_buffer" in st.session_state and st.session_state.worker_id_buffer:
+                    st.session_state.worker_id_input = st.session_state.worker_id_buffer
+                # Inicializar auto_calc_checkbox con buffer
+                if "auto_calc_buffer" in st.session_state:
+                    st.session_state.auto_calc_checkbox = st.session_state.auto_calc_buffer
+                # Inicializar guardias_mes_input con buffer
+                if "guardias_mes_buffer" in st.session_state:
+                    st.session_state.guardias_mes_input = st.session_state.guardias_mes_buffer
+                # Marcar que ya se cargaron los buffers
+                st.session_state.buffers_loaded = True
         
         # ID del Médico - FUERA DEL FORM para acceso global
         st.markdown("**👤 Identificación**")
@@ -1272,10 +1288,6 @@ with tab1:
         # Número de Guardias - FUERA DEL FORM para REACTIVIDAD
         st.markdown("**📊 Número de Guardias**")
         
-        # Inicializar auto_calc_checkbox con buffer si estamos editando
-        if st.session_state.get("editing_worker") and "auto_calc_buffer" in st.session_state:
-            st.session_state.auto_calc_checkbox = st.session_state.auto_calc_buffer
-        
         col_guards_a, col_guards_b = st.columns(2)
         with col_guards_a:
             auto_calculate = st.checkbox(
@@ -1284,10 +1296,6 @@ with tab1:
                 help="El sistema calculará la asignación según el período y porcentaje"
             )
         with col_guards_b:
-            # Inicializar guardias_mes_input con buffer si estamos editando
-            if st.session_state.get("editing_worker") and "guardias_mes_buffer" in st.session_state:
-                st.session_state.guardias_mes_input = st.session_state.guardias_mes_buffer
-            
             if not auto_calculate:
                 guardias_per_month = st.number_input(
                     "Guardias/mes", 
@@ -1476,6 +1484,7 @@ with tab1:
                     
                     # Limpiar estado de edición y formulario
                     st.session_state.editing_worker = None
+                    st.session_state.buffers_loaded = False  # Reset flag
                     # Limpiar buffers
                     st.session_state.worker_id_buffer = ""
                     st.session_state.work_percentage_buffer = 100
@@ -1492,6 +1501,7 @@ with tab1:
             if clear:
                 # Limpiar todos los campos
                 st.session_state.editing_worker = None
+                st.session_state.buffers_loaded = False  # Reset flag
                 # Limpiar buffers
                 st.session_state.worker_id_buffer = ""
                 st.session_state.work_percentage_buffer = 100
@@ -1631,8 +1641,9 @@ with tab1:
                             else:
                                 st.session_state.days_off_buffer = ''
                             
-                            # Establecer modo de edición
+                            # Establecer modo de edición y resetear flag de buffers
                             st.session_state.editing_worker = worker['id']
+                            st.session_state.buffers_loaded = False  # Para que se carguen los buffers
                             st.rerun()
                     
                     with col_del:
