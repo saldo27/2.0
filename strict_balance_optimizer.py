@@ -6,10 +6,22 @@ Sistema estricto de optimización de balance que garantiza que todos los trabaja
 estén dentro de ±1 turno de su objetivo, respetando todas las constraints.
 
 Estrategia:
-1. Identificar trabajadores con mayor desviación
-2. Encontrar oportunidades de intercambio que mejoren el balance
-3. Validar que no se violan constraints
+1. Identificar trabajadores con mayor desviación (sobrecargados y subcargados)
+2. Encontrar oportunidades de intercambio que mejoren el balance:
+   - Intercambio directo: A (sobrecargado) → B (subcargado)
+   - Intercambio a 3 bandas: A → C (intermediario equilibrado) → B
+     * Cuando A no puede dar turno directamente a B (incompatibilidad, gap, etc.)
+     * C toma turno de A y da uno de sus turnos a B
+     * Resultado: A -1, C igual, B +1
+   - Reasignación: Remover turno y asignar a subcargado
+3. Validar que no se violan constraints (gaps, incompatibilidades, balance mensual, etc.)
 4. Aplicar cambios y verificar mejora
+
+Intercambio a 3 bandas (three-way swap):
+- Útil cuando hay bloqueos entre trabajadores con grandes desviaciones
+- Ejemplo: A tiene +20% desviación, B tiene -18%, pero son incompatibles
+- C (equilibrado) puede mediar: A→C (en fecha_A), C→B (en fecha_C)
+- Se respetan todas las constraints para cada movimiento individual
 """
 
 import logging
@@ -39,12 +51,12 @@ class StrictBalanceOptimizer:
         
         logging.info("💎 Strict Balance Optimizer initialized")
     
-    def optimize_balance(self, max_iterations: int = 200, target_tolerance: int = 1) -> bool:
+    def optimize_balance(self, max_iterations: int = 500, target_tolerance: int = 1) -> bool:
         """
         Optimiza el balance de turnos para que todos estén dentro de ±target_tolerance
         
         Args:
-            max_iterations: Máximo número de iteraciones
+            max_iterations: Máximo número de iteraciones (aumentado a 500)
             target_tolerance: Desviación máxima permitida del target (default: ±1)
             
         Returns:
@@ -66,6 +78,7 @@ class StrictBalanceOptimizer:
         
         iteration = 0
         improvement_made = True
+        stalled_iterations = 0  # Contador para detectar estancamiento
         
         while iteration < max_iterations and improvement_made:
             iteration += 1
@@ -78,28 +91,58 @@ class StrictBalanceOptimizer:
                 logging.info(f"✅ Balance achieved at iteration {iteration}")
                 break
             
-            # Intentar múltiples estrategias
+            # Intentar múltiples estrategias en orden de preferencia
+            
+            # 1. Intercambio directo (más simple y seguro)
             if self._try_direct_swap(overloaded, underloaded, target_tolerance):
                 improvement_made = True
                 self.stats['swaps_performed'] += 1
+                stalled_iterations = 0
                 continue
             
+            # 2. Intercambio a 3 bandas estricto
             if self._try_three_way_swap(overloaded, underloaded, target_tolerance):
                 improvement_made = True
                 self.stats['swaps_performed'] += 1
+                stalled_iterations = 0
                 continue
             
+            # 3. Reasignación simple
             if self._try_reassignment(overloaded, underloaded, target_tolerance):
                 improvement_made = True
                 self.stats['swaps_performed'] += 1
+                stalled_iterations = 0
                 continue
             
-            # Si no hay mejora, intentar con relajación de constraints
-            if iteration % 20 == 0:
-                logging.info(f"  Iteration {iteration}: Trying relaxed constraints")
+            # 4. Intercambio a 3 bandas agresivo (más combinaciones, constraints relajadas)
+            if self._try_aggressive_three_way_swap(overloaded, underloaded, target_tolerance):
+                improvement_made = True
+                self.stats['swaps_performed'] += 1
+                stalled_iterations = 0
+                continue
+            
+            # 5. Cadena de intercambios múltiples (4+ trabajadores)
+            if self._try_chain_swap(overloaded, underloaded, target_tolerance):
+                improvement_made = True
+                self.stats['swaps_performed'] += 1
+                stalled_iterations = 0
+                continue
+            
+            # 6. Redistribución forzada (última opción antes de relajar)
+            if self._try_forced_redistribution(overloaded, underloaded, target_tolerance):
+                improvement_made = True
+                self.stats['swaps_performed'] += 1
+                stalled_iterations = 0
+                continue
+            
+            # 7. Si no hay mejora, intentar con relajación de constraints cada 10 iteraciones
+            stalled_iterations += 1
+            if stalled_iterations >= 5 or iteration % 10 == 0:
+                logging.info(f"  Iteration {iteration}: Trying relaxed constraints (stalled: {stalled_iterations})")
                 if self._try_relaxed_swap(overloaded, underloaded, target_tolerance):
                     improvement_made = True
                     self.stats['swaps_performed'] += 1
+                    stalled_iterations = 0
         
         # Análisis final
         final_analysis = self._analyze_balance()
@@ -317,14 +360,25 @@ class StrictBalanceOptimizer:
     
     def _try_three_way_swap(self, overloaded: List, underloaded: List, tolerance: int) -> bool:
         """
-        Intenta intercambio de 3 trabajadores para resolver bloqueos
+        Intenta intercambio de 3 trabajadores para resolver bloqueos cuando no hay swap directo posible.
         
-        Patrón: A (sobre) → B (equilibrado) → C (bajo)
+        Patrón: A (sobrecargado) → C (intermediario equilibrado) → B (subcargado)
+        
+        Lógica:
+        - A tiene turno en fecha_A que no puede dar directamente a B
+        - C (equilibrado) puede tomar el turno de A en fecha_A
+        - C tiene un turno en fecha_C que puede dar a B
+        - Resultado: A pierde turno (-1), C queda igual (gana fecha_A, pierde fecha_C), B gana turno (+1)
+        
+        Esto permite balancear cuando:
+        - A no puede dar turno a B directamente (incompatibilidad, gap, etc.)
+        - Pero A puede dar a C, y C tiene un turno que puede dar a B
         """
-        for over_id, over_dev in overloaded[:3]:
+        for over_id, over_dev in overloaded[:5]:  # Top 5 sobrecargados
             over_dates = list(self.worker_assignments.get(over_id, set()))
+            random.shuffle(over_dates)
             
-            for date_a in over_dates:
+            for date_a in over_dates[:10]:  # Limitar para rendimiento
                 if (over_id, date_a) in self.builder._locked_mandatory:
                     continue
                 
@@ -336,98 +390,170 @@ class StrictBalanceOptimizer:
                 except (ValueError, KeyError):
                     continue
                 
-                # Buscar un trabajador B (equilibrado) que pueda intercambiar
-                for worker_b in self.workers_data:
-                    b_id = worker_b['id']
+                # Buscar un trabajador C (intermediario equilibrado) que pueda tomar turno de A
+                for worker_c in self.workers_data:
+                    c_id = worker_c['id']
                     
-                    # B debe estar equilibrado o ligeramente cargado
-                    b_assigned = len(self.worker_assignments.get(b_id, set()))
-                    b_target = worker_b.get('target_shifts', 0)
-                    b_dev = b_assigned - b_target
-                    
-                    if abs(b_dev) > 1:  # Solo equilibrados
+                    # C no debe ser A ni estar en overloaded/underloaded extremos
+                    if c_id == over_id:
                         continue
                     
-                    b_dates = list(self.worker_assignments.get(b_id, set()))
+                    # C debe estar equilibrado (desviación pequeña)
+                    c_assigned = len(self.worker_assignments.get(c_id, set()))
+                    c_target = worker_c.get('target_shifts', 0)
+                    if c_target == 0:
+                        continue
+                    c_dev = c_assigned - c_target
                     
-                    for date_b in b_dates:
-                        if (b_id, date_b) in self.builder._locked_mandatory:
+                    # Solo trabajadores equilibrados o ligeramente positivos (pueden perder uno)
+                    if c_dev < -1 or c_dev > 2:
+                        continue
+                    
+                    # Verificar que C puede tomar el turno de A en date_a
+                    score_c_take_a = self.builder._calculate_worker_score(worker_c, date_a, post_a, relaxation_level=0)
+                    if score_c_take_a == float('-inf'):
+                        continue
+                    
+                    # C ya trabaja en date_a? No puede tomar el mismo día
+                    if c_id in self.schedule.get(date_a, []):
+                        continue
+                    
+                    # Validaciones adicionales para C tomando turno de A
+                    skip_c_take = False
+                    
+                    # Validar balance mensual para C
+                    if hasattr(self.builder, '_get_expected_monthly_target'):
+                        expected_monthly = self.builder._get_expected_monthly_target(worker_c, date_a.year, date_a.month)
+                        shifts_c_month_a = sum(
+                            1 for d in self.worker_assignments.get(c_id, set())
+                            if d.year == date_a.year and d.month == date_a.month
+                        )
+                        work_pct = worker_c.get('work_percentage', 100)
+                        monthly_tolerance = 1 if work_pct >= 100 else 0
+                        max_monthly = expected_monthly + monthly_tolerance
+                        
+                        # C va a ganar un turno pero también perderá uno, así que solo bloqueamos si está muy alto
+                        if shifts_c_month_a + 1 > max_monthly + 2:
+                            skip_c_take = True
+                    
+                    # Validar fines de semana consecutivos para C
+                    if not skip_c_take and date_a.weekday() >= 4:
+                        if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
+                            if self.builder._would_exceed_weekend_limit_simulated(c_id, date_a, self.worker_assignments):
+                                skip_c_take = True
+                    
+                    if skip_c_take:
+                        continue
+                    
+                    # Ahora buscar un turno de C que pueda dar a B (subcargado)
+                    c_dates = list(self.worker_assignments.get(c_id, set()))
+                    random.shuffle(c_dates)
+                    
+                    for date_c in c_dates[:10]:
+                        if date_c == date_a:  # No puede ser el mismo día
+                            continue
+                        
+                        if (c_id, date_c) in self.builder._locked_mandatory:
+                            continue
+                        
+                        if not self.builder._can_modify_assignment(c_id, date_c, "three_way_intermediary"):
                             continue
                         
                         try:
-                            post_b = self.schedule[date_b].index(b_id)
+                            post_c = self.schedule[date_c].index(c_id)
                         except (ValueError, KeyError):
                             continue
                         
-                        # Buscar trabajador C (bajo) que pueda recibir turno de B
-                        for under_id, under_dev in underloaded[:3]:
-                            # Verificar viabilidad del intercambio circular
-                            # A → date_b/post_b (lugar de B)
-                            # B → date_c (nuevo)
-                            # C → date_a/post_a (lugar de A)
-                            
-                            # Por simplicidad, intentar solo si C puede tomar lugar de A
-                            worker_c = next((w for w in self.workers_data if w['id'] == under_id), None)
-                            if not worker_c:
+                        # Buscar trabajador B (subcargado) que pueda tomar turno de C
+                        for under_id, under_dev in underloaded[:5]:
+                            if under_id == c_id or under_id == over_id:
                                 continue
                             
-                            score_c = self.builder._calculate_worker_score(worker_c, date_a, post_a, relaxation_level=0)
+                            worker_b = next((w for w in self.workers_data if w['id'] == under_id), None)
+                            if not worker_b:
+                                continue
                             
-                            if score_c > float('-inf'):
-                                # NEW: Additional validation for monthly balance and weekends
-                                skip_swap = False
+                            # B ya trabaja en date_c?
+                            if under_id in self.schedule.get(date_c, []):
+                                continue
+                            
+                            # Verificar que B puede tomar el turno de C en date_c
+                            score_b_take_c = self.builder._calculate_worker_score(worker_b, date_c, post_c, relaxation_level=0)
+                            if score_b_take_c == float('-inf'):
+                                continue
+                            
+                            # Validaciones adicionales para B
+                            skip_b_take = False
+                            
+                            # Validar balance mensual para B
+                            if hasattr(self.builder, '_get_expected_monthly_target'):
+                                expected_monthly_b = self.builder._get_expected_monthly_target(worker_b, date_c.year, date_c.month)
+                                shifts_b_month_c = sum(
+                                    1 for d in self.worker_assignments.get(under_id, set())
+                                    if d.year == date_c.year and d.month == date_c.month
+                                )
+                                work_pct_b = worker_b.get('work_percentage', 100)
+                                monthly_tolerance_b = 1 if work_pct_b >= 100 else 0
+                                max_monthly_b = expected_monthly_b + monthly_tolerance_b
                                 
-                                # Validate monthly balance for C
-                                if hasattr(self.builder, '_get_expected_monthly_target'):
-                                    expected_monthly = self.builder._get_expected_monthly_target(worker_c, date_a.year, date_a.month)
-                                    shifts_this_month = sum(
-                                        1 for d in self.worker_assignments.get(under_id, set())
-                                        if d.year == date_a.year and d.month == date_a.month
-                                    )
-                                    work_pct = worker_c.get('work_percentage', 100)
-                                    monthly_tolerance = 1 if work_pct >= 100 else 0
-                                    max_monthly = expected_monthly + monthly_tolerance
-                                    
-                                    if shifts_this_month + 1 > max_monthly + 1:
-                                        skip_swap = True
+                                if shifts_b_month_c + 1 > max_monthly_b + 1:
+                                    skip_b_take = True
+                            
+                            # Validar fines de semana consecutivos para B
+                            if not skip_b_take and date_c.weekday() >= 4:
+                                if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
+                                    if self.builder._would_exceed_weekend_limit_simulated(under_id, date_c, self.worker_assignments):
+                                        skip_b_take = True
+                            
+                            if skip_b_take:
+                                continue
+                            
+                            # ¡Encontramos un intercambio válido a 3 bandas!
+                            state = self._save_state()
+                            
+                            try:
+                                # Paso 1: A pierde turno en date_a
+                                self.schedule[date_a][post_a] = c_id
+                                self.worker_assignments[over_id].discard(date_a)
+                                self.worker_assignments.setdefault(c_id, set()).add(date_a)
                                 
-                                # Validate consecutive weekends for C
-                                if not skip_swap and date_a.weekday() >= 4:
-                                    if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
-                                        if self.builder._would_exceed_weekend_limit_simulated(under_id, date_a, self.worker_assignments):
-                                            skip_swap = True
+                                # Paso 2: C pierde turno en date_c, B lo toma
+                                self.schedule[date_c][post_c] = under_id
+                                self.worker_assignments[c_id].discard(date_c)
+                                self.worker_assignments.setdefault(under_id, set()).add(date_c)
                                 
-                                if skip_swap:
-                                    continue
+                                # Actualizar tracking
+                                self.scheduler._update_tracking_data(over_id, date_a, post_a, removing=True)
+                                self.scheduler._update_tracking_data(c_id, date_a, post_a, removing=False)
+                                self.scheduler._update_tracking_data(c_id, date_c, post_c, removing=True)
+                                self.scheduler._update_tracking_data(under_id, date_c, post_c, removing=False)
                                 
-                                # Intentar el swap
-                                state = self._save_state()
+                                # Verificar que el resultado mejora el balance global
+                                over_new = len(self.worker_assignments.get(over_id, set()))
+                                under_new = len(self.worker_assignments.get(under_id, set()))
+                                c_new = len(self.worker_assignments.get(c_id, set()))
                                 
-                                try:
-                                    # A → B's place
-                                    self.schedule[date_b][post_b] = over_id
-                                    self.worker_assignments[over_id].discard(date_a)
-                                    self.worker_assignments[over_id].add(date_b)
-                                    
-                                    # C → A's place
-                                    self.schedule[date_a][post_a] = under_id
-                                    self.worker_assignments.setdefault(under_id, set()).add(date_a)
-                                    
-                                    # B pierde su turno pero podría ganar otro
-                                    self.worker_assignments[b_id].discard(date_b)
-                                    
-                                    # Actualizar tracking
-                                    self.scheduler._update_tracking_data(over_id, date_a, post_a, removing=True)
-                                    self.scheduler._update_tracking_data(over_id, date_b, post_b, removing=False)
-                                    self.scheduler._update_tracking_data(b_id, date_b, post_b, removing=True)
-                                    self.scheduler._update_tracking_data(under_id, date_a, post_a, removing=False)
-                                    
-                                    logging.info(f"  ✅ Three-way swap: {over_id}→{b_id}→{under_id}")
+                                over_target = next((w['target_shifts'] for w in self.workers_data if w['id'] == over_id), 0)
+                                under_target = next((w['target_shifts'] for w in self.workers_data if w['id'] == under_id), 0)
+                                
+                                # Verificar mejora: A debe reducir y B debe aumentar, C debe quedar igual
+                                over_improved = (over_new - over_target) < over_dev
+                                under_improved = abs(under_new - under_target) < abs(under_dev)
+                                c_stable = abs(c_new - c_target) <= 1
+                                
+                                if over_improved and under_improved and c_stable:
+                                    logging.info(f"  ✅ Three-way swap: {over_id}({date_a.strftime('%m-%d')})→{c_id}→{under_id}({date_c.strftime('%m-%d')})")
+                                    logging.debug(f"      A:{over_id} {over_dev:+d}→{over_new - over_target:+d}, "
+                                                f"C:{c_id} {c_dev:+d}→{c_new - c_target:+d}, "
+                                                f"B:{under_id} {under_dev:+d}→{under_new - under_target:+d}")
                                     return True
-                                    
-                                except Exception as e:
-                                    logging.debug(f"Three-way swap failed: {e}")
+                                else:
+                                    # No mejoró suficiente, revertir
                                     self._restore_state(state)
+                                    
+                            except Exception as e:
+                                logging.debug(f"Three-way swap failed: {e}")
+                                self._restore_state(state)
         
         return False
     
@@ -542,6 +668,150 @@ class StrictBalanceOptimizer:
         
         return False
     
+    def _try_aggressive_three_way_swap(self, overloaded: List, underloaded: List, tolerance: int) -> bool:
+        """
+        Intercambio a 3 bandas más agresivo con constraints ligeramente relajadas.
+        
+        Se usa cuando el _try_three_way_swap normal no encuentra solución.
+        Diferencias:
+        - Permite intermediarios con desviación -2 a +3
+        - Usa relaxation_level=1 para verificaciones
+        - Explora más combinaciones
+        - No verifica mejora estricta, solo que no empeore significativamente
+        
+        Patrón: A (sobrecargado) → C (intermediario) → B (subcargado)
+        """
+        logging.debug("  Trying aggressive three-way swap...")
+        
+        for over_id, over_dev in overloaded[:8]:  # Más trabajadores
+            over_dates = list(self.worker_assignments.get(over_id, set()))
+            random.shuffle(over_dates)
+            
+            for date_a in over_dates[:15]:  # Más fechas
+                if (over_id, date_a) in self.builder._locked_mandatory:
+                    continue
+                
+                if not self.builder._can_modify_assignment(over_id, date_a, "aggressive_three_way"):
+                    continue
+                
+                try:
+                    post_a = self.schedule[date_a].index(over_id)
+                except (ValueError, KeyError):
+                    continue
+                
+                # Buscar intermediarios con criterio más relajado
+                potential_intermediaries = []
+                for worker_c in self.workers_data:
+                    c_id = worker_c['id']
+                    if c_id == over_id:
+                        continue
+                    
+                    c_assigned = len(self.worker_assignments.get(c_id, set()))
+                    c_target = worker_c.get('target_shifts', 0)
+                    if c_target == 0:
+                        continue
+                    c_dev = c_assigned - c_target
+                    
+                    # Rango más amplio: -2 a +3
+                    if -2 <= c_dev <= 3:
+                        potential_intermediaries.append((c_id, worker_c, c_dev, c_target))
+                
+                # Ordenar por desviación más cercana a 0
+                potential_intermediaries.sort(key=lambda x: abs(x[2]))
+                
+                for c_id, worker_c, c_dev, c_target in potential_intermediaries[:10]:
+                    # Verificar que C puede tomar turno de A (con relajación nivel 1)
+                    score_c_take_a = self.builder._calculate_worker_score(worker_c, date_a, post_a, relaxation_level=1)
+                    if score_c_take_a == float('-inf'):
+                        continue
+                    
+                    if c_id in self.schedule.get(date_a, []):
+                        continue
+                    
+                    # Buscar turnos de C que pueda ceder
+                    c_dates = list(self.worker_assignments.get(c_id, set()))
+                    random.shuffle(c_dates)
+                    
+                    for date_c in c_dates[:15]:
+                        if date_c == date_a:
+                            continue
+                        
+                        if (c_id, date_c) in self.builder._locked_mandatory:
+                            continue
+                        
+                        if not self.builder._can_modify_assignment(c_id, date_c, "aggressive_intermediary"):
+                            continue
+                        
+                        try:
+                            post_c = self.schedule[date_c].index(c_id)
+                        except (ValueError, KeyError):
+                            continue
+                        
+                        # Buscar B que pueda tomar turno de C
+                        for under_id, under_dev in underloaded[:8]:
+                            if under_id in (c_id, over_id):
+                                continue
+                            
+                            worker_b = next((w for w in self.workers_data if w['id'] == under_id), None)
+                            if not worker_b:
+                                continue
+                            
+                            if under_id in self.schedule.get(date_c, []):
+                                continue
+                            
+                            # Verificar con relajación nivel 1
+                            score_b_take_c = self.builder._calculate_worker_score(worker_b, date_c, post_c, relaxation_level=1)
+                            if score_b_take_c == float('-inf'):
+                                continue
+                            
+                            # Intentar el intercambio
+                            state = self._save_state()
+                            
+                            try:
+                                # A pierde turno en date_a, C lo toma
+                                self.schedule[date_a][post_a] = c_id
+                                self.worker_assignments[over_id].discard(date_a)
+                                self.worker_assignments.setdefault(c_id, set()).add(date_a)
+                                
+                                # C pierde turno en date_c, B lo toma
+                                self.schedule[date_c][post_c] = under_id
+                                self.worker_assignments[c_id].discard(date_c)
+                                self.worker_assignments.setdefault(under_id, set()).add(date_c)
+                                
+                                # Actualizar tracking
+                                self.scheduler._update_tracking_data(over_id, date_a, post_a, removing=True)
+                                self.scheduler._update_tracking_data(c_id, date_a, post_a, removing=False)
+                                self.scheduler._update_tracking_data(c_id, date_c, post_c, removing=True)
+                                self.scheduler._update_tracking_data(under_id, date_c, post_c, removing=False)
+                                
+                                # Verificar que mejora globalmente
+                                over_new = len(self.worker_assignments.get(over_id, set()))
+                                under_new = len(self.worker_assignments.get(under_id, set()))
+                                c_new = len(self.worker_assignments.get(c_id, set()))
+                                
+                                over_target = next((w['target_shifts'] for w in self.workers_data if w['id'] == over_id), 0)
+                                under_target = next((w['target_shifts'] for w in self.workers_data if w['id'] == under_id), 0)
+                                
+                                old_total_dev = abs(over_dev) + abs(under_dev) + abs(c_dev)
+                                new_over_dev = over_new - over_target
+                                new_under_dev = under_new - under_target
+                                new_c_dev = c_new - c_target
+                                new_total_dev = abs(new_over_dev) + abs(new_under_dev) + abs(new_c_dev)
+                                
+                                # Aceptar si mejora la suma de desviaciones
+                                if new_total_dev < old_total_dev:
+                                    logging.info(f"  ✅ Aggressive three-way: {over_id}({date_a.strftime('%m-%d')})→{c_id}→{under_id}({date_c.strftime('%m-%d')})")
+                                    logging.debug(f"      Total deviation: {old_total_dev} → {new_total_dev}")
+                                    return True
+                                else:
+                                    self._restore_state(state)
+                                    
+                            except Exception as e:
+                                logging.debug(f"Aggressive three-way failed: {e}")
+                                self._restore_state(state)
+        
+        return False
+    
     def _save_state(self) -> Dict:
         """Guarda el estado actual para rollback"""
         return {
@@ -556,3 +826,235 @@ class StrictBalanceOptimizer:
         
         self.worker_assignments.clear()
         self.worker_assignments.update({k: set(v) for k, v in state['assignments'].items()})
+    
+    def _try_chain_swap(self, overloaded: List, underloaded: List, tolerance: int) -> bool:
+        """
+        Intenta una cadena de intercambios entre 4 o más trabajadores.
+        
+        Patrón: A → B → C → D donde:
+        - A está sobrecargado y pierde un turno
+        - B, C son intermediarios que pasan turnos
+        - D está subcargado y gana un turno
+        
+        Esto permite resolver bloqueos complejos cuando ni intercambio directo
+        ni a 3 bandas funcionan.
+        """
+        for over_id, over_dev in overloaded[:3]:  # Top 3 más sobrecargados
+            over_dates = list(self.worker_assignments.get(over_id, set()))
+            random.shuffle(over_dates)
+            
+            for date_a in over_dates[:8]:
+                if (over_id, date_a) in self.builder._locked_mandatory:
+                    continue
+                
+                if not self.builder._can_modify_assignment(over_id, date_a, "chain_swap"):
+                    continue
+                
+                try:
+                    post_a = self.schedule[date_a].index(over_id)
+                except (ValueError, KeyError):
+                    continue
+                
+                # Buscar cadena: A → B → C → D (o más corta si es posible)
+                chain = self._find_swap_chain(over_id, date_a, post_a, underloaded, max_depth=4)
+                
+                if chain and len(chain) >= 3:
+                    # Aplicar la cadena de intercambios
+                    if self._apply_chain(chain):
+                        logging.info(f"  ✅ Chain swap ({len(chain)} workers): {' → '.join([c[0] for c in chain])}")
+                        return True
+        
+        return False
+    
+    def _find_swap_chain(self, start_id: str, start_date, start_post: int, 
+                         underloaded: List, max_depth: int = 4) -> Optional[List]:
+        """
+        Encuentra una cadena de intercambios usando BFS limitado.
+        
+        Returns:
+            Lista de tuplas (worker_id, date, post, next_worker_id) o None
+        """
+        from collections import deque
+        
+        under_ids = {u[0] for u in underloaded}
+        visited = {start_id}
+        
+        # BFS queue: (current_worker, current_date, current_post, path)
+        queue = deque()
+        queue.append((start_id, start_date, start_post, []))
+        
+        while queue:
+            curr_id, curr_date, curr_post, path = queue.popleft()
+            
+            if len(path) >= max_depth:
+                continue
+            
+            # Buscar trabajadores que puedan tomar este turno
+            for worker in self.workers_data:
+                next_id = worker['id']
+                
+                if next_id in visited:
+                    continue
+                
+                if next_id in self.schedule.get(curr_date, []):
+                    continue
+                
+                # Verificar que puede tomar el turno
+                score = self.builder._calculate_worker_score(worker, curr_date, curr_post, relaxation_level=1)
+                if score == float('-inf'):
+                    continue
+                
+                # Crear nuevo paso en el path
+                new_step = (curr_id, curr_date, curr_post, next_id)
+                new_path = path + [new_step]
+                
+                # Si llegamos a un trabajador subcargado, tenemos cadena completa
+                if next_id in under_ids:
+                    return new_path
+                
+                # Si no, buscar turnos de next_id para continuar la cadena
+                next_dates = list(self.worker_assignments.get(next_id, set()))
+                random.shuffle(next_dates)
+                
+                for next_date in next_dates[:5]:
+                    if (next_id, next_date) in self.builder._locked_mandatory:
+                        continue
+                    
+                    if not self.builder._can_modify_assignment(next_id, next_date, "chain"):
+                        continue
+                    
+                    try:
+                        next_post = self.schedule[next_date].index(next_id)
+                    except (ValueError, KeyError):
+                        continue
+                    
+                    visited.add(next_id)
+                    queue.append((next_id, next_date, next_post, new_path))
+        
+        return None
+    
+    def _apply_chain(self, chain: List) -> bool:
+        """Aplica una cadena de intercambios."""
+        state = self._save_state()
+        
+        try:
+            # Aplicar cada paso de la cadena
+            for from_id, date, post, to_id in chain:
+                # Actualizar schedule
+                self.schedule[date][post] = to_id
+                
+                # Actualizar assignments
+                self.worker_assignments[from_id].discard(date)
+                self.worker_assignments.setdefault(to_id, set()).add(date)
+                
+                # Actualizar tracking
+                self.scheduler._update_tracking_data(from_id, date, post, removing=True)
+                self.scheduler._update_tracking_data(to_id, date, post, removing=False)
+            
+            # Verificar que la cadena mejoró el balance
+            first_id = chain[0][0]
+            last_id = chain[-1][3]
+            
+            first_new = len(self.worker_assignments.get(first_id, set()))
+            last_new = len(self.worker_assignments.get(last_id, set()))
+            
+            first_target = next((w['target_shifts'] for w in self.workers_data if w['id'] == first_id), 0)
+            last_target = next((w['target_shifts'] for w in self.workers_data if w['id'] == last_id), 0)
+            
+            # El primero debe tener menos desviación positiva
+            # El último debe tener menos desviación negativa
+            first_improved = (first_new - first_target) < (first_new + 1 - first_target)
+            last_improved = abs(last_new - last_target) < abs(last_new - 1 - last_target)
+            
+            if first_improved and last_improved:
+                return True
+            else:
+                self._restore_state(state)
+                return False
+                
+        except Exception as e:
+            logging.debug(f"Chain swap failed: {e}")
+            self._restore_state(state)
+            return False
+    
+    def _try_forced_redistribution(self, overloaded: List, underloaded: List, tolerance: int) -> bool:
+        """
+        Redistribución forzada: encuentra cualquier fecha vacía o con trabajador
+        no esencial y redistribuye forzadamente.
+        
+        Esta es una estrategia de último recurso antes de relajar constraints.
+        """
+        # Primero intentar usar slots vacíos
+        for under_id, under_dev in underloaded[:5]:
+            worker_under = next((w for w in self.workers_data if w['id'] == under_id), None)
+            if not worker_under:
+                continue
+            
+            # Buscar slots vacíos que pueda tomar
+            for date, slots in self.schedule.items():
+                for post, assigned in enumerate(slots):
+                    if assigned is None:
+                        # Verificar si puede tomar este slot
+                        score = self.builder._calculate_worker_score(worker_under, date, post, relaxation_level=1)
+                        if score > float('-inf'):
+                            # Asignar directamente
+                            self.schedule[date][post] = under_id
+                            self.worker_assignments.setdefault(under_id, set()).add(date)
+                            self.scheduler._update_tracking_data(under_id, date, post, removing=False)
+                            logging.info(f"  ✅ Forced fill: {under_id} assigned empty slot on {date.strftime('%Y-%m-%d')}")
+                            return True
+        
+        # Si no hay slots vacíos, intentar intercambio forzado con trabajadores
+        # que están dentro de tolerancia pero podrían ceder un turno
+        for over_id, over_dev in overloaded[:3]:
+            for worker in self.workers_data:
+                mid_id = worker['id']
+                
+                # Buscar trabajadores con desviación positiva pero dentro de tolerancia
+                mid_assigned = len(self.worker_assignments.get(mid_id, set()))
+                mid_target = worker.get('target_shifts', 0)
+                mid_dev = mid_assigned - mid_target
+                
+                # Solo trabajadores con algo de margen positivo
+                if mid_dev <= 0 or mid_dev > tolerance:
+                    continue
+                
+                mid_dates = list(self.worker_assignments.get(mid_id, set()))
+                random.shuffle(mid_dates)
+                
+                for date in mid_dates[:10]:
+                    if (mid_id, date) in self.builder._locked_mandatory:
+                        continue
+                    
+                    if not self.builder._can_modify_assignment(mid_id, date, "forced"):
+                        continue
+                    
+                    try:
+                        post = self.schedule[date].index(mid_id)
+                    except (ValueError, KeyError):
+                        continue
+                    
+                    # Intentar dar este turno a un subcargado
+                    for under_id, under_dev in underloaded[:5]:
+                        worker_under = next((w for w in self.workers_data if w['id'] == under_id), None)
+                        if not worker_under:
+                            continue
+                        
+                        if under_id in self.schedule.get(date, []):
+                            continue
+                        
+                        score = self.builder._calculate_worker_score(worker_under, date, post, relaxation_level=1)
+                        if score > float('-inf'):
+                            state = self._save_state()
+                            
+                            self.schedule[date][post] = under_id
+                            self.worker_assignments[mid_id].discard(date)
+                            self.worker_assignments.setdefault(under_id, set()).add(date)
+                            
+                            self.scheduler._update_tracking_data(mid_id, date, post, removing=True)
+                            self.scheduler._update_tracking_data(under_id, date, post, removing=False)
+                            
+                            logging.info(f"  ✅ Forced redistribution: {mid_id}(+{mid_dev}) → {under_id}({under_dev}) on {date.strftime('%Y-%m-%d')}")
+                            return True
+        
+        return False

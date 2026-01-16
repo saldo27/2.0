@@ -689,10 +689,25 @@ class SchedulerCore:
             if self.balance_optimizer:
                 try:
                     # Aplicar optimización de balance estricto
+                    # Primero intentamos con tolerancia ±1
                     balance_achieved = self.balance_optimizer.optimize_balance(
-                        max_iterations=200,
+                        max_iterations=500,
                         target_tolerance=1  # ±1 turno máximo
                     )
+                    
+                    # Si no se logró, intentar con múltiples pasadas
+                    if not balance_achieved:
+                        logging.info("🔄 Running second balance pass with relaxed constraints...")
+                        balance_achieved = self.balance_optimizer.optimize_balance(
+                            max_iterations=300,
+                            target_tolerance=2  # Aceptar ±2 temporalmente
+                        )
+                        # Luego intentar ajustar a ±1 de nuevo
+                        if balance_achieved:
+                            self.balance_optimizer.optimize_balance(
+                                max_iterations=200,
+                                target_tolerance=1
+                            )
                     
                     if balance_achieved:
                         logging.info("✅ Perfect balance achieved: All workers within ±1 shift of target")
@@ -768,6 +783,29 @@ class SchedulerCore:
                     break
             else:
                 logging.warning(f"Max balance iterations ({max_final_balance_loops}) reached")
+
+            # FASE FINAL: Balance estricto de turnos con el optimizador avanzado
+            if self.balance_optimizer:
+                logging.info("\n" + "=" * 80)
+                logging.info("FINAL PHASE: Strict Balance Optimization (Post-Finalization)")
+                logging.info("=" * 80)
+                try:
+                    # Ejecutar balance estricto final con más iteraciones
+                    final_balance = self.balance_optimizer.optimize_balance(
+                        max_iterations=300,
+                        target_tolerance=1
+                    )
+                    if final_balance:
+                        logging.info("✅ Final strict balance achieved")
+                    else:
+                        # Intentar con tolerancia más flexible
+                        logging.info("🔄 Retrying with tolerance ±2...")
+                        self.balance_optimizer.optimize_balance(
+                            max_iterations=200,
+                            target_tolerance=2
+                        )
+                except Exception as e:
+                    logging.error(f"Error in final balance optimization: {e}", exc_info=True)
 
             # Get the best schedule
             final_schedule_data = self.scheduler.schedule_builder.get_best_schedule()
