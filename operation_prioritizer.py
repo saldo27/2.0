@@ -170,6 +170,18 @@ class OperationPrioritizer:
             ))
             logging.warning(f"🚨 Activado balance ULTRA-AGRESIVO (desbalance crítico: {workload_imbalance:.1%})")
         
+        # NEW: Triple balance para desbalances extremos (>20%)
+        if workload_imbalance > 0.20:  # >20% desbalance
+            operations.extend([
+                ("balance_target_shifts_aggressively_3",
+                 self.scheduler.schedule_builder._balance_target_shifts_aggressively,
+                 15),  # Prioridad extrema
+                ("balance_target_shifts_aggressively_4",
+                 self.scheduler.schedule_builder._balance_target_shifts_aggressively,
+                 12)   # Pasada adicional de cierre
+            ])
+            logging.error(f"🔴 Activado balance EXTREMO - desbalance crítico: {workload_imbalance:.1%}")
+        
         # Ajustar prioridad de distribución de fines de semana
         weekend_priority = self.base_priorities['improve_weekend_distribution']
         if weekend_imbalance > 0.20:

@@ -4332,6 +4332,9 @@ class ScheduleBuilder:
     
         # Calculate deviations for all workers
         worker_deviations = []
+        overloaded_workers = []
+        underloaded_workers = []
+        
         for worker in self.workers_data:
             worker_id = worker['id']
             target = worker['target_shifts']
@@ -4350,25 +4353,217 @@ class ScheduleBuilder:
             current = total - mandatory_assigned  # Solo non-mandatory
             
             deviation = current - target
-            # CRÍTICO: Procesar incluso desviaciones pequeñas (0.3 en vez de 0.5)
+            deviation_pct = (deviation / target * 100) if target > 0 else 0
+            
+            # Track workers by type
+            if deviation > 0:
+                overloaded_workers.append((worker_id, deviation, target, current, deviation_pct))
+            elif deviation < 0:
+                underloaded_workers.append((worker_id, deviation, target, current, deviation_pct))
+            
+            # Process workers with any deviation
             if abs(deviation) > 0.3:
-                worker_deviations.append((worker_id, deviation, target, current))
-                logging.debug(f"Worker {worker_id}: current={current}, target={target}, deviation={deviation:+.1f}")
+                worker_deviations.append((worker_id, deviation, target, current, deviation_pct))
+                logging.debug(f"Worker {worker_id}: current={current}, target={target}, deviation={deviation:+.1f} ({deviation_pct:+.1f}%)")
     
         # Sort by absolute deviation (largest first)
         worker_deviations.sort(key=lambda x: abs(x[1]), reverse=True)
+        overloaded_workers.sort(key=lambda x: x[1], reverse=True)  # Most overloaded first
+        underloaded_workers.sort(key=lambda x: x[1])  # Most underloaded first (most negative)
         
         logging.info(f"Found {len(worker_deviations)} workers with deviations to balance")
-    
-        for worker_id, deviation, target, current in worker_deviations:
-            if deviation > 0:  # Worker has too many shifts
-                # Intentar redistribuir TODOS los turnos de exceso, no solo algunos
-                excess_to_redistribute = max(1, int(deviation))
-                logging.info(f"Attempting to redistribute {excess_to_redistribute} excess shifts from {worker_id}")
-                changes_made += self._try_redistribute_excess_shifts(worker_id, excess_to_redistribute)
+        logging.info(f"  - Overloaded: {len(overloaded_workers)} workers")
+        logging.info(f"  - Underloaded: {len(underloaded_workers)} workers")
+        
+        # PHASE 1: Redistribute from overloaded workers
+        for worker_id, deviation, target, current, deviation_pct in overloaded_workers:
+            excess_to_redistribute = max(1, int(deviation))
+            logging.info(f"Phase 1: Redistributing {excess_to_redistribute} excess shifts from {worker_id} ({deviation_pct:+.1f}%)")
+            changes_made += self._try_redistribute_excess_shifts(worker_id, excess_to_redistribute)
+        
+        # PHASE 2: For severely underloaded workers, try to "steal" from workers with positive deviation
+        # This handles cases where the standard redistribution didn't help enough
+        for worker_id, deviation, target, current, deviation_pct in underloaded_workers:
+            if deviation_pct < -15:  # Worker is >15% under their target
+                shifts_needed = min(abs(int(deviation)), 3)  # Try to recover up to 3 shifts
+                logging.info(f"Phase 2: Worker {worker_id} needs {shifts_needed} more shifts ({deviation_pct:+.1f}%)")
+                changes_made += self._try_steal_shifts_for_worker(worker_id, shifts_needed, overloaded_workers)
     
         logging.info(f"Aggressive target balancing: {changes_made} changes made")
         return changes_made
+
+    def _try_steal_shifts_for_worker(self, underloaded_worker_id, shifts_needed, overloaded_workers):
+        """
+        Try to steal shifts from overloaded workers for a severely underloaded worker.
+        This is more aggressive than redistribution as it actively seeks shifts for specific workers.
+        
+        CONSTRAINTS VERIFIED:
+        - _can_assign_worker: days off, incompatibilities, gap, 7/14 pattern, weekend limits
+        - _would_violate_tolerance: ±12% global tolerance
+        - _violates_7_14_pattern: same weekday pattern
+        - _check_incompatibility_with_list: incompatibilities with others on date
+        - _would_exceed_monthly_limit: NEW - monthly balance
+        - _would_imbalance_weekends: NEW - weekend distribution
+        """
+        changes = 0
+        underloaded_worker = next((w for w in self.workers_data if w['id'] == underloaded_worker_id), None)
+        if not underloaded_worker:
+            return 0
+        
+        for overloaded_id, excess, _, _, _ in overloaded_workers:
+            if changes >= shifts_needed:
+                break
+            if excess <= 0:
+                continue  # No longer overloaded
+            
+            # Try to find transferable shifts
+            assignments = list(self.worker_assignments.get(overloaded_id, []))
+            random.shuffle(assignments)
+            
+            for date in assignments:
+                if changes >= shifts_needed:
+                    break
+                
+                # Check if we can transfer this shift
+                if not self._can_modify_assignment(overloaded_id, date, "steal_for_underloaded"):
+                    continue
+                
+                try:
+                    post = self.schedule[date].index(overloaded_id)
+                except (ValueError, KeyError):
+                    continue
+                
+                # Check if underloaded worker already works this date
+                if underloaded_worker_id in self.schedule.get(date, []):
+                    continue
+                
+                # Check if underloaded worker can take this shift (includes weekend limits)
+                if not self._can_assign_worker(underloaded_worker_id, date, post):
+                    continue
+                
+                # Check global tolerance constraints
+                if self._would_violate_tolerance(underloaded_worker_id, date, allow_relaxation=True):
+                    logging.debug(f"Steal rejected: {underloaded_worker_id} would violate tolerance")
+                    continue
+                    
+                if self._violates_7_14_pattern(underloaded_worker_id, date):
+                    logging.debug(f"Steal rejected: {underloaded_worker_id} 7/14 pattern on {date.strftime('%Y-%m-%d')}")
+                    continue
+                
+                # Check incompatibilities with others on this date
+                others_on_date = [w for idx, w in enumerate(self.schedule.get(date, [])) 
+                                 if w is not None and idx != post and w != overloaded_id]
+                if not self._check_incompatibility_with_list(underloaded_worker_id, others_on_date):
+                    logging.debug(f"Steal rejected: {underloaded_worker_id} incompatible on {date.strftime('%Y-%m-%d')}")
+                    continue
+                
+                # NEW: Check monthly balance - would this exceed monthly limit?
+                if self._would_exceed_monthly_limit(underloaded_worker_id, date):
+                    logging.debug(f"Steal rejected: {underloaded_worker_id} would exceed monthly limit in {date.strftime('%Y-%m')}")
+                    continue
+                
+                # NEW: Check weekend balance - would this create weekend imbalance?
+                if self._would_imbalance_weekends(underloaded_worker_id, date, overloaded_id):
+                    logging.debug(f"Steal rejected: would imbalance weekend distribution")
+                    continue
+                
+                # Make the transfer
+                self.schedule[date][post] = underloaded_worker_id
+                self.worker_assignments[overloaded_id].remove(date)
+                self.worker_assignments.setdefault(underloaded_worker_id, set()).add(date)
+                
+                # Update tracking
+                self.scheduler._update_tracking_data(overloaded_id, date, post, removing=True)
+                self.scheduler._update_tracking_data(underloaded_worker_id, date, post)
+                
+                changes += 1
+                logging.info(f"Stole shift on {date.strftime('%Y-%m-%d')} from {overloaded_id} to {underloaded_worker_id}")
+        
+        return changes
+    
+    def _would_exceed_monthly_limit(self, worker_id, date):
+        """
+        Check if assigning a shift on this date would exceed the worker's monthly limit.
+        Uses ±12% tolerance for balance.
+        """
+        worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        if not worker_config:
+            return False
+        
+        # Get expected monthly target
+        expected_monthly = self._get_expected_monthly_target(worker_config, date.year, date.month)
+        if expected_monthly <= 0:
+            return False
+        
+        # Calculate current shifts in this month
+        shifts_this_month = sum(
+            1 for d in self.worker_assignments.get(worker_id, set())
+            if d.year == date.year and d.month == date.month
+        )
+        
+        # Calculate tolerance (±12% for full-time, stricter for part-time)
+        work_percentage = worker_config.get('work_percentage', 100)
+        if work_percentage < 100:
+            tolerance = 0  # Strict for part-time
+        else:
+            tolerance = max(1, round(expected_monthly * 0.12))
+        
+        max_monthly = expected_monthly + tolerance
+        
+        # Would adding this shift exceed the limit?
+        return (shifts_this_month + 1) > max_monthly
+    
+    def _would_imbalance_weekends(self, receiver_worker_id, date, giver_worker_id):
+        """
+        Check if transferring a weekend shift would create or worsen weekend imbalance.
+        Returns True if the transfer should be blocked.
+        """
+        # Check if this is a weekend/holiday
+        is_weekend = (date.weekday() >= 4 or 
+                      date in self.scheduler.holidays or
+                      (date + timedelta(days=1)) in self.scheduler.holidays)
+        
+        if not is_weekend:
+            return False  # Not a weekend, no balance concern
+        
+        # Get weekend counts for both workers
+        receiver_weekends = sum(
+            1 for d in self.worker_assignments.get(receiver_worker_id, set())
+            if d.weekday() >= 4 or d in self.scheduler.holidays
+        )
+        giver_weekends = sum(
+            1 for d in self.worker_assignments.get(giver_worker_id, set())
+            if d.weekday() >= 4 or d in self.scheduler.holidays
+        )
+        
+        # Get target weekends based on work_percentage
+        receiver_config = next((w for w in self.workers_data if w['id'] == receiver_worker_id), None)
+        giver_config = next((w for w in self.workers_data if w['id'] == giver_worker_id), None)
+        
+        receiver_work_pct = receiver_config.get('work_percentage', 100) if receiver_config else 100
+        giver_work_pct = giver_config.get('work_percentage', 100) if giver_config else 100
+        
+        # Calculate expected weekend ratio based on work_percentage
+        # A full-time worker should have proportionally more weekends
+        receiver_target_weekends = receiver_config.get('target_shifts', 0) * 0.4 if receiver_config else 0  # ~40% of shifts are weekends
+        giver_target_weekends = giver_config.get('target_shifts', 0) * 0.4 if giver_config else 0
+        
+        # After transfer: receiver gets +1, giver gets -1
+        new_receiver_weekends = receiver_weekends + 1
+        new_giver_weekends = giver_weekends - 1
+        
+        # Check if receiver would have significantly more weekends than their fair share
+        if receiver_target_weekends > 0:
+            receiver_weekend_ratio = new_receiver_weekends / receiver_target_weekends
+            if receiver_weekend_ratio > 1.25:  # >25% over weekend target
+                logging.debug(f"Weekend imbalance: {receiver_worker_id} would have {new_receiver_weekends} weekends ({receiver_weekend_ratio:.0%} of target)")
+                return True
+        
+        # Check if giver would be left with too few weekends
+        if giver_target_weekends > 0 and new_giver_weekends < 0:
+            return True  # Can't have negative weekends
+        
+        return False
 
     def _try_redistribute_excess_shifts(self, overloaded_worker_id, excess_count):
         """Try to move excess shifts from overloaded worker to underloaded workers"""
@@ -4448,6 +4643,16 @@ class ScheduleBuilder:
                     if not self._check_incompatibility_with_list(under_worker_id, others_on_date):
                         logging.debug(f"Redistribution rejected: {under_worker_id} incompatible on {date.strftime('%Y-%m-%d')}")
                         continue  # Try next underloaded worker
+                    
+                    # NEW: Check monthly balance - would this exceed monthly limit?
+                    if self._would_exceed_monthly_limit(under_worker_id, date):
+                        logging.debug(f"Redistribution rejected: {under_worker_id} would exceed monthly limit in {date.strftime('%Y-%m')}")
+                        continue
+                    
+                    # NEW: Check weekend balance - would this create weekend imbalance?
+                    if self._would_imbalance_weekends(under_worker_id, date, overloaded_worker_id):
+                        logging.debug(f"Redistribution rejected: would imbalance weekend distribution")
+                        continue
                     
                     # CRITICAL: Final check before transfer
                     if not self._can_modify_assignment(overloaded_worker_id, date, "redistribute_excess_final"):

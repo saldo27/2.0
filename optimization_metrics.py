@@ -272,32 +272,50 @@ class OptimizationMetrics:
             return 0
     
     def calculate_workload_imbalance(self) -> float:
-        """Calcular el desbalance de carga de trabajo como ratio"""
+        """
+        Calcular el desbalance de carga de trabajo como ratio.
+        
+        CRITICAL: Compara asignaciones non-mandatory vs target_shifts (que ya tiene mandatory restado).
+        Esto asegura que workers con mandatory no parezcan sobrecargados incorrectamente.
+        """
         try:
             if not self.scheduler.workers_data:
                 return 0.0
             
-            assignment_counts = []
+            deviation_ratios = []
             
             for worker in self.scheduler.workers_data:
                 worker_id = worker['id']
-                work_percentage = worker.get('work_percentage', 100)
-                count = len(self.scheduler.worker_assignments.get(worker_id, set()))
+                target = worker.get('target_shifts', 0)
                 
-                if work_percentage > 0:
-                    normalized_count = count * 100 / work_percentage
-                    assignment_counts.append(normalized_count)
+                if target <= 0:
+                    continue
+                
+                all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
+                total_count = len(all_assignments)
+                
+                # CRITICAL: Exclude mandatory shifts from count since target_shifts already has them subtracted
+                mandatory_dates = set()
+                mandatory_str = worker.get('mandatory_days', '')
+                if mandatory_str and hasattr(self.scheduler, 'date_utils'):
+                    try:
+                        mandatory_dates = set(self.scheduler.date_utils.parse_dates(mandatory_str))
+                    except Exception:
+                        pass
+                
+                mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+                non_mandatory_count = total_count - mandatory_assigned
+                
+                # Calculate deviation ratio: (actual - target) / target
+                # Positive = overloaded, Negative = underloaded
+                deviation_ratio = (non_mandatory_count - target) / target
+                deviation_ratios.append(abs(deviation_ratio))
             
-            if not assignment_counts:
+            if not deviation_ratios:
                 return 0.0
             
-            max_count = max(assignment_counts)
-            min_count = min(assignment_counts)
-            
-            if max_count == 0:
-                return 0.0
-            
-            return (max_count - min_count) / max_count
+            # Return max deviation as the workload imbalance indicator
+            return max(deviation_ratios)
             
         except Exception as e:
             logging.error(f"Error calculating workload imbalance: {e}")
