@@ -74,39 +74,39 @@ class AdaptiveIterationManager:
         complexity_multiplier = self._calculate_complexity_multiplier()
         quality_factor = self._calculate_quality_adjustment_factor()
         
-        # Base iteration calculations with enhanced logic
+        # Base iteration calculations with enhanced logic - INCREASED for better coverage
         if complexity < 1000:
             base_config = {
-                'main_loops': 10,
-                'fill_attempts': 8,
-                'balance_iterations': 5,
-                'weekend_passes': 5,
-                'post_adjustment_iterations': 6
+                'main_loops': 15,           # Increased from 10
+                'fill_attempts': 12,        # Increased from 8
+                'balance_iterations': 8,    # Increased from 5
+                'weekend_passes': 8,        # Increased from 5
+                'post_adjustment_iterations': 10  # Increased from 6
             }
         elif complexity < 5000:
             base_config = {
-                'main_loops': 20,
-                'fill_attempts': 16,
-                'balance_iterations': 10,
-                'weekend_passes': 10,
-                'post_adjustment_iterations': 10
+                'main_loops': 30,           # Increased from 20
+                'fill_attempts': 25,        # Increased from 16
+                'balance_iterations': 15,   # Increased from 10
+                'weekend_passes': 15,       # Increased from 10
+                'post_adjustment_iterations': 15  # Increased from 10
             }
         elif complexity < 15000:
             base_config = {
-                'main_loops': 75,
-                'fill_attempts': 60,
-                'balance_iterations': 40,
-                'weekend_passes': 30,
-                'post_adjustment_iterations': 30
+                'main_loops': 100,          # Increased from 75
+                'fill_attempts': 80,        # Increased from 60
+                'balance_iterations': 60,   # Increased from 40
+                'weekend_passes': 50,       # Increased from 30
+                'post_adjustment_iterations': 50  # Increased from 30
             }
         else:
             # Enhanced: Apply dynamic multipliers for complex schedules
             base_config = {
-                'main_loops': 100,
-                'fill_attempts': 80,
-                'balance_iterations': 50,
-                'weekend_passes': 40,
-                'post_adjustment_iterations': 35
+                'main_loops': 150,          # Increased from 100
+                'fill_attempts': 120,       # Increased from 80
+                'balance_iterations': 80,   # Increased from 50
+                'weekend_passes': 60,       # Increased from 40
+                'post_adjustment_iterations': 50  # Increased from 35
             }
         
         # Apply historical learning adjustments

@@ -224,11 +224,10 @@ class ConstraintChecker:
             # PART 1: CHECK MAX CONSECUTIVE WEEKENDS/HOLIDAYS (keep existing logic)
             base_max_consecutive = self.scheduler.max_consecutive_weekends
     
-            # Adjust max consecutive for part-time workers (<70%)
-            if work_percentage < 70:
-                adjusted_max_consecutive = max(1, int(base_max_consecutive * work_percentage / 100))
-            else:
-                adjusted_max_consecutive = base_max_consecutive
+            # NOTE: Do NOT reduce max_consecutive_weekends for part-time workers
+            # Part-time workers should have the SAME consecutive limit as full-time
+            # Their total weekend count is already proportionally reduced via target_shifts
+            adjusted_max_consecutive = base_max_consecutive
     
             # Get all weekend/holiday assignments including the prospective date
             current_assignments = self.scheduler.worker_assignments.get(worker_id, set())
@@ -247,24 +246,36 @@ class ConstraintChecker:
     
             # Check consecutive weekend/holiday constraint
             if weekend_dates:
+                # IMPORTANT: First, group weekend dates by CALENDAR WEEK to count weekend WEEKS, not individual days
+                # Multiple assignments in the same weekend (Fri+Sat+Sun) should count as ONE weekend
+                weekend_weeks = set()
+                for d in weekend_dates:
+                    # Get the Monday of the week (start of week)
+                    week_start = d - timedelta(days=d.weekday())
+                    weekend_weeks.add(week_start)
+                
+                sorted_weekend_weeks = sorted(weekend_weeks)
+                
+                # Now check for consecutive weekend weeks
                 consecutive_groups = []
                 current_group = []
         
-                for i, weekend_date in enumerate(weekend_dates):
+                for week_start in sorted_weekend_weeks:
                     if not current_group:
-                        current_group = [weekend_date]
+                        current_group = [week_start]
                     else:
-                        prev_date = current_group[-1]
-                        days_between = (weekend_date - prev_date).days
+                        prev_week = current_group[-1]
+                        weeks_diff = (week_start - prev_week).days // 7
                 
-                        # Consecutive weekends typically have 5-10 days between them
-                        if 5 <= days_between <= 10:
-                            current_group.append(weekend_date)
+                        # Consecutive if exactly 1 week apart
+                        if weeks_diff == 1:
+                            current_group.append(week_start)
                         else:
-                            consecutive_groups.append(current_group)
-                            current_group = [weekend_date]
+                            if current_group:  # Save any group
+                                consecutive_groups.append(current_group)
+                            current_group = [week_start]
         
-                if current_group:
+                if current_group:  # Don't forget the last group
                     consecutive_groups.append(current_group)
         
                 # Check if any group exceeds the limit
@@ -280,36 +291,34 @@ class ConstraintChecker:
                 all_schedule_days.append(current_date)
                 current_date += timedelta(days=1)
         
+            total_schedule_days = len(all_schedule_days)
             total_weekend_days = sum(1 for d in all_schedule_days 
                                    if (d.weekday() >= 4 or 
                                        d in self.scheduler.holidays or
                                        (d + timedelta(days=1)) in self.scheduler.holidays))
         
-            # Calculate worker's available weekend days within their work periods
-            worker_weekend_days = 0
-            for start_period, end_period in work_periods:
-                period_current = start_period
-                while period_current <= end_period:
-                    if (period_current.weekday() >= 4 or 
-                        period_current in self.scheduler.holidays or
-                        (period_current + timedelta(days=1)) in self.scheduler.holidays):
-                        worker_weekend_days += 1
-                    period_current += timedelta(days=1)
-        
-            if total_weekend_days == 0 or worker_weekend_days == 0:
+            if total_schedule_days == 0 or total_weekend_days == 0:
                 return False  # No weekends to distribute
         
-            # Calculate proportional target with +/- 1 tolerance
-            base_proportion = worker_weekend_days / total_weekend_days
-            work_factor = work_percentage / 100
-        
-            # Calculate target weekend assignments
-            raw_target = total_weekend_days * base_proportion * work_factor
-            target_weekend_count = round(raw_target)
-        
-            # Apply +/- 1 tolerance as specified in requirements
-            min_target = max(0, target_weekend_count - 1)
-            max_target = target_weekend_count + 1
+            # Get worker's target_shifts (this already accounts for mandatory days subtracted)
+            target_shifts = worker_data.get('target_shifts', 0)
+            if target_shifts <= 0:
+                return False
+            
+            # Calculate the actual weekend ratio for this schedule period
+            # (may differ from 3/7 due to holidays and schedule boundaries)
+            actual_weekend_ratio = total_weekend_days / total_schedule_days
+            
+            # Target weekend shifts = target_shifts * actual_weekend_ratio
+            # This gives the proportional fair share of weekend shifts
+            raw_target = target_shifts * actual_weekend_ratio
+            
+            # CRITICAL: Use percentage-based tolerance instead of fixed +1
+            # This ensures proportional treatment for part-time workers
+            # Allow 10% tolerance above target, with minimum of 1 extra
+            tolerance_percentage = 0.10  # 10% tolerance
+            tolerance_amount = max(1, int(raw_target * tolerance_percentage))
+            max_target = int(raw_target) + tolerance_amount
         
             # Count current weekend assignments (including the prospective one)
             current_weekend_count = len(weekend_dates)
@@ -317,12 +326,12 @@ class ConstraintChecker:
             # Check if assignment would exceed the tolerance limit
             if current_weekend_count > max_target:
                 logging.debug(f"Worker {worker_id}: weekend assignment would exceed proportional limit "
-                             f"({current_weekend_count} > {max_target}). Target: {target_weekend_count}, "
-                             f"work %: {work_percentage}%, proportion: {base_proportion:.2f}")
+                             f"({current_weekend_count} > {max_target}). Target: {raw_target:.1f}, "
+                             f"tolerance: {tolerance_amount}, actual ratio: {actual_weekend_ratio:.3f}")
                 return True
         
             logging.debug(f"Worker {worker_id}: weekend assignment within limits "
-                         f"({current_weekend_count} <= {max_target}). Target: {target_weekend_count}")
+                         f"({current_weekend_count} <= {max_target}). Target: {raw_target:.1f}")
             return False
         
         except Exception as e:

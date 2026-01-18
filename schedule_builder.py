@@ -483,6 +483,8 @@ class ScheduleBuilder:
             return False  # Definitely OK
         
         # Check weekend tolerance if this is a weekend
+        # NOTE: This is a secondary check. Primary check is in constraint_checker._would_exceed_weekend_limit
+        # which is called from _can_assign_worker. This check enforces ±12% global tolerance.
         if self._is_weekend_or_holiday(date):
             weekend_assignments = sum(
                 1 for d in self.worker_assignments.get(worker_id, set())
@@ -490,23 +492,25 @@ class ScheduleBuilder:
             )
             weekend_after = weekend_assignments + 1
             
-            # Calculate weekend target (approximately 3/7 days are Fri-Sun)
-            weekend_percentage = 3.0 / 7.0
-            weekend_target = target_shifts * weekend_percentage
+            # Calculate weekend target based on target_shifts
+            # NOTE: target_shifts ALREADY includes work_percentage adjustment,
+            # so we should NOT multiply by work_percentage again!
+            # CRITICAL: Weekend days = 3/7 of total days (Fri, Sat, Sun)
+            weekend_ratio = 3.0 / 7.0
+            weekend_target = target_shifts * weekend_ratio
             
-            # Use the same adjusted tolerance for weekends (already calculated above for part-time workers)
-            weekend_tolerance_amount = weekend_target * tolerance
-            # CRITICAL: Use int() to truncate for strict limits
-            max_weekend_allowed = int(weekend_target * (1 + tolerance))
+            # Use ±12% tolerance for weekends (consistent with global tolerance)
+            # But with a minimum of +1 to handle rounding for small targets
+            base_max = int(weekend_target * (1 + tolerance))
+            max_weekend_allowed = max(base_max, int(weekend_target) + 1)
             
-            # ONLY check UPPER bound for weekends too
+            # ONLY check UPPER bound for weekends
             if weekend_after > max_weekend_allowed:
                 work_pct_msg = f" (part-time {work_percentage}%)" if work_percentage < 100 else ""
-                # CRITICAL: Even with relaxation, weekend violations should be blocked
-                # to prevent severe imbalances in weekend distribution
+                deviation_pct = ((weekend_after - weekend_target) / weekend_target * 100) if weekend_target > 0 else 0
                 logging.warning(f"🚫 BLOCKED: {worker_id}{work_pct_msg} would exceed weekend tolerance "
-                              f"({weekend_after} > {max_weekend_allowed}, target: {weekend_target:.1f})")
-                return True  # ALWAYS BLOCK weekend tolerance violations
+                              f"({weekend_after} > {max_weekend_allowed}, target: {weekend_target:.1f}, deviation: {deviation_pct:+.1f}%)")
+                return True  # BLOCK weekend tolerance violations
         
         return False  # OK to assign
     
@@ -784,6 +788,119 @@ class ScheduleBuilder:
             logging.error(f"Error during _can_swap_assignments simulation for {worker_id}: {e}", exc_info=True)
             return False # Fail safe
 
+    def _can_worker_swap(self, worker1_id, date1, post1, worker2_id, date2, post2):
+        """
+        Checks if two workers can swap their assignments.
+        Worker1 moves from (date1, post1) to (date2, post2)
+        Worker2 moves from (date2, post2) to (date1, post1)
+        
+        This is a full worker-worker swap, not just moving one worker.
+        """
+        try:
+            # Create optimized copies
+            simulated_schedule = {k: v[:] for k, v in self.scheduler.schedule.items()}
+            simulated_assignments = {k: set(v) for k, v in self.scheduler.worker_assignments.items()}
+            
+            # Validate initial state for worker1
+            if (date1 not in simulated_schedule or
+                len(simulated_schedule[date1]) <= post1 or
+                simulated_schedule[date1][post1] != worker1_id or
+                worker1_id not in simulated_assignments or
+                date1 not in simulated_assignments[worker1_id]):
+                logging.debug(f"_can_worker_swap: Invalid initial state for worker1 {worker1_id} at {date1}|P{post1}")
+                return False
+            
+            # Validate initial state for worker2
+            if (date2 not in simulated_schedule or
+                len(simulated_schedule[date2]) <= post2 or
+                simulated_schedule[date2][post2] != worker2_id or
+                worker2_id not in simulated_assignments or
+                date2 not in simulated_assignments[worker2_id]):
+                logging.debug(f"_can_worker_swap: Invalid initial state for worker2 {worker2_id} at {date2}|P{post2}")
+                return False
+            
+            # Simulate the swap
+            # Remove both workers from their original positions
+            simulated_schedule[date1][post1] = None
+            simulated_schedule[date2][post2] = None
+            simulated_assignments[worker1_id].remove(date1)
+            simulated_assignments[worker2_id].remove(date2)
+            
+            # Place them in their new positions
+            simulated_schedule[date1][post1] = worker2_id
+            simulated_schedule[date2][post2] = worker1_id
+            simulated_assignments[worker1_id].add(date2)
+            simulated_assignments[worker2_id].add(date1)
+            
+            # Check constraints for both workers in their new positions
+            worker1_valid = self._check_constraints_on_simulated(
+                worker1_id, date2, post2, simulated_schedule, simulated_assignments
+            )
+            
+            worker2_valid = self._check_constraints_on_simulated(
+                worker2_id, date1, post1, simulated_schedule, simulated_assignments
+            )
+            
+            # Check both affected dates
+            date1_valid = self._check_all_constraints_for_date_simulated(
+                date1, simulated_schedule, simulated_assignments
+            )
+            
+            date2_valid = self._check_all_constraints_for_date_simulated(
+                date2, simulated_schedule, simulated_assignments
+            )
+            
+            is_valid = worker1_valid and worker2_valid and date1_valid and date2_valid
+            
+            logging.debug(f"Worker swap check: {worker1_id} <-> {worker2_id}. Valid: {is_valid} "
+                         f"(W1: {worker1_valid}, W2: {worker2_valid}, D1: {date1_valid}, D2: {date2_valid})")
+            
+            return is_valid
+            
+        except Exception as e:
+            logging.error(f"Error during _can_worker_swap: {e}", exc_info=True)
+            return False
+
+    def _execute_worker_swap(self, worker1_id, date1, post1, worker2_id, date2, post2):
+        """
+        Execute a swap between two workers.
+        Worker1 moves from (date1, post1) to (date2, post2)
+        Worker2 moves from (date2, post2) to (date1, post1)
+        """
+        try:
+            # Remove both workers from their original positions (update tracking)
+            self.scheduler._update_tracking_data(worker1_id, date1, post1, removing=True)
+            self.scheduler._update_tracking_data(worker2_id, date2, post2, removing=True)
+            
+            self.schedule[date1][post1] = None
+            self.schedule[date2][post2] = None
+            
+            if worker1_id in self.worker_assignments and date1 in self.worker_assignments[worker1_id]:
+                self.worker_assignments[worker1_id].remove(date1)
+            if worker2_id in self.worker_assignments and date2 in self.worker_assignments[worker2_id]:
+                self.worker_assignments[worker2_id].remove(date2)
+            
+            # Place them in their new positions
+            self.schedule[date1][post1] = worker2_id
+            self.schedule[date2][post2] = worker1_id
+            
+            if worker1_id not in self.worker_assignments:
+                self.worker_assignments[worker1_id] = set()
+            if worker2_id not in self.worker_assignments:
+                self.worker_assignments[worker2_id] = set()
+                
+            self.worker_assignments[worker1_id].add(date2)
+            self.worker_assignments[worker2_id].add(date1)
+            
+            # Update tracking data for the new positions
+            self.scheduler._update_tracking_data(worker2_id, date1, post1, removing=False)
+            self.scheduler._update_tracking_data(worker1_id, date2, post2, removing=False)
+            
+            logging.debug(f"Executed worker swap: {worker1_id} ({date1}) <-> {worker2_id} ({date2})")
+            
+        except Exception as e:
+            logging.error(f"Error executing worker swap: {e}", exc_info=True)
+            raise
 
     def _check_constraints_on_simulated(self, worker_id, date, post, simulated_schedule, simulated_assignments):
         """Checks constraints for a worker on a specific date using simulated data."""
@@ -921,7 +1038,12 @@ class ScheduleBuilder:
         return True
     
     def _would_exceed_weekend_limit_simulated(self, worker_id, date, simulated_assignments):
-        """Check weekend limit using simulated assignments."""
+        """Check weekend limit using simulated assignments.
+        
+        Checks TWO constraints:
+        1. Maximum consecutive weekends (adjusted for part-time workers)
+        2. Proportional weekend distribution (target_shifts * weekend_ratio ± tolerance)
+        """
         # Check if date is a weekend/holiday
         is_target_weekend = (date.weekday() >= 4 or 
                      date in self.scheduler.holidays or
@@ -929,14 +1051,13 @@ class ScheduleBuilder:
         if not is_target_weekend:
             return False
     
-        # Get worker data to check work_percentage
+        # Get worker data
         worker_data = next((w for w in self.scheduler.workers_data if w['id'] == worker_id), None)
+        if not worker_data:
+            return True  # Conservative: reject if worker not found
+            
         work_percentage = worker_data.get('work_percentage', 100) if worker_data else 100
-    
-        # Calculate max_weekend_count based on work_percentage
-        max_weekend_count = self.scheduler.max_consecutive_weekends
-        if work_percentage < 70:
-            max_weekend_count = max(1, int(self.scheduler.max_consecutive_weekends * work_percentage / 100))
+        target_shifts = worker_data.get('target_shifts', 0)
     
         # Get weekend assignments and add the current date
         weekend_dates = []
@@ -952,49 +1073,91 @@ class ScheduleBuilder:
     
         # Sort dates to ensure chronological order
         weekend_dates.sort()
+        
+        # ========================================
+        # CHECK 1: Maximum consecutive weekends
+        # ========================================
+        # NOTE: Do NOT reduce max_consecutive_weekends for part-time workers
+        # Part-time workers should have the SAME consecutive limit as full-time
+        # Their total weekend count is already proportionally reduced via target_shifts
+        max_weekend_count = self.scheduler.max_consecutive_weekends
     
         # Check for consecutive weekends
+        # IMPORTANT: First, group weekend dates by CALENDAR WEEK to count weekend WEEKS, not individual days
+        # Multiple assignments in the same weekend (Fri+Sat+Sun) should count as ONE weekend
+        weekend_weeks = set()
+        for d_val in weekend_dates:
+            # Get the Monday of the week (start of week)
+            week_start = d_val - timedelta(days=d_val.weekday())
+            weekend_weeks.add(week_start)
+        
+        sorted_weekend_weeks = sorted(weekend_weeks)
+        
+        # Now check for consecutive weekend weeks
         consecutive_groups = []
         current_group = []
     
-        for i, d_val in enumerate(weekend_dates): # Renamed d to d_val
-            # Start a new group or add to the current one
+        for week_start in sorted_weekend_weeks:
             if not current_group:
-                current_group = [d_val]
+                current_group = [week_start]
             else:
-                # Get the previous weekend's date
-                prev_weekend = current_group[-1]
-                # Calculate days between this weekend and the previous one
-                days_diff = (d_val - prev_weekend).days
+                prev_week = current_group[-1]
+                weeks_diff = (week_start - prev_week).days // 7
             
-                # Checking if they are adjacent weekend dates (typically 7 days apart)
-                # A weekend is consecutive to the previous if it's the next calendar weekend
-                # Strict check: 6-8 days (not 5-10) to avoid false positives
-                if 6 <= days_diff <= 8:
-                    current_group.append(d_val)
+                # Consecutive if exactly 1 week apart
+                if weeks_diff == 1:
+                    current_group.append(week_start)
                 else:
-                    # Not consecutive, save the current group and start a new one
-                    if len(current_group) > 1:  # Only save groups with more than 1 weekend
+                    if len(current_group) >= 1:  # Save any group
                         consecutive_groups.append(current_group)
-                    current_group = [d_val]
+                    current_group = [week_start]
     
-        # Add the last group if it has more than 1 weekend
-        if len(current_group) > 1:
+        if current_group:  # Don't forget the last group
             consecutive_groups.append(current_group)
     
-        # Find the longest consecutive sequence INCLUDING the new date we're about to add
         max_consecutive = 0
         if consecutive_groups:
             max_consecutive = max(len(group) for group in consecutive_groups)
         else:
-            max_consecutive = 1  # No consecutive weekends found, or only single weekends
+            max_consecutive = 1
     
-        # CRITICAL FIX: Check if maximum consecutive weekend count WOULD BE exceeded
-        # The date is ALREADY in weekend_dates because we added it earlier
         if max_consecutive > max_weekend_count:
-            logging.debug(f"Weekend limit WOULD BE exceeded: Worker {worker_id} would have {max_consecutive} consecutive weekend shifts (max allowed: {max_weekend_count})")
+            logging.debug(f"Weekend consecutive limit exceeded: Worker {worker_id} would have {max_consecutive} consecutive (max: {max_weekend_count})")
             return True
-    
+        
+        # ========================================
+        # CHECK 2: Proportional weekend distribution
+        # ========================================
+        if target_shifts <= 0:
+            return False  # Cannot calculate proportion without target
+            
+        # Calculate total schedule days and weekend days
+        total_schedule_days = (self.scheduler.end_date - self.scheduler.start_date).days + 1
+        total_weekend_days = sum(1 for i in range(total_schedule_days)
+            if ((self.scheduler.start_date + timedelta(days=i)).weekday() >= 4 or
+                (self.scheduler.start_date + timedelta(days=i)) in self.scheduler.holidays or
+                (self.scheduler.start_date + timedelta(days=i+1)) in self.scheduler.holidays))
+        
+        if total_schedule_days == 0 or total_weekend_days == 0:
+            return False
+            
+        # Calculate proportional target
+        weekend_ratio = total_weekend_days / total_schedule_days
+        raw_target = target_shifts * weekend_ratio
+        
+        # CRITICAL: Use percentage-based tolerance instead of fixed +1
+        # This ensures proportional treatment for part-time workers
+        tolerance_percentage = 0.10  # 10% tolerance
+        tolerance_amount = max(1, int(raw_target * tolerance_percentage))
+        max_allowed_weekends = int(raw_target) + tolerance_amount
+        
+        current_weekend_count = len(weekend_dates)
+        
+        if current_weekend_count > max_allowed_weekends:
+            logging.debug(f"Weekend proportional limit exceeded: Worker {worker_id} would have {current_weekend_count} weekends "
+                         f"(max: {max_allowed_weekends}, target: {raw_target:.1f}, tolerance: {tolerance_amount})")
+            return True
+
         return False
     
     # ========================================
@@ -1776,12 +1939,10 @@ class ScheduleBuilder:
                     
                     weekend_percentage = self._cached_weekend_percentage
                     
-                    # Adjust by work_percentage - part-time workers should have proportionally fewer weekends
-                    work_pct = worker_config.get('work_percentage', 100) / 100.0
-                    # Apply power function for smoother reduction for part-time
-                    # Example: 50% worker gets 0.5^0.8 = 0.574, so if 45% weekends * 0.574 = 26%
-                    adjusted_work_pct = work_pct ** 0.8  # Less aggressive than sqrt but still reduces
-                    weekend_target = total_target * weekend_percentage * adjusted_work_pct
+                    # NOTE: total_target (whether _raw_target or target_shifts) ALREADY has
+                    # work_percentage incorporated from the target calculation in scheduler.py
+                    # DO NOT multiply by work_percentage again!
+                    weekend_target = total_target * weekend_percentage
                     
                     # Calculate tolerance using phase system
                     # Phase 1: ±10%, Phase 2: ±12%
@@ -1811,18 +1972,28 @@ class ScheduleBuilder:
                         weekend_dates_list = sorted([d for d in self.worker_assignments[worker_id] 
                                                      if self._is_weekend_or_holiday(d)])
                         
+                        # NOTE: Do NOT reduce max_consecutive_weekends for part-time workers
                         max_weekend_limit = self.scheduler.max_consecutive_weekends
-                        work_pct_val = worker_config.get('work_percentage', 100)
-                        if work_pct_val < 70:
-                            max_weekend_limit = max(1, int(self.scheduler.max_consecutive_weekends * work_pct_val / 100))
                         
-                        # Count current consecutive streak ending at this date
-                        consecutive_count = 1  # This weekend
-                        for i in range(len(weekend_dates_list) - 1, -1, -1):
-                            prev_weekend = weekend_dates_list[i]
-                            days_diff = (date - prev_weekend).days
-                            if 6 <= days_diff <= 8:  # Consecutive weekend
+                        # Get the week of the current date
+                        current_week_start = date - timedelta(days=date.weekday())
+                        
+                        # Group all weekend dates by calendar week
+                        weekend_weeks = set()
+                        for d in weekend_dates_list:
+                            week_start = d - timedelta(days=d.weekday())
+                            weekend_weeks.add(week_start)
+                        weekend_weeks.add(current_week_start)  # Add this date's week
+                        
+                        sorted_weeks = sorted(weekend_weeks, reverse=True)  # Most recent first
+                        
+                        # Count consecutive weeks ending at current week
+                        consecutive_count = 0
+                        expected_week = current_week_start
+                        for week in sorted_weeks:
+                            if week == expected_week:
                                 consecutive_count += 1
+                                expected_week = week - timedelta(days=7)  # Previous week
                             else:
                                 break
                         
@@ -1849,17 +2020,35 @@ class ScheduleBuilder:
                         else:
                             # At highest relaxation, allow with severe penalty
                             excess = weekend_after - max_weekend_allowed
-                            penalty = excess * 8000  # Very heavy penalty for weekend violations
+                            penalty = excess * 80000  # Extreme penalty for weekend violations
                             score -= penalty
                     elif weekend_after < weekend_target:
-                        # Bonus for workers below weekend target
+                        # CRITICAL: MASSIVE bonus for workers BELOW weekend target
+                        # This MUST dominate over general shift ratio to ensure fair weekend distribution
+                        # The bonus must be larger than the max ratio_score difference (~50,000)
                         deficit = weekend_target - weekend_after
-                        score += deficit * 200  # Reduced from 800 (secondary priority)
-                    else:
-                        # Small penalty for being above target but within tolerance
+                        deficit_ratio = deficit / weekend_target if weekend_target > 0 else 0
+                        
+                        # Calculate weekend completion ratio for this worker
+                        weekend_completion = weekend_after / weekend_target if weekend_target > 0 else 1.0
+                        
+                        # MASSIVE bonus: up to 60,000 points for workers with weekend deficit
+                        # This ensures weekend-deprived workers get priority over shift-deprived workers
+                        weekend_deficit_bonus = int((1 - weekend_completion) * 60000)
+                        score += weekend_deficit_bonus
+                        
+                        logging.debug(f"Worker {worker_id}: Weekend DEFICIT bonus - "
+                                    f"({weekend_after}/{weekend_target:.1f}, completion={weekend_completion:.2f}, bonus={weekend_deficit_bonus})")
+                    elif weekend_after >= weekend_target:
+                        # HEAVY penalty for workers AT or ABOVE weekend target
+                        # This STRONGLY discourages assigning more weekends to workers who have enough
                         if weekend_after > weekend_target:
                             excess = weekend_after - weekend_target
-                            score -= excess * 150  # Reduced penalty (secondary priority)
+                            # Heavy penalty to make these workers very unattractive for weekends
+                            score -= excess * 20000
+                        else:
+                            # At target - significant penalty to prefer workers with deficit
+                            score -= 10000
             else:
                 # No config, use simple penalty
                 score -= weekend_assignments * 100  # Reduced from 300
@@ -1899,10 +2088,9 @@ class ScheduleBuilder:
                     
                     weekend_percentage = self._cached_weekend_percentage
                     
-                    # Adjust by work_percentage with power function
-                    work_pct = worker_config.get('work_percentage', 100) / 100.0
-                    adjusted_work_pct = work_pct ** 0.8
-                    weekend_target = total_target * weekend_percentage * adjusted_work_pct
+                    # NOTE: total_target ALREADY has work_percentage incorporated
+                    # DO NOT multiply by work_percentage again!
+                    weekend_target = total_target * weekend_percentage
                     if weekend_assignments < weekend_target * 0.8:  # If significantly below weekend target
                         score -= 100  # Reduced from 200 (secondary priority)
 
@@ -2915,7 +3103,7 @@ class ScheduleBuilder:
         underloaded.sort(key=lambda x: x[1]['normalized_count'])
 
         changes_made = 0
-        max_changes = 100  # Aumentar para permitir más rebalanceos cuando sea necesario
+        max_changes = 200  # Aumentar para permitir más rebalanceos cuando sea necesario (de 100 a 200)
 
         # Try to redistribute shifts from overloaded to underloaded workers
         for over_worker_id, over_data in overloaded:
@@ -3460,23 +3648,42 @@ class ScheduleBuilder:
         for month_key, current_month_counts in special_day_counts_by_month.items():
             overloaded_workers = []
             underloaded_workers = []
+            
+            # Calculate total special days in this month
+            month_dates = months[month_key]
+            total_special_days_in_month = sum(1 for d in month_dates 
+                if (d.weekday() >= 4 or d in self.holidays or 
+                    (d + timedelta(days=1)) in self.holidays))
+            total_days_in_month = len(month_dates)
+            
+            # Calculate the weekend ratio for this month
+            month_weekend_ratio = total_special_days_in_month / total_days_in_month if total_days_in_month > 0 else 0.0
 
             for worker_val in self.workers_data:
                 worker_id_val = worker_val['id']
                 work_percentage = worker_val.get('work_percentage', 100)
                 
-                # Using max_consecutive_weekends as a type of monthly limit for these special days.
-                # This value comes from the scheduler's config.
-                max_special_days_limit_for_month = self.max_consecutive_weekends 
-                if work_percentage < 100: # Apply part-time adjustment
-                    max_special_days_limit_for_month = max(1, int(self.max_consecutive_weekends * work_percentage / 100))
-
+                # Count worker's total shifts in this month
+                worker_shifts_in_month = sum(1 for d in month_dates 
+                    if d in self.scheduler.worker_assignments.get(worker_id_val, set()))
+                
+                if worker_shifts_in_month == 0:
+                    continue
+                
+                # Calculate proportional target: worker_shifts_in_month * weekend_ratio
+                # This is the fair share of weekend/holiday shifts for this worker this month
+                raw_target = worker_shifts_in_month * month_weekend_ratio
+                target_special_days = int(raw_target)  # Use int() to truncate
+                
+                # Allow +/-1 tolerance
                 actual_special_days_this_month = current_month_counts.get(worker_id_val, 0)
-
-                if actual_special_days_this_month > max_special_days_limit_for_month:
-                    overloaded_workers.append((worker_id_val, actual_special_days_this_month, max_special_days_limit_for_month))
-                elif actual_special_days_this_month < max_special_days_limit_for_month:
-                    available_slots = max_special_days_limit_for_month - actual_special_days_this_month
+                
+                if actual_special_days_this_month > target_special_days + 1:
+                    # Worker has too many weekend shifts this month
+                    overloaded_workers.append((worker_id_val, actual_special_days_this_month, target_special_days + 1))
+                elif actual_special_days_this_month < max(0, target_special_days - 1):
+                    # Worker has too few weekend shifts this month
+                    available_slots = target_special_days - actual_special_days_this_month
                     underloaded_workers.append((worker_id_val, actual_special_days_this_month, available_slots))
 
             overloaded_workers.sort(key=lambda x: x[1] - x[2], reverse=True) 
@@ -3548,24 +3755,24 @@ class ScheduleBuilder:
                                          f"from worker {over_worker_id} to worker {under_worker_id}")
 
                             # --- Re-evaluate overloaded/underloaded lists locally ---
+                            # Recalculate targets based on updated shift counts
+                            
                             # Check if 'over_worker_id' is still overloaded
                             over_worker_new_count = current_month_counts[over_worker_id]
-                            over_worker_obj = next((w for w in self.workers_data if w['id'] == over_worker_id), None)
-                            over_worker_limit_this_month = self.max_consecutive_weekends
-                            if over_worker_obj and over_worker_obj.get('work_percentage', 100) < 100:
-                                over_worker_limit_this_month = max(1, int(self.max_consecutive_weekends * over_worker_obj.get('work_percentage',100) / 100))
+                            over_worker_shifts = sum(1 for d in month_dates_list 
+                                if d in self.scheduler.worker_assignments.get(over_worker_id, set()))
+                            over_worker_target = int(over_worker_shifts * month_weekend_ratio) + 1
                             
-                            if over_worker_new_count <= over_worker_limit_this_month:
+                            if over_worker_new_count <= over_worker_target:
                                 overloaded_workers = [(w, c, l) for w, c, l in overloaded_workers if w != over_worker_id]
 
                             # Check if 'under_worker_id' is still underloaded or became full
                             under_worker_new_count = current_month_counts[under_worker_id]
-                            under_worker_obj = next((w for w in self.workers_data if w['id'] == under_worker_id), None)
-                            under_worker_limit_this_month = self.max_consecutive_weekends
-                            if under_worker_obj and under_worker_obj.get('work_percentage', 100) < 100:
-                                under_worker_limit_this_month = max(1, int(self.max_consecutive_weekends * under_worker_obj.get('work_percentage',100) / 100))
+                            under_worker_shifts = sum(1 for d in month_dates_list 
+                                if d in self.scheduler.worker_assignments.get(under_worker_id, set()))
+                            under_worker_target = int(under_worker_shifts * month_weekend_ratio)
 
-                            if under_worker_new_count >= under_worker_limit_this_month:
+                            if under_worker_new_count >= under_worker_target:
                                 underloaded_workers = [(w, c, s) for w, c, s in underloaded_workers if w != under_worker_id]
                             # --- End re-evaluation ---
                             
@@ -4341,7 +4548,7 @@ class ScheduleBuilder:
         total_changes = 0
         
         # Run multiple passes until no more changes can be made
-        max_passes = 5
+        max_passes = 10  # Increased from 5 to 10 for better coverage
         for pass_num in range(1, max_passes + 1):
             logging.info(f"\n--- Balance Pass {pass_num}/{max_passes} ---")
             changes_this_pass = self._execute_balance_pass(pass_num)
@@ -4893,9 +5100,10 @@ class ScheduleBuilder:
         giver_work_pct = giver_config.get('work_percentage', 100) if giver_config else 100
         
         # Calculate expected weekend ratio based on work_percentage
-        # A full-time worker should have proportionally more weekends
-        receiver_target_weekends = receiver_config.get('target_shifts', 0) * 0.4 if receiver_config else 0  # ~40% of shifts are weekends
-        giver_target_weekends = giver_config.get('target_shifts', 0) * 0.4 if giver_config else 0
+        # CRITICAL: Weekend percentage is 3/7 (~42.8%), not 40%
+        weekend_ratio = 3.0 / 7.0  # Fri, Sat, Sun
+        receiver_target_weekends = receiver_config.get('target_shifts', 0) * weekend_ratio if receiver_config else 0
+        giver_target_weekends = giver_config.get('target_shifts', 0) * weekend_ratio if giver_config else 0
         
         # After transfer: receiver gets +1, giver gets -1
         new_receiver_weekends = receiver_weekends + 1
@@ -4917,8 +5125,8 @@ class ScheduleBuilder:
     def _try_redistribute_excess_shifts(self, overloaded_worker_id, excess_count):
         """Try to move excess shifts from overloaded worker to underloaded workers"""
         changes = 0
-        # CRÍTICO: Aumentar intentos para ser más agresivo (de 5 a 10)
-        max_attempts = min(excess_count, 10)
+        # CRÍTICO: Aumentar intentos para ser más agresivo (de 10 a 20)
+        max_attempts = min(excess_count, 20)  # Increased from 10 to 20
         
         logging.debug(f"Redistributing up to {max_attempts} shifts from {overloaded_worker_id} (excess: {excess_count})")
     

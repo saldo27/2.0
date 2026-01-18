@@ -32,7 +32,7 @@ class IterativeOptimizer:
     until tolerance requirements are met.
     """
     
-    def __init__(self, max_iterations: int = 50, tolerance: float = 0.12):
+    def __init__(self, max_iterations: int = 100, tolerance: float = 0.12):
         """
         Initialize the iterative optimizer with enhanced redistribution algorithms.
         
@@ -43,18 +43,18 @@ class IterativeOptimizer:
         - Default tolerance=0.12 represents the absolute maximum boundary
         
         Args:
-            max_iterations: Maximum number of optimization iterations (default: 50, increased from 30)
+            max_iterations: Maximum number of optimization iterations (default: 100, increased for better coverage)
             tolerance: Maximum tolerance percentage (0.12 = 12% absolute limit)
         """
         self.max_iterations = max_iterations
         self.tolerance = tolerance
-        self.convergence_threshold = 3  # Stop after 3 iterations without improvement
+        self.convergence_threshold = 8  # Stop after 8 iterations without improvement (increased from 3)
         self.stagnation_counter = 0
         self.best_result = None
         self.optimization_history = []
         self.weekend_only_mode = False  # Special mode when only weekend violations remain
         self.no_change_counter = 0  # Track iterations with zero changes
-        self.max_no_change = 2  # Stop if no changes for 2 consecutive iterations
+        self.max_no_change = 6  # Stop if no changes for 6 consecutive iterations (increased from 2)
         
         # Constraint parameters - will be updated from scheduler config
         self.gap_between_shifts = 3  # Default minimum gap between shifts
@@ -341,9 +341,13 @@ class IterativeOptimizer:
                     optimized_schedule, weekend_violations, workers_data, schedule_config
                 )
         else:
-            # NORMAL MODE: Standard redistribution
+            # NORMAL MODE: Standard redistribution with MULTIPLE PASSES for better coverage
             # Strategy 1: Redistribute weekend shifts FIRST (more specific constraints)
             if weekend_violations:
+                optimized_schedule = self._redistribute_weekend_shifts(
+                    optimized_schedule, weekend_violations, workers_data, schedule_config
+                )
+                # Second pass for better coverage
                 optimized_schedule = self._redistribute_weekend_shifts(
                     optimized_schedule, weekend_violations, workers_data, schedule_config
                 )
@@ -352,6 +356,17 @@ class IterativeOptimizer:
             if general_violations:
                 optimized_schedule = self._redistribute_general_shifts(
                     optimized_schedule, general_violations, workers_data, schedule_config
+                )
+                # Second pass for better coverage
+                optimized_schedule = self._redistribute_general_shifts(
+                    optimized_schedule, general_violations, workers_data, schedule_config
+                )
+            
+            # Strategy 2B: Cross-redistribution - apply weekend swaps even in normal mode
+            if weekend_violations and len(weekend_violations) >= 2:
+                logging.info(f"   🔄 Applying cross-redistribution swaps for {len(weekend_violations)} weekend violations")
+                optimized_schedule = self._apply_weekend_swaps(
+                    optimized_schedule, validation_report, workers_data, schedule_config
                 )
         
         # CRITICAL: Validate balance after redistribution
@@ -374,23 +389,38 @@ class IterativeOptimizer:
         else:
             logging.info(f"   ✅ Balance validation PASSED")
         
-        # Strategy 2.5: Fill empty slots using greedy algorithm (NEW)
+        # Strategy 2.5: Fill empty slots using greedy algorithm - MULTIPLE PASSES
         empty_slots_count = self._count_empty_slots(optimized_schedule)
         if empty_slots_count > 0:
-            logging.info(f"   🕳️ Found {empty_slots_count} empty slots - applying greedy fill")
+            logging.info(f"   🕳️ Found {empty_slots_count} empty slots - applying greedy fill (multiple passes)")
+            # First pass
             optimized_schedule = self._greedy_fill_empty_slots(
                 optimized_schedule, workers_data, schedule_config, scheduler_core
             )
+            # Check if we still have empty slots and try again
+            remaining_empty = self._count_empty_slots(optimized_schedule)
+            if remaining_empty > 0:
+                logging.info(f"   🕳️ Still {remaining_empty} empty slots - second greedy pass")
+                optimized_schedule = self._greedy_fill_empty_slots(
+                    optimized_schedule, workers_data, schedule_config, scheduler_core
+                )
+                # Third pass for persistent empty slots
+                remaining_empty = self._count_empty_slots(optimized_schedule)
+                if remaining_empty > 0:
+                    logging.info(f"   🕳️ Persistent {remaining_empty} empty slots - third greedy pass")
+                    optimized_schedule = self._greedy_fill_empty_slots(
+                        optimized_schedule, workers_data, schedule_config, scheduler_core
+                    )
         
         # Strategy 3: Apply random perturbations based on intensity - more aggressive for persistent violations
         total_violations = len(general_violations) + len(weekend_violations)
-        if iteration > 1 and (total_violations > 8 or self.stagnation_counter > 0):  # Lower threshold and earlier activation
+        if iteration > 1 and (total_violations > 4 or self.stagnation_counter > 0):  # Even lower threshold for earlier activation
             # Scale perturbation intensity based on violation count and stagnation
-            base_intensity = intensity * 0.8
-            violation_multiplier = min(2.0, 1.0 + (total_violations / 10.0))  # More aggressive for more violations
-            stagnation_multiplier = 1.0 + (self.stagnation_counter * 0.3)  # Increase with stagnation
+            base_intensity = intensity * 1.0  # Increased from 0.8
+            violation_multiplier = min(3.0, 1.0 + (total_violations / 6.0))  # More aggressive scaling
+            stagnation_multiplier = 1.0 + (self.stagnation_counter * 0.4)  # Increased from 0.3
             
-            perturbation_intensity = min(base_intensity * violation_multiplier * stagnation_multiplier, 0.6)  # Higher max intensity
+            perturbation_intensity = min(base_intensity * violation_multiplier * stagnation_multiplier, 0.8)  # Higher max from 0.6 to 0.8
             
             logging.info(f"   🎲 Enhanced perturbations - violations: {total_violations}, stagnation: {self.stagnation_counter}, intensity: {perturbation_intensity:.3f}")
             
@@ -398,12 +428,19 @@ class IterativeOptimizer:
                 optimized_schedule, workers_data, schedule_config, intensity=perturbation_intensity
             )
         
-        # Strategy 4: Forced redistribution for high stagnation
-        if self.stagnation_counter >= 2 and total_violations > 8:
-            logging.info(f"   🚨 Applying forced redistribution due to high stagnation and violations")
+        # Strategy 4: Forced redistribution for high stagnation - MORE AGGRESSIVE
+        if self.stagnation_counter >= 1 and total_violations > 4:
+            logging.info(f"   🚨 Applying forced redistribution due to stagnation and violations")
             optimized_schedule = self._apply_forced_redistribution(
                 optimized_schedule, general_violations + weekend_violations, workers_data, schedule_config
             )
+            
+            # Strategy 4B: Double-pass for persistent violations
+            if self.stagnation_counter >= 3 and total_violations > 2:
+                logging.info(f"   🔥 Double-pass forced redistribution for persistent violations")
+                optimized_schedule = self._apply_forced_redistribution(
+                    optimized_schedule, general_violations + weekend_violations, workers_data, schedule_config
+                )
         
         return optimized_schedule
     
@@ -499,9 +536,9 @@ class IterativeOptimizer:
         successful_transfers = 0
         failed_attempts = 0
         
-        # Set reasonable redistribution limits based on violations
+        # Set HIGHER redistribution limits for better coverage
         # CRITICAL: Match removals with assignments to maintain balance
-        max_redistributions = min(100, len(violations) * 5)
+        max_redistributions = min(200, len(violations) * 10)  # Doubled from 100/5 to 200/10
         
         # Track balance metrics
         balance_tracker = {
@@ -904,21 +941,32 @@ class IterativeOptimizer:
             if is_weekend and hasattr(self, 'scheduler') and self.scheduler:
                 max_consecutive_weekends = getattr(self.scheduler, 'max_consecutive_weekends', 3)
                 
-                # Adjust for part-time workers
-                if work_percentage < 0.7:
-                    max_consecutive_weekends = max(1, int(max_consecutive_weekends * work_percentage))
+                # NOTE: Do NOT reduce max_consecutive_weekends for part-time workers
+                # Part-time workers should have the SAME consecutive limit as full-time
                 
-                # Count consecutive weekends ending at this date
+                # Get weekend dates from worker assignments
                 weekend_dates = sorted([
                     d for d in worker_assignments 
                     if d.weekday() >= 4
                 ])
                 
-                consecutive_count = 1  # This weekend
-                for wd in reversed(weekend_dates):
-                    days_diff = (shift_date - wd).days
-                    if 6 <= days_diff <= 8:  # Consecutive weekend (strict check)
+                # Group by calendar week (each worker has max 1 weekend day per week)
+                current_week_start = shift_date - timedelta(days=shift_date.weekday())
+                weekend_weeks = set()
+                for d in weekend_dates:
+                    week_start = d - timedelta(days=d.weekday())
+                    weekend_weeks.add(week_start)
+                weekend_weeks.add(current_week_start)  # Add this shift's week
+                
+                sorted_weeks = sorted(weekend_weeks, reverse=True)  # Most recent first
+                
+                # Count consecutive weeks ending at current week
+                consecutive_count = 0
+                expected_week = current_week_start
+                for week in sorted_weeks:
+                    if week == expected_week:
                         consecutive_count += 1
+                        expected_week = week - timedelta(days=7)  # Previous week
                     else:
                         break
                 
