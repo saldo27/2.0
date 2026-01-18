@@ -2116,7 +2116,8 @@ class IterativeOptimizer:
                         base_tolerance = 0.12  # Phase 2: ±12% absolute maximum
                         adjusted_tolerance = max(base_tolerance * work_percentage, 0.05)
                         
-                        max_shifts = round(target_shifts * (1 + adjusted_tolerance))
+                        # CRITICAL: Use int() to truncate, not round() - ensures we never exceed percentage
+                        max_shifts = int(target_shifts * (1 + adjusted_tolerance))
                         
                         # Check if adding this shift would exceed the limit
                         # Use non_mandatory_shifts, not current_shifts

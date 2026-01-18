@@ -6,7 +6,7 @@ Sistema que garantiza que las desviaciones de turnos se mantengan dentro de lím
 estrictamente controlados durante todo el proceso de optimización.
 
 SISTEMA DE TOLERANCIA POR FASES:
-- Fase 1 (Initial): ±8% tolerancia objetivo estricta
+- Fase 1 (Initial): ±10% tolerancia objetivo estricta
 - Fase 2 (Emergency): ±12% LÍMITE ABSOLUTO (solo si cobertura < 95%)
 - Crítico: >12% NUNCA debe ocurrir (sistema debe bloquear)
 
@@ -22,12 +22,12 @@ from datetime import datetime
 class BalanceValidator:
     """Validador estricto de balance de turnos con sistema de fases"""
     
-    def __init__(self, tolerance_percentage: float = 8.0):
+    def __init__(self, tolerance_percentage: float = 10.0):
         """
         Initialize balance validator
         
         Args:
-            tolerance_percentage: Tolerancia objetivo en porcentaje (default: 8% para Fase 1)
+            tolerance_percentage: Tolerancia objetivo en porcentaje (default: 10% para Fase 1)
         """
         self.tolerance_percentage = tolerance_percentage
         self.emergency_limit = 12.0  # Fase 2: LÍMITE ABSOLUTO ±12%

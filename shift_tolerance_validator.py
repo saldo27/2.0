@@ -27,9 +27,9 @@ class ShiftToleranceValidator:
         self.scheduler = scheduler
         self.workers_data = scheduler.workers_data
         self.schedule = scheduler.schedule
-        # Phase 1 tolerance: ±8% (strict target)
+        # Phase 1 tolerance: ±10% (strict target objective)
         self.tolerance_percentage = 10.0
-        # Phase 2 tolerance: ±12% (absolute maximum)
+        # Phase 2 tolerance: ±12% (absolute maximum - NEVER exceed)
         self.emergency_tolerance_percentage = 12.0
         
     def calculate_tolerance_bounds(self, target_shifts: int) -> Tuple[int, int]:

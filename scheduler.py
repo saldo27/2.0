@@ -1215,6 +1215,12 @@ class Scheduler:
                             continue
                 
                     # This worker is a good candidate
+                    # CRITICAL: Final check - verify tolerance before assigning
+                    if hasattr(self, 'schedule_builder') and self.schedule_builder:
+                        if self.schedule_builder._would_violate_tolerance(worker_id, date, allow_relaxation=True):
+                            logging.debug(f"Simple assignment: {worker_id} rejected for {date.strftime('%Y-%m-%d')} - tolerance violation")
+                            continue  # Try next worker
+                    
                     best_worker = worker
                     break
             
