@@ -1968,7 +1968,10 @@ with tab3:
             st.subheader("📈 Resumen General")
             col1, col2, col3 = st.columns(3)
             
-            total_target = stats_df['Objetivo'].sum()
+            # CORRECCIÓN: Total Objetivo debe ser el número real de turnos a cubrir
+            # No la suma de _raw_target (que puede incluir sobreestimaciones)
+            scheduler = st.session_state.scheduler
+            total_target = sum(len(shifts) for shifts in scheduler.schedule.values())
             total_assigned = stats_df['Asignados'].sum()
             avg_deviation = stats_df['Desviación'].mean()
             
@@ -1984,7 +1987,19 @@ with tab3:
             st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
             col4, col5, col6 = st.columns(3)
             
-            total_weekend_target = stats_df['Obj. Weekend'].sum()
+            # CORRECCIÓN: Objetivo Weekend debe ser el número real de slots de weekend a cubrir
+            from datetime import timedelta
+            holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
+            total_weekend_target = 0
+            for date, shifts in scheduler.schedule.items():
+                is_weekend = (
+                    date.weekday() >= 4 or  # Vie/Sab/Dom
+                    date in holidays_set or  # Festivo
+                    (date + timedelta(days=1)) in holidays_set  # Pre-festivo
+                )
+                if is_weekend:
+                    total_weekend_target += len(shifts)
+            
             total_weekend_assigned = stats_df['Weekend'].sum()
             avg_weekend_deviation = stats_df['Desv. Wknd'].mean()
             
