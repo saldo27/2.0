@@ -27,8 +27,8 @@ class OperationPrioritizer:
         # Umbrales para activación de operaciones urgentes
         self.urgency_thresholds = {
             'empty_shifts_critical': 10,  # Si hay más de 10 turnos vacíos
-            'workload_imbalance_critical': 0.25,  # 25% de desbalance
-            'weekend_imbalance_critical': 0.30,  # 30% de desbalance en fines de semana
+            'workload_imbalance_critical': 0.20,  # 20% de desbalance (was 25%)
+            'weekend_imbalance_critical': 0.15,  # 15% de desbalance en fines de semana (was 30%)
         }
     
     def prioritize_operations_dynamically(self) -> List[Tuple[str, Callable, int]]:
@@ -244,7 +244,11 @@ class OperationPrioritizer:
         """Versión agresiva de mejora de distribución de fines de semana"""
         try:
             logging.info("Ejecutando mejora agresiva de distribución de fines de semana")
-            return self.scheduler.schedule_builder._improve_weekend_distribution()
+            # Run the standard method first
+            result1 = self.scheduler.schedule_builder._improve_weekend_distribution()
+            # Then run the proportional rebalancing (uses weekend_tolerance from config)
+            result2 = self.scheduler.schedule_builder.rebalance_weekend_distribution()
+            return result1 or result2
         except Exception as e:
             logging.error(f"Error en improve_weekend_distribution_aggressive: {e}")
             return False

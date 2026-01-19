@@ -394,9 +394,12 @@ class StatisticsCalculator:
             target_shifts = worker.get('target_shifts', 0)
         
             # Calculate weekend and holiday shifts efficiently
+            # Include pre-holidays (day before holiday) for consistency with scheduling
             weekend_shifts = sum(
                 1 for date in assignments 
-                if date.weekday() >= 4 or date in holidays_set
+                if (date.weekday() >= 4 or 
+                    date in holidays_set or
+                    (date + timedelta(days=1)) in holidays_set)
             )
             weekday_shifts = total_shifts - weekend_shifts
         
@@ -669,6 +672,8 @@ class StatisticsCalculator:
                 day_type = ""
                 if date in self.scheduler.holidays:
                     day_type = " [HOLIDAY]"
+                elif (date + timedelta(days=1)) in self.scheduler.holidays:
+                    day_type = " [PRE-HOLIDAY]"
                 elif date.weekday() >= 4:  # Friday, Saturday or Sunday
                     day_type = " [WEEKEND]"
                                 

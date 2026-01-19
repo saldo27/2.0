@@ -4,7 +4,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch, cm # Use cm for better control maybe
 from calendar import monthcalendar
-from datetime import datetime
+from datetime import datetime, timedelta
 from utilities import numeric_sort_key
 from performance_cache import cached, time_function, monitor_performance
 from collections import defaultdict
@@ -94,14 +94,19 @@ class PDFExporter:
 
                     # Get stats efficiently
                     total_w = stats.get('total', 0)
-                    holidays_w = stats.get('holidays', 0)
+                    holidays_w = stats.get('holidays', 0)  # Now includes pre-holidays
                     last_post_w = stats.get('last_post', 0)
                     weekday_counts = stats.get('weekday_counts', {})
                     post_counts = stats.get('post_counts', {})
                     worker_shifts = worker_shifts_all.get(worker_id, []) 
 
-                    # --- Worker Summary Stats ---
-                    summary_text = f"<b>Total Shifts:</b> {total_w} | <b>Weekend Shifts:</b> {stats.get('weekends', 0)} | <b>Holiday Shifts:</b> {holidays_w} | <b>Last Post Shifts:</b> {last_post_w}"
+                    # --- Worker Summary Stats (NEW FORMAT) ---
+                    # Weekend Shifts = Fri/Sat/Sun + Holidays + Pre-holidays
+                    # Holiday Shifts = Holidays + Pre-holidays
+                    summary_text = (f"<b>Total Shifts:</b> {total_w} | "
+                                   f"<b>Weekend Shifts:</b> {stats.get('weekends', 0)} (incl. holidays & pre-hol) | "
+                                   f"<b>Holiday Shifts:</b> {holidays_w} (incl. pre-hol) | "
+                                   f"<b>Last Post Shifts:</b> {last_post_w}")
                     story.append(Paragraph(summary_text, styles['Normal']))
                     story.append(Spacer(1, 0.1*cm))
 
@@ -135,10 +140,13 @@ class PDFExporter:
                             date_str = shift['date'].strftime('%d-%m-%Y')
                             day_str = shift['day'][:3]
                             post_str = f"P{shift['post']}"
+                            # Determine day type with pre-holiday support
                             day_type = ""
-                            if shift['is_holiday']: 
+                            if shift.get('is_holiday'): 
                                 day_type = "HOL"
-                            elif shift['is_weekend']: 
+                            elif shift.get('is_pre_holiday'):
+                                day_type = "PRE-H"
+                            elif shift.get('is_weekend'): 
                                 day_type = "W/E"
                             shifts_data.append([date_str, day_str, post_str, day_type])
 
@@ -425,8 +433,12 @@ class PDFExporter:
             }
             
             # Calculate statistics in a single pass
+            # CRITICAL: Include pre-holidays in weekend count for consistency with scheduling logic
             total_shifts = len(assignments)
-            weekend_shifts = sum(1 for date in assignments if date.weekday() >= 4)
+            weekend_shifts = sum(1 for date in assignments 
+                               if (date.weekday() >= 4 or  # Fri, Sat, Sun
+                                   date in self.holidays_set or  # Holiday
+                                   (date + timedelta(days=1)) in self.holidays_set))  # Pre-holiday
             holiday_shifts = sum(1 for date in assignments if date in self.holidays_set)
             
             # Calculate post distribution efficiently using defaultdict

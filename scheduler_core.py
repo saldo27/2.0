@@ -747,12 +747,38 @@ class SchedulerCore:
         """
         Phase 4: Finalize the schedule and perform final optimizations.
         
+        IMPORTANT: This phase now saves the pre-finalization state and compares
+        the result to avoid degradation (Fase 1 vs Fase 2 problem).
+        
         Returns:
             bool: True if finalization was successful
         """
         logging.info("Phase 4: Finalizing schedule...")
         
         try:
+            # ================================================================
+            # CRITICAL: Save pre-finalization state to compare later
+            # This addresses the issue where Phase 2 was degrading results
+            # ================================================================
+            pre_finalization_state = {
+                'schedule': copy.deepcopy(self.scheduler.schedule),
+                'assignments': copy.deepcopy(self.scheduler.worker_assignments),
+                'counts': copy.deepcopy(self.scheduler.worker_shift_counts),
+                'weekend_counts': copy.deepcopy(self.scheduler.worker_weekend_counts),
+                'posts': copy.deepcopy(self.scheduler.worker_posts),
+                'locked_mandatory': copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory)
+            }
+            
+            # Calculate pre-finalization metrics
+            pre_score = self.metrics.calculate_overall_schedule_score()
+            pre_workload_imbalance = self.metrics.calculate_workload_imbalance()
+            pre_weekend_imbalance = self.metrics.calculate_weekend_imbalance()
+            
+            logging.info(f"📊 Pre-finalization metrics:")
+            logging.info(f"   Score: {pre_score:.2f}")
+            logging.info(f"   Workload Imbalance: {pre_workload_imbalance:.2f}")
+            logging.info(f"   Weekend Imbalance: {pre_weekend_imbalance:.2f}")
+            
             # Final adjustment of last post distribution
             logging.info("Performing final last post distribution adjustment...")
             max_iterations = self.config.get('last_post_adjustment_max_iterations', 
@@ -772,11 +798,12 @@ class SchedulerCore:
             self.scheduler.schedule_builder._balance_weekday_distribution()
 
             # Iterar hasta que todos los trabajadores estén dentro de la tolerancia ±1 en turnos y last posts
-            max_final_balance_loops = 50
+            # REDUCED iterations to avoid over-optimization that degrades results
+            max_final_balance_loops = 20  # Reduced from 50
             for i in range(max_final_balance_loops):
                 logging.info(f"Final strict balance loop {i+1}/{max_final_balance_loops}")
                 changed1 = self.scheduler.schedule_builder._balance_workloads()
-                changed2 = self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=10)
+                changed2 = self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=5)
                 changed3 = self.scheduler.schedule_builder._balance_weekday_distribution()
                 if not changed1 and not changed2 and not changed3:
                     logging.info(f"Balance achieved after {i+1} iterations")
@@ -806,6 +833,53 @@ class SchedulerCore:
                         )
                 except Exception as e:
                     logging.error(f"Error in final balance optimization: {e}", exc_info=True)
+                
+                # CRITICAL: Rebalance last posts after balance optimization
+                # Balance optimizer swaps can disrupt last post distribution
+                logging.info("Rebalancing last post distribution after balance optimization...")
+                self.scheduler.schedule_builder._adjust_last_post_distribution(
+                    balance_tolerance=1.0,
+                    max_iterations=10
+                )
+
+            # ================================================================
+            # CRITICAL: Compare post-finalization with pre-finalization
+            # If finalization degraded the schedule, RESTORE pre-finalization state
+            # ================================================================
+            post_score = self.metrics.calculate_overall_schedule_score()
+            post_workload_imbalance = self.metrics.calculate_workload_imbalance()
+            post_weekend_imbalance = self.metrics.calculate_weekend_imbalance()
+            
+            logging.info(f"\n📊 Post-finalization metrics:")
+            logging.info(f"   Score: {post_score:.2f} (was {pre_score:.2f}, diff: {post_score - pre_score:+.2f})")
+            logging.info(f"   Workload Imbalance: {post_workload_imbalance:.2f} (was {pre_workload_imbalance:.2f})")
+            logging.info(f"   Weekend Imbalance: {post_weekend_imbalance:.2f} (was {pre_weekend_imbalance:.2f})")
+            
+            # Decision: Use post-finalization ONLY if it's better or equal
+            # Weight: workload imbalance is critical, weekend imbalance secondary
+            pre_composite = pre_workload_imbalance + (pre_weekend_imbalance * 0.5)
+            post_composite = post_workload_imbalance + (post_weekend_imbalance * 0.5)
+            
+            # Allow small degradation (0.5) but reject significant degradation
+            if post_composite > pre_composite + 0.5:
+                logging.warning(f"⚠️ FINALIZATION DEGRADED THE SCHEDULE!")
+                logging.warning(f"   Pre-finalization composite: {pre_composite:.2f}")
+                logging.warning(f"   Post-finalization composite: {post_composite:.2f}")
+                logging.warning(f"   RESTORING pre-finalization state...")
+                
+                # Restore pre-finalization state
+                self.scheduler.schedule = pre_finalization_state['schedule']
+                self.scheduler.worker_assignments = pre_finalization_state['assignments']
+                self.scheduler.worker_shift_counts = pre_finalization_state['counts']
+                self.scheduler.worker_weekend_counts = pre_finalization_state['weekend_counts']
+                self.scheduler.worker_posts = pre_finalization_state['posts']
+                self.scheduler.schedule_builder._locked_mandatory = pre_finalization_state['locked_mandatory']
+                self.scheduler.schedule_builder.schedule = self.scheduler.schedule
+                self.scheduler.schedule_builder.worker_assignments = self.scheduler.worker_assignments
+                
+                logging.info("✅ Pre-finalization state restored successfully")
+            else:
+                logging.info("✅ Finalization improved or maintained schedule quality")
 
             # Get the best schedule
             final_schedule_data = self.scheduler.schedule_builder.get_best_schedule()

@@ -463,6 +463,25 @@ def get_worker_statistics():
     scheduler = st.session_state.scheduler
     core_stats = scheduler.stats.calculate_statistics()
     
+    # Calcular el ratio de días de weekend (Vie/Sab/Dom + festivos + pre-festivos) sobre total
+    from datetime import timedelta
+    total_days = (scheduler.end_date - scheduler.start_date).days
+    holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
+    
+    weekend_days = 0
+    current_date = scheduler.start_date
+    while current_date < scheduler.end_date:
+        is_weekend = (
+            current_date.weekday() >= 4 or  # Vie/Sab/Dom
+            current_date in holidays_set or  # Festivo
+            (current_date + timedelta(days=1)) in holidays_set  # Pre-festivo
+        )
+        if is_weekend:
+            weekend_days += 1
+        current_date += timedelta(days=1)
+    
+    weekend_ratio = weekend_days / total_days if total_days > 0 else 0
+    
     stats = []
     for worker_id, data in core_stats['workers'].items():
         # Obtener worker data para acceder a _raw_target y _mandatory_count
@@ -480,12 +499,23 @@ def get_worker_statistics():
         deviation = current - target
         deviation_pct = (deviation / target * 100) if target > 0 else 0
         
+        # Weekend statistics (includes Fri/Sat/Sun + holidays + pre-holidays)
+        weekend_shifts = data.get('weekend_shifts', 0)
+        # Target de weekend proporcional: total_target * ratio_weekend
+        weekend_target = round(target * weekend_ratio)
+        weekend_deviation = weekend_shifts - weekend_target
+        weekend_deviation_pct = (weekend_deviation / weekend_target * 100) if weekend_target > 0 else 0
+        
         stats.append({
             'Médico': worker_id,
             'Objetivo': target,
             'Asignados': current,
             'Desviación': deviation,
-            'Desv. %': f"{deviation_pct:+.1f}%"
+            'Desv. %': f"{deviation_pct:+.1f}%",
+            'Obj. Weekend': weekend_target,
+            'Weekend': weekend_shifts,
+            'Desv. Wknd': weekend_deviation,
+            'Desv. Wknd %': f"{weekend_deviation_pct:+.1f}%"
         })
     
     return pd.DataFrame(stats)
@@ -1815,6 +1845,9 @@ with tab2:
 
                             if report_type == "Resumen Ejecutivo (Global)":
                                 # 1. Preparar datos de estadísticas (reconstrucción para summary)
+                                from datetime import timedelta
+                                holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
+                                
                                 stats_data = {
                                     'period_start': scheduler.start_date,
                                     'period_end': scheduler.end_date,
@@ -1839,19 +1872,39 @@ with tab2:
                                         # Weekdays
                                         wd = date.weekday()
                                         weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
+                                        
+                                        # Determine day type
+                                        is_holiday = date in holidays_set
+                                        is_pre_holiday = (date + timedelta(days=1)) in holidays_set
+                                        is_weekend_day = date.weekday() >= 4  # Fri/Sat/Sun
+                                        
                                         # Shift list
                                         shift_list.append({
                                             'date': date,
                                             'day': date.strftime('%A'),
                                             'post': scheduler.schedule[date].index(w_id) + 1,
-                                            'is_weekend': date.weekday() >= 4,
-                                            'is_holiday': date in scheduler.holidays
+                                            'is_weekend': is_weekend_day or is_holiday or is_pre_holiday,
+                                            'is_holiday': is_holiday,
+                                            'is_pre_holiday': is_pre_holiday
                                         })
 
+                                    # Weekend = Fri/Sat/Sun + holidays + pre-holidays
+                                    weekends_count = sum(
+                                        1 for d in assignments 
+                                        if (d.weekday() >= 4 or 
+                                            d in holidays_set or 
+                                            (d + timedelta(days=1)) in holidays_set)
+                                    )
+                                    # Holidays = holidays + pre-holidays
+                                    holidays_count = sum(
+                                        1 for d in assignments 
+                                        if (d in holidays_set or (d + timedelta(days=1)) in holidays_set)
+                                    )
+                                    
                                     stats_data['workers'][w_id] = {
                                         'total': len(assignments),
-                                        'weekends': sum(1 for d in assignments if d.weekday() >= 4),
-                                        'holidays': sum(1 for d in assignments if d in scheduler.holidays),
+                                        'weekends': weekends_count,
+                                        'holidays': holidays_count,
                                         'last_post': post_counts.get(scheduler.num_shifts - 1, 0),
                                         'weekday_counts': weekday_counts,
                                         'post_counts': post_counts
@@ -1911,7 +1964,8 @@ with tab3:
         stats_df = get_worker_statistics()
         
         if stats_df is not None:
-            # Métricas generales
+            # Métricas generales - Totales
+            st.subheader("📈 Resumen General")
             col1, col2, col3 = st.columns(3)
             
             total_target = stats_df['Objetivo'].sum()
@@ -1925,10 +1979,27 @@ with tab3:
             with col3:
                 st.metric("Desviación Promedio", f"{avg_deviation:+.1f}")
             
+            # Métricas de Weekend
+            st.subheader("🌙 Resumen Weekend")
+            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
+            col4, col5, col6 = st.columns(3)
+            
+            total_weekend_target = stats_df['Obj. Weekend'].sum()
+            total_weekend_assigned = stats_df['Weekend'].sum()
+            avg_weekend_deviation = stats_df['Desv. Wknd'].mean()
+            
+            with col4:
+                st.metric("Objetivo Weekend", total_weekend_target)
+            with col5:
+                st.metric("Weekend Asignado", total_weekend_assigned, f"{total_weekend_assigned - total_weekend_target:+d}")
+            with col6:
+                st.metric("Desv. Weekend Prom.", f"{avg_weekend_deviation:+.1f}")
+            
             st.markdown("---")
             
             # Tabla de estadísticas
             st.subheader("📋 Estadísticas por Médico")
+            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
             
             # Colorear según desviación
             def color_deviation(val):
@@ -1942,7 +2013,7 @@ with tab3:
                         return 'background-color: #f8d7da'
                 return ''
             
-            styled_df = stats_df.style.map(color_deviation, subset=['Desv. %'])
+            styled_df = stats_df.style.map(color_deviation, subset=['Desv. %', 'Desv. Wknd %'])
             st.dataframe(styled_df, width='stretch', hide_index=True)
             
             # Gráfico de barras
@@ -1987,6 +2058,53 @@ with tab3:
             
             fig2.update_layout(height=400)
             st.plotly_chart(fig2, width='stretch')
+            
+            # Gráfico de Weekend (Vie/Sab/Dom + Festivos + Pre-festivos)
+            st.markdown("---")
+            st.subheader("🌙 Turnos de Weekend por Médico")
+            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
+            
+            fig3 = go.Figure()
+            fig3.add_trace(go.Bar(
+                name='Objetivo Weekend',
+                x=stats_df['Médico'],
+                y=stats_df['Obj. Weekend'],
+                marker_color='lightsalmon'
+            ))
+            fig3.add_trace(go.Bar(
+                name='Weekend Asignados',
+                x=stats_df['Médico'],
+                y=stats_df['Weekend'],
+                marker_color='darkred'
+            ))
+            
+            fig3.update_layout(
+                barmode='group',
+                xaxis_title="Médico",
+                yaxis_title="Turnos de Weekend",
+                height=400
+            )
+            
+            st.plotly_chart(fig3, width='stretch')
+            
+            # Gráfico de desviación de weekend
+            st.markdown("---")
+            st.subheader("📉 Desviación de Weekend por Médico")
+            
+            fig4 = px.bar(
+                stats_df,
+                x='Médico',
+                y='Desv. Wknd',
+                color='Desv. Wknd',
+                color_continuous_scale=['red', 'yellow', 'green', 'yellow', 'red'],
+                color_continuous_midpoint=0
+            )
+            
+            fig4.update_layout(
+                height=400,
+                yaxis_title="Desviación (turnos)"
+            )
+            st.plotly_chart(fig4, width='stretch')
 
 # ==================== TAB 4: VERIFICACIÓN ====================
 with tab4:

@@ -32,22 +32,30 @@ class ShiftToleranceValidator:
         # Phase 2 tolerance: ±12% (absolute maximum - NEVER exceed)
         self.emergency_tolerance_percentage = 12.0
         
-    def calculate_tolerance_bounds(self, target_shifts: int) -> Tuple[int, int]:
+    def calculate_tolerance_bounds(self, target_shifts: int, is_weekend: bool = False) -> Tuple[int, int]:
         """
         Calcula los límites de tolerancia para un target_shifts dado
         
         Args:
             target_shifts: Número objetivo de turnos
+            is_weekend: Si True, usa weekend_tolerance del config (en shifts)
             
         Returns:
             Tuple con (min_shifts, max_shifts) dentro de la tolerancia
         """
         if target_shifts <= 0:
             return (0, 0)
-            
-        tolerance_amount = target_shifts * (self.tolerance_percentage / 100.0)
-        min_shifts = max(0, int(target_shifts - tolerance_amount))
-        max_shifts = int(target_shifts + tolerance_amount + 0.5)  # Round up for max
+        
+        if is_weekend:
+            # For weekends: use weekend_tolerance from config (in shifts, e.g., ±1, ±2)
+            weekend_tolerance_shifts = getattr(self.scheduler, 'weekend_tolerance', 1)
+            min_shifts = max(0, int(target_shifts) - weekend_tolerance_shifts)
+            max_shifts = int(target_shifts) + weekend_tolerance_shifts
+        else:
+            # For general shifts: use percentage-based tolerance
+            tolerance_amount = target_shifts * (self.tolerance_percentage / 100.0)
+            min_shifts = max(0, int(target_shifts - tolerance_amount))
+            max_shifts = int(target_shifts + tolerance_amount + 0.5)  # Round up for max
         
         return (min_shifts, max_shifts)
     
@@ -72,7 +80,8 @@ class ShiftToleranceValidator:
         target_shifts = worker.get('target_shifts', 0)
         assigned_shifts = self._count_assigned_shifts(worker_id, is_weekend_only)
         
-        min_shifts, max_shifts = self.calculate_tolerance_bounds(target_shifts)
+        # Pass is_weekend_only to use weekend_tolerance from config for weekends
+        min_shifts, max_shifts = self.calculate_tolerance_bounds(target_shifts, is_weekend=is_weekend_only)
         
         is_valid = min_shifts <= assigned_shifts <= max_shifts
         deviation_percentage = 0.0
@@ -116,8 +125,23 @@ class ShiftToleranceValidator:
         for worker in self.workers_data:
             worker_id = worker['id']
             
-            # Para weekend shifts, calculamos un target proporcional
-            total_target = worker.get('target_shifts', 0)
+            # CRITICAL FIX: Use _raw_target for weekend calculation
+            # target_shifts has mandatory subtracted, but weekend count includes mandatory weekends
+            # We need the TOTAL target to calculate proportional weekend share correctly
+            if '_raw_target' in worker:
+                total_target = worker['_raw_target']
+            else:
+                # Fallback: add back mandatory if needed
+                total_target = worker.get('target_shifts', 0)
+                if worker.get('mandatory_days'):
+                    try:
+                        mand_dates = self.scheduler.date_utils.parse_dates(worker['mandatory_days'])
+                        mand_in_period = sum(1 for d in mand_dates 
+                                            if self.scheduler.start_date <= d <= self.scheduler.end_date)
+                        total_target += mand_in_period
+                    except Exception:
+                        pass
+            
             weekend_target = self._calculate_weekend_target(worker_id, total_target)
             
             # Temporalmente actualizamos el target para validar weekends

@@ -213,6 +213,21 @@ class WorkerEligibilityTracker:
             logging.debug(f"Worker {worker_id} would exceed consecutive weekend limit: {max_consecutive} > {adjusted_max_weekends}")
             return False
         
+        # ========================================
+        # CHECK: Maximum 1 weekend shift per calendar week (Mon-Sun)
+        # ========================================
+        # Count weekend shifts per calendar week - no more than 1 per week
+        current_week_start = date - timedelta(days=date.weekday())  # Monday of target date's week
+        weekend_shifts_this_week = 0
+        for d_val in all_weekend_dates:
+            d_week_start = d_val - timedelta(days=d_val.weekday())  # Monday of this date's week
+            if d_week_start == current_week_start:
+                weekend_shifts_this_week += 1
+        
+        if weekend_shifts_this_week > 1:
+            logging.debug(f"Worker {worker_id}: Would have {weekend_shifts_this_week} weekend shifts in same week (Mon-Sun starting {current_week_start.strftime('%Y-%m-%d')}). Max allowed: 1")
+            return False
+        
         # Get schedule period for proportional weekend count check
         start_date = self.start_date
         end_date = self.end_date
@@ -293,13 +308,14 @@ class WorkerEligibilityTracker:
         base_proportion = worker_weekend_days / total_weekend_days if total_weekend_days > 0 else 0
         work_factor = work_percentage / 100
     
-        # Target with tolerance range (+/- 1 as specified)
+        # Target with tolerance range (using weekend_tolerance from config)
         raw_target = total_weekend_days * base_proportion * work_factor
         target_weekend_count = round(raw_target)
     
-        # Apply tolerance (+/- 1)
-        min_target = max(0, target_weekend_count - 1)
-        max_target = target_weekend_count + 1
+        # Apply tolerance from config (e.g., ±1, ±2 shifts)
+        weekend_tolerance_shifts = getattr(self.scheduler, 'weekend_tolerance', 1)
+        min_target = max(0, target_weekend_count - weekend_tolerance_shifts)
+        max_target = target_weekend_count + weekend_tolerance_shifts
     
         return min_target, target_weekend_count, max_target
 

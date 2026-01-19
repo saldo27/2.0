@@ -319,8 +319,9 @@ class StrictBalanceOptimizer:
                             logging.debug(f"Strict balance: {under_id} blocked by monthly limit")
                             continue
                     
-                    # Validate consecutive weekends
-                    if date.weekday() >= 4:  # Weekend
+                    # Validate consecutive weekends (including holidays and pre-holidays)
+                    # Use builder's method that includes holidays for consistency
+                    if hasattr(self.builder, '_is_weekend_or_holiday') and self.builder._is_weekend_or_holiday(date):
                         if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
                             if self.builder._would_exceed_weekend_limit_simulated(under_id, date, self.worker_assignments):
                                 logging.debug(f"Strict balance: {under_id} blocked by weekend limit")
@@ -436,8 +437,8 @@ class StrictBalanceOptimizer:
                         if shifts_c_month_a + 1 > max_monthly + 2:
                             skip_c_take = True
                     
-                    # Validar fines de semana consecutivos para C
-                    if not skip_c_take and date_a.weekday() >= 4:
+                    # Validar fines de semana consecutivos para C (incluyendo holidays y pre-holidays)
+                    if not skip_c_take and hasattr(self.builder, '_is_weekend_or_holiday') and self.builder._is_weekend_or_holiday(date_a):
                         if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
                             if self.builder._would_exceed_weekend_limit_simulated(c_id, date_a, self.worker_assignments):
                                 skip_c_take = True
@@ -499,8 +500,8 @@ class StrictBalanceOptimizer:
                                 if shifts_b_month_c + 1 > max_monthly_b + 1:
                                     skip_b_take = True
                             
-                            # Validar fines de semana consecutivos para B
-                            if not skip_b_take and date_c.weekday() >= 4:
+                            # Validar fines de semana consecutivos para B (incluyendo holidays y pre-holidays)
+                            if not skip_b_take and hasattr(self.builder, '_is_weekend_or_holiday') and self.builder._is_weekend_or_holiday(date_c):
                                 if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
                                     if self.builder._would_exceed_weekend_limit_simulated(under_id, date_c, self.worker_assignments):
                                         skip_b_take = True
@@ -609,8 +610,8 @@ class StrictBalanceOptimizer:
                             if shifts_this_month + 1 > max_monthly + 1:
                                 skip_assign = True
                         
-                        # Validate consecutive weekends
-                        if not skip_assign and date.weekday() >= 4:
+                        # Validate consecutive weekends (including holidays and pre-holidays)
+                        if not skip_assign and hasattr(self.builder, '_is_weekend_or_holiday') and self.builder._is_weekend_or_holiday(date):
                             if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
                                 if self.builder._would_exceed_weekend_limit_simulated(under_id, date, self.worker_assignments):
                                     skip_assign = True

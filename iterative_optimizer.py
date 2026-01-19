@@ -936,22 +936,40 @@ class IterativeOptimizer:
                                 f"(month: {shift_date.strftime('%Y-%m')})")
                     return False
             
-            # NEW: Check weekend consecutive limits (if this is a weekend shift)
-            is_weekend = shift_date.weekday() >= 4  # Fri/Sat/Sun
+            # NEW: Check weekend consecutive limits (if this is a weekend/holiday shift)
+            # CRITICAL: Include holidays and pre-holidays for consistency with other parts of code
+            holidays_set = set(getattr(self.scheduler, 'holidays', [])) if hasattr(self, 'scheduler') and self.scheduler else set()
+            is_weekend = (shift_date.weekday() >= 4 or  # Fri/Sat/Sun
+                         shift_date in holidays_set or  # Holiday
+                         (shift_date + timedelta(days=1)) in holidays_set)  # Day before holiday
+            
             if is_weekend and hasattr(self, 'scheduler') and self.scheduler:
                 max_consecutive_weekends = getattr(self.scheduler, 'max_consecutive_weekends', 3)
                 
                 # NOTE: Do NOT reduce max_consecutive_weekends for part-time workers
                 # Part-time workers should have the SAME consecutive limit as full-time
                 
-                # Get weekend dates from worker assignments
+                # Get weekend/holiday dates from worker assignments (consistent with rest of code)
                 weekend_dates = sorted([
                     d for d in worker_assignments 
-                    if d.weekday() >= 4
+                    if (d.weekday() >= 4 or 
+                        d in holidays_set or 
+                        (d + timedelta(days=1)) in holidays_set)
                 ])
                 
+                # ========================================
+                # CHECK: Maximum 1 weekend shift per calendar week (Mon-Sun)
+                # ========================================
+                current_week_start = shift_date - timedelta(days=shift_date.weekday())  # Monday
+                weekend_shifts_this_week = sum(
+                    1 for d in weekend_dates 
+                    if d - timedelta(days=d.weekday()) == current_week_start
+                )
+                if weekend_shifts_this_week >= 1:
+                    logging.debug(f"❌ {worker_name} blocked: Already has {weekend_shifts_this_week} weekend shift(s) in week starting {current_week_start.strftime('%Y-%m-%d')}")
+                    return False
+                
                 # Group by calendar week (each worker has max 1 weekend day per week)
-                current_week_start = shift_date - timedelta(days=shift_date.weekday())
                 weekend_weeks = set()
                 for d in weekend_dates:
                     week_start = d - timedelta(days=d.weekday())
@@ -974,6 +992,38 @@ class IterativeOptimizer:
                     logging.debug(f"❌ {worker_name} blocked: Consecutive weekend limit - "
                                 f"{consecutive_count} exceeds max {max_consecutive_weekends}")
                     return False
+                
+                # NEW: Check proportional weekend tolerance from config
+                # This ensures weekend distribution is fair according to configured tolerance
+                weekend_tolerance_shifts = getattr(self.scheduler, 'weekend_tolerance', 1)
+                
+                # Count current weekend assignments
+                current_weekend_count = len(weekend_dates) + 1  # +1 for prospective assignment
+                
+                # Calculate proportional weekend target (including holidays and pre-holidays)
+                total_schedule_days = (self.scheduler.end_date - self.scheduler.start_date).days + 1
+                total_weekend_days = sum(1 for i in range(total_schedule_days)
+                    if ((self.scheduler.start_date + timedelta(days=i)).weekday() >= 4 or
+                        (self.scheduler.start_date + timedelta(days=i)) in holidays_set or
+                        (self.scheduler.start_date + timedelta(days=i+1)) in holidays_set))
+                
+                # CRITICAL FIX: Use _raw_target for weekend calculation
+                # target_shifts has mandatory subtracted, but weekend count includes mandatory weekends
+                total_target_for_weekend = worker_data.get('_raw_target', target_shifts)
+                if total_target_for_weekend == target_shifts and mandatory_count > 0:
+                    # _raw_target not available, add back mandatory
+                    total_target_for_weekend = target_shifts + mandatory_count
+                
+                if total_schedule_days > 0 and total_weekend_days > 0 and total_target_for_weekend > 0:
+                    weekend_ratio = total_weekend_days / total_schedule_days
+                    raw_weekend_target = total_target_for_weekend * weekend_ratio
+                    max_weekend_allowed = int(raw_weekend_target) + weekend_tolerance_shifts
+                    
+                    if current_weekend_count > max_weekend_allowed:
+                        logging.debug(f"❌ {worker_name} blocked: Weekend tolerance - "
+                                    f"{current_weekend_count} exceeds max {max_weekend_allowed} "
+                                    f"(target: {raw_weekend_target:.1f}, tolerance: ±{weekend_tolerance_shifts})")
+                        return False
             
             # Check overall tolerance
             # CRITICAL: Usar non_mandatory_shifts para comparar con target_shifts

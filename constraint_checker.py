@@ -300,25 +300,39 @@ class ConstraintChecker:
             if total_schedule_days == 0 or total_weekend_days == 0:
                 return False  # No weekends to distribute
         
-            # Get worker's target_shifts (this already accounts for mandatory days subtracted)
-            target_shifts = worker_data.get('target_shifts', 0)
-            if target_shifts <= 0:
+            # CRITICAL FIX: Use _raw_target for weekend calculation
+            # target_shifts has mandatory subtracted, but weekend count includes mandatory weekends
+            # We need the TOTAL target to calculate proportional weekend share correctly
+            if '_raw_target' in worker_data:
+                total_target_for_weekend = worker_data['_raw_target']
+            else:
+                # Fallback: add back mandatory count to target_shifts
+                target_shifts = worker_data.get('target_shifts', 0)
+                total_target_for_weekend = target_shifts
+                if worker_data.get('mandatory_days'):
+                    try:
+                        mand_dates = self.date_utils.parse_dates(worker_data['mandatory_days'])
+                        mand_in_period = sum(1 for d in mand_dates 
+                                            if self.scheduler.start_date <= d <= self.scheduler.end_date)
+                        total_target_for_weekend += mand_in_period
+                    except Exception:
+                        pass
+            
+            if total_target_for_weekend <= 0:
                 return False
             
             # Calculate the actual weekend ratio for this schedule period
             # (may differ from 3/7 due to holidays and schedule boundaries)
             actual_weekend_ratio = total_weekend_days / total_schedule_days
             
-            # Target weekend shifts = target_shifts * actual_weekend_ratio
+            # Target weekend shifts = TOTAL_target * actual_weekend_ratio
             # This gives the proportional fair share of weekend shifts
-            raw_target = target_shifts * actual_weekend_ratio
+            raw_target = total_target_for_weekend * actual_weekend_ratio
             
-            # CRITICAL: Use percentage-based tolerance instead of fixed +1
-            # This ensures proportional treatment for part-time workers
-            # Allow 10% tolerance above target, with minimum of 1 extra
-            tolerance_percentage = 0.10  # 10% tolerance
-            tolerance_amount = max(1, int(raw_target * tolerance_percentage))
-            max_target = int(raw_target) + tolerance_amount
+            # Use weekend_tolerance from config (in shifts, e.g., ±1, ±2)
+            # This replaces the old percentage-based tolerance
+            weekend_tolerance_shifts = getattr(self.scheduler, 'weekend_tolerance', 1)
+            max_target = int(raw_target) + weekend_tolerance_shifts
         
             # Count current weekend assignments (including the prospective one)
             current_weekend_count = len(weekend_dates)
@@ -327,7 +341,7 @@ class ConstraintChecker:
             if current_weekend_count > max_target:
                 logging.debug(f"Worker {worker_id}: weekend assignment would exceed proportional limit "
                              f"({current_weekend_count} > {max_target}). Target: {raw_target:.1f}, "
-                             f"tolerance: {tolerance_amount}, actual ratio: {actual_weekend_ratio:.3f}")
+                             f"tolerance: ±{weekend_tolerance_shifts} shifts, actual ratio: {actual_weekend_ratio:.3f}")
                 return True
         
             logging.debug(f"Worker {worker_id}: weekend assignment within limits "

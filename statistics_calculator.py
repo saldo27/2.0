@@ -358,6 +358,9 @@ class StatisticsCalculator:
         """
         Calculate comprehensive statistics for the entire schedule (optimized)
         Returns a dictionary with various statistics
+        
+        CRITICAL: Count directly from schedule to ensure accuracy,
+        not from worker_assignments which may be out of sync.
         """
         stats = {
             'workers': {},
@@ -381,24 +384,36 @@ class StatisticsCalculator:
         # Pre-compute holidays set for O(1) lookup
         holidays_set = set(self.scheduler.holidays)
         
+        # CRITICAL: Build actual assignments directly from schedule (single source of truth)
+        # This ensures we count what's REALLY in the schedule, not what's tracked
+        actual_assignments = defaultdict(set)
+        for date, shifts in schedule.items():
+            for post_idx, worker_id in enumerate(shifts):
+                if worker_id is not None:
+                    actual_assignments[worker_id].add(date)
+        
         # Calculate stats for each worker efficiently
         for worker in self.scheduler.workers_data:
             worker_id = worker['id']
             worker_name = worker.get('name', worker_id)
         
-            # Get assignments for this worker
-            assignments = worker_assignments.get(worker_id, set())
-            total_shifts = len(assignments)
+            # CRITICAL: Use actual assignments from schedule, not worker_assignments
+            # This ensures accurate count even if tracking is out of sync
+            assignments = actual_assignments.get(worker_id, set())
+            total_shifts_count = len(assignments)
         
             # Get target shifts
             target_shifts = worker.get('target_shifts', 0)
         
             # Calculate weekend and holiday shifts efficiently
+            # Include pre-holidays (day before holiday) for consistency with scheduling
             weekend_shifts = sum(
                 1 for date in assignments 
-                if date.weekday() >= 4 or date in holidays_set
+                if (date.weekday() >= 4 or 
+                    date in holidays_set or
+                    (date + timedelta(days=1)) in holidays_set)
             )
-            weekday_shifts = total_shifts - weekend_shifts
+            weekday_shifts = total_shifts_count - weekend_shifts
         
             # Calculate post distribution efficiently
             post_distribution = defaultdict(int)
@@ -415,7 +430,7 @@ class StatisticsCalculator:
             # Store worker stats
             stats['workers'][worker_id] = {
                 'name': worker_name,
-                'total_shifts': total_shifts,
+                'total_shifts': total_shifts_count,
                 'target_shifts': target_shifts,
                 'weekend_shifts': weekend_shifts,
                 'weekday_shifts': weekday_shifts,
@@ -669,6 +684,8 @@ class StatisticsCalculator:
                 day_type = ""
                 if date in self.scheduler.holidays:
                     day_type = " [HOLIDAY]"
+                elif (date + timedelta(days=1)) in self.scheduler.holidays:
+                    day_type = " [PRE-HOLIDAY]"
                 elif date.weekday() >= 4:  # Friday, Saturday or Sunday
                     day_type = " [WEEKEND]"
                                 
