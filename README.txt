@@ -1,6 +1,6 @@
 ================================================================================
                     GuardiasApp - Aplicación para Distribución de Guardias
-                                  Versión 2.1
+                                  Versión 2.3
 ================================================================================
 
 DESCRIPCIÓN:
@@ -18,6 +18,10 @@ CARACTERÍSTICAS:
 ✓ Exportación a PDF y CSV
 ✓ Análisis predictivo y simulador de escenarios
 ✓ Verificación automática de restricciones
+✓ NUEVO: Análisis de calendarios de guardias (tab "Revisión")
+✓ NUEVO: Cálculo de estadísticas por trabajador (Fin de Semana, Festivos, Rosell)
+✓ NUEVO: Detección de guardias consecutivas
+✓ NUEVO: Exportación de análisis a PDF y Excel
 
 REQUISITOS DEL SISTEMA:
 -----------------------
@@ -40,6 +44,8 @@ PRIMERA EJECUCIÓN:
 3. Agregar trabajadores (manual o importar JSON)
 4. Configurar fechas y parámetros en la barra lateral
 5. Presionar "🚀 Generar Calendario"
+6. Para analizar calendarios: ir a tab "Revisión", cargar archivo PDF/Excel,
+   configurar fecha inicial y festivos, luego presionar "🚀 Analizar Horario"
 
 VERSIÓN DEMO:
 -------------
@@ -75,6 +81,8 @@ EXPORTACIÓN DE DATOS:
   * Resumen Ejecutivo (Global)
   * Calendario Visual Completo
   * Estadísticas y Desglose Detallado
+  * Análisis de Guardias (Tab Revisión)
+- Excel: Estadísticas y alertas de guardias consecutivas (Tab Revisión)
 - JSON: Respaldo completo (trabajadores + configuración + calendario)
 
 FORMATOS DE IMPORTACIÓN:
@@ -130,6 +138,22 @@ COPYRIGHT:
 
 HISTORIAL DE VERSIONES:
 ------------------------
+v2.2 (Enero 2026):
+- NUEVO: Tab "Revisión" para análisis de calendarios de guardias
+- Integración de funcionalidad sched-anal
+- Parsing de calendarios con formato: línea de días + N filas de trabajadores
+- Cálculo de estadísticas detalladas por trabajador:
+  * Guardias totales, Viernes, Sábado, Domingo
+  * Guardias en Fin de Semana (incluyendo Festivos y PreFestivos)
+  * Rosell: Guardias en última posición + Porcentaje
+  * Desglose por mes
+- Detección automática de guardias consecutivas
+- Conversión automática de festivos/prefestivos a categorías especiales
+- PreFestivo (día anterior a festivo) cuenta como Viernes solo para Lun-Jue
+- Exportación de análisis a PDF y Excel
+- Mapeo automático de nombres compuestos (ej: "LUIS H")
+- Configuración flexible de guardias por día (shifts_per_day)
+
 v2.1 (Enero 2026):
 - Interfaz mejorada de Gestión de Médicos
 - Funcionalidad de edición de trabajadores con carga automática de datos

@@ -2,17 +2,18 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 2.1 (Enero 2026)
+Versión: 2.3 (Enero 2026)
 """
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
+import streamlit as st  # type: ignore
+import pandas as pd  # type: ignore
+import plotly.graph_objects as go  # type: ignore
+import plotly.express as px  # type: ignore
 from datetime import datetime, timedelta
 import json
 import copy
 import logging
 import os
+import io
 from pathlib import Path
 import traceback
 from license_manager import license_manager
@@ -20,8 +21,13 @@ from scheduler import Scheduler
 from scheduler_config import SchedulerConfig, setup_logging
 from utilities import DateTimeUtils
 
+# Suprimir debug output de librerías externas
+logging.getLogger('pdfplumber').setLevel(logging.WARNING)
+logging.getLogger('PIL').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
 # Constante de versión
-APP_VERSION = "2.1"
+APP_VERSION = "2.3"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -32,6 +38,7 @@ import predictive_optimizer
 import balance_validator
 import adjustment_utils
 import pdf_exporter
+from schedule_analyzer import CalendarFileProcessor, ScheduleAnalyzer, PDFReportGenerator
 print("✓ Módulos críticos importados explícitamente")
 # ==============================================
 
@@ -124,6 +131,22 @@ if 'optimization_recommendations' not in st.session_state:
     st.session_state.optimization_recommendations = []
 if 'analytics_insights' not in st.session_state:
     st.session_state.analytics_insights = []
+
+# Schedule Analysis (Revisión)
+if 'revision_stats' not in st.session_state:
+    st.session_state.revision_stats = None
+if 'revision_alerts' not in st.session_state:
+    st.session_state.revision_alerts = None
+if 'revision_analyzer' not in st.session_state:
+    st.session_state.revision_analyzer = None
+if 'revision_calendar_text' not in st.session_state:
+    st.session_state.revision_calendar_text = ""
+if 'revision_name_mapping' not in st.session_state:
+    st.session_state.revision_name_mapping = {}
+if 'sidebar_holidays' not in st.session_state:
+    st.session_state.sidebar_holidays = []
+if 'sidebar_holidays_input' not in st.session_state:
+    st.session_state.sidebar_holidays_input = ""
 
 # File upload tracking to prevent infinite rerun loops
 if 'file_upload_counter' not in st.session_state:
@@ -1053,6 +1076,10 @@ with st.sidebar:
             except:
                 st.warning(f"⚠️ Fecha inválida ignorada: {line}")
     
+    # Guardar festivos en session_state para acceso desde otras tabs
+    st.session_state.sidebar_holidays = holidays
+    st.session_state.sidebar_holidays_input = holidays_input
+    
     if holidays:
         st.success(f"✅ {len(holidays)} festivos configurados")
     
@@ -1264,12 +1291,13 @@ with st.sidebar:
         """)
 
 # Tabs principales
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "👥 Gestión de Médicos",
     "📅 Calendario Generado",
     "📊 Estadísticas",
     "⚠️ Verificación de Restricciones",
-    "🔮 Predictive Analytics"
+    "🔮 Predictive Analytics",
+    "🔍 Revisión"
 ])
 
 # ==================== TAB 1: GESTIÓN DE TRABAJADORES ====================
@@ -2561,6 +2589,271 @@ with tab5:
             
             # Placeholder for historical charts
             st.info("ℹ️ Historical analysis requires multiple schedule generations to build trend data.")
+
+# ==================== TAB 6: REVISIÓN ====================
+with tab6:
+    st.header("🔍 Revisión de Horarios")
+    st.markdown("Cargue un archivo de horario (PDF, Excel o CSV) para analizarlo y generar reportes.")
+    
+    # Sección 1: Carga de archivo
+    st.subheader("📂 Carga de Archivo")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        uploaded_file = st.file_uploader(
+            "Seleccione archivo (PDF, Excel, CSV)",
+            type=["pdf", "xlsx", "xls", "csv"],
+            help="Archivo con horario de guardias a analizar"
+        )
+    
+    with col2:
+        st.markdown("**Formatos soportados:**")
+        st.caption("• PDF\n• Excel (.xlsx, .xls)\n• CSV")
+    
+    if uploaded_file is not None:
+        try:
+            # Procesar archivo
+            processor = CalendarFileProcessor()
+            calendar_text = processor.process_file(uploaded_file)
+            st.session_state.revision_calendar_text = calendar_text
+            st.success("✅ Archivo cargado correctamente")
+            
+            # Mostrar preview del texto extraído
+            with st.expander("👁️ Preview del contenido extraído"):
+                st.text_area(
+                    "Contenido del archivo:",
+                    value=calendar_text[:500] + "..." if len(calendar_text) > 500 else calendar_text,
+                    height=150,
+                    disabled=True
+                )
+        
+        except Exception as e:
+            st.error(f"❌ Error procesando archivo: {str(e)}")
+            st.session_state.revision_calendar_text = ""
+    
+    # Sección 2: Configuración
+    if st.session_state.revision_calendar_text:
+        st.markdown("---")
+        st.subheader("⚙️ Configuración")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            start_date_revision = st.date_input(
+                "Fecha inicial del horario",
+                value=datetime.now(),
+                format="DD/MM/YYYY",
+                help="Fecha de inicio del calendario cargado"
+            )
+        
+        with col2:
+            shifts_per_day_revision = st.number_input(
+                "Guardias por día",
+                min_value=1,
+                max_value=10,
+                value=4,
+                help="Número de trabajadores/guardias por día (filas de trabajadores en el calendario)"
+            )
+        
+        with col3:
+            st.markdown("**Festivos cargados del sistema:**")
+            # Obtener festivos del sidebar
+            holidays_from_sidebar = st.session_state.get('sidebar_holidays', [])
+            if holidays_from_sidebar:
+                st.caption(f"✅ {len(holidays_from_sidebar)} festivos configurados")
+                with st.expander("👁️ Ver/Editar festivos"):
+                    # Mostrar festivos en formato DD-MM-YYYY
+                    holidays_text = '\n'.join([h.strftime('%d-%m-%Y') for h in holidays_from_sidebar])
+                    st.text_area(
+                        "Festivos (uno por línea, formato: DD-MM-YYYY)",
+                        value=holidays_text,
+                        height=100,
+                        disabled=True,
+                        help="Para editar, use la sección 'Período de Reparto' en el Sidebar"
+                    )
+                    st.info("💡 Para agregar o modificar festivos, vaya al **Sidebar** → **Período de Reparto** → **🎉 Festivos**")
+            else:
+                st.warning("⚠️ No hay festivos configurados")
+                st.info("💡 Configure festivos en el **Sidebar** → **Período de Reparto** → **🎉 Festivos**")
+        
+        # Sección de mapeo de nombres
+        st.markdown("**Mapeo de nombres (opcional)**")
+        st.caption("Solo si desea expandir abreviaturas o cambiar nombres")
+        st.info("💡 Los nombres compuestos como 'LUIS H' se detectan automáticamente. NO use guiones.")
+        
+        name_mapping_text = st.text_area(
+            "Formato: CORTO=COMPLETO (uno por línea, completamente opcional)",
+            value="",
+            height=80,
+            help="Ej: Si en archivo dice 'MAR' y quiere que aparezca como 'MARÍA', ingrese: MAR=MARÍA"
+        )
+        
+        # Procesar mapeo de nombres
+        name_mapping = {}
+        for line in name_mapping_text.strip().split('\n'):
+            line = line.strip()
+            if '=' in line and line:
+                short, long = line.split('=', 1)
+                name_mapping[short.strip()] = long.strip()
+        
+        st.session_state.revision_name_mapping = name_mapping
+        
+        # Sección 3: Análisis
+        st.markdown("---")
+        st.subheader("🔍 Análisis")
+        
+        if st.button("🚀 Analizar Horario", key="btn_analyze_schedule"):
+            try:
+                with st.spinner("Analizando horario..."):
+                    # Crear analizador
+                    analyzer = ScheduleAnalyzer(
+                        start_date=start_date_revision,
+                        calendar_text=st.session_state.revision_calendar_text,
+                        name_mapping=name_mapping,
+                        holidays=holidays_from_sidebar,
+                        shifts_per_day=shifts_per_day_revision
+                    )
+                    
+                    # Parsear y calcular estadísticas
+                    analyzer.parse_calendar()
+                    df_stats = analyzer.calculate_statistics()
+                    alerts = analyzer.get_alerts()
+                    
+                    # Guardar en session state
+                    st.session_state.revision_stats = df_stats
+                    st.session_state.revision_alerts = alerts
+                    st.session_state.revision_analyzer = analyzer  # Guardar para PDF
+                    
+                    st.success("✅ Análisis completado")
+                    
+            except Exception as e:
+                st.error(f"❌ Error en análisis: {str(e)}")
+                logging.error(f"Analysis error: {e}")
+        
+        # Mostrar resultados si existen
+        if st.session_state.revision_stats is not None:
+            st.markdown("---")
+            st.subheader("📊 Resultados del Análisis")
+            
+            # Resumen general
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                total_workers = len(st.session_state.revision_stats)
+                st.metric("Total Trabajadores", total_workers)
+            
+            with col2:
+                total_shifts = st.session_state.revision_stats['Total'].sum()
+                st.metric("Total Guardias", total_shifts)
+            
+            with col3:
+                weekend_shifts = st.session_state.revision_stats['Total FS'].sum()
+                st.metric("Guardias F.S.", weekend_shifts)
+            
+            with col4:
+                if total_shifts > 0:
+                    pct_weekend = (weekend_shifts / total_shifts) * 100
+                    st.metric("% Fin de Semana", f"{pct_weekend:.1f}%")
+                else:
+                    st.metric("% Fin de Semana", "N/A")
+            
+            # Tabla de estadísticas
+            st.markdown("**Tabla de Estadísticas Completa**")
+            st.caption("📌 Nota: Festivos cuentan como Domingo, PreFestivos cuentan como Viernes")
+            
+            # Mostrar tabla con columnas organizadas
+            # Festivos cuentan como Domingo, PreFestivos (Lun-Jue) cuentan como Viernes
+            cols_principales = ['Trabajador', 'Total', 'Viernes', 'Sábado', 'Domingo', 'Total FS', '% FS', 'Rosell', '% Rosell']
+            cols_meses = [c for c in st.session_state.revision_stats.columns if c.startswith('Mes:')]
+            
+            # Seleccionar columnas disponibles
+            cols_a_mostrar = []
+            for col in cols_principales:
+                if col in st.session_state.revision_stats.columns:
+                    cols_a_mostrar.append(col)
+            cols_a_mostrar.extend(cols_meses)
+            
+            # Filtrar solo columnas que existen
+            cols_a_mostrar = [c for c in cols_a_mostrar if c in st.session_state.revision_stats.columns]
+            
+            st.dataframe(
+                st.session_state.revision_stats[cols_a_mostrar],
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Mostrar alertas de guardias consecutivas en CAJA SEPARADA
+            st.markdown("---")
+            st.subheader("⚠️ Alertas de Guardias Consecutivas")
+            
+            # Obtener alertas del analyzer (guardado en session_state)
+            alerts_df = st.session_state.get('revision_alerts')
+            
+            if alerts_df is not None and not alerts_df.empty:
+                # Mostrar cada alerta en una caja de warning
+                for _, alert_row in alerts_df.iterrows():
+                    worker = alert_row['Trabajador']
+                    fecha1 = alert_row['Fecha 1']
+                    fecha2 = alert_row['Fecha 2']
+                    st.warning(f"**{worker}**: Guardias consecutivas los días {fecha1} y {fecha2}")
+            else:
+                st.success("✅ No hay guardias consecutivas detectadas")
+            
+            # Exportación
+            st.markdown("---")
+            st.subheader("📥 Exportación")
+            
+            exp_col1, exp_col2, exp_col3 = st.columns(3)
+            
+            with exp_col1:
+                # Exportar CSV
+                csv_data = st.session_state.revision_stats.to_csv(index=False)
+                st.download_button(
+                    label="📊 Descargar Estadísticas (CSV)",
+                    data=csv_data,
+                    file_name=f"estadisticas_guardias_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+            
+            with exp_col2:
+                # Exportar PDF
+                if st.button("📄 Generar Reporte PDF"):
+                    try:
+                        with st.spinner("Generando PDF..."):
+                            generator = PDFReportGenerator()
+                            pdf_content = generator.generate_report(
+                                st.session_state.revision_analyzer,
+                                st.session_state.revision_stats,
+                                include_charts=False
+                            )
+                            
+                            st.download_button(
+                                label="⬇️ Descargar Reporte PDF",
+                                data=pdf_content,
+                                file_name=f"reporte_guardias_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                mime="application/pdf"
+                            )
+                            st.success("✅ PDF generado exitosamente")
+                    except Exception as e:
+                        st.error(f"❌ Error generando PDF: {str(e)}")
+            
+            with exp_col3:
+                # Exportar Excel
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    st.session_state.revision_stats.to_excel(writer, sheet_name='Estadísticas', index=False)
+                    if not st.session_state.revision_alerts.empty:
+                        st.session_state.revision_alerts.to_excel(writer, sheet_name='Alertas', index=False)
+                
+                buffer.seek(0)
+                st.download_button(
+                    label="📑 Descargar Excel",
+                    data=buffer.getvalue(),
+                    file_name=f"guardias_analisis_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+    else:
+        st.info("ℹ️ Cargue un archivo de horario para comenzar el análisis")
 
 # Footer
 st.markdown("---")

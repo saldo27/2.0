@@ -12,8 +12,12 @@ statsmodels>=0.14.0
 matplotlib>=3.7.0
 plotly>=5.15.0
 
-# PDF Generation
+# PDF Generation & Processing
 reportlab>=4.0.0
+pdfplumber>=0.10.0
+
+# Excel Processing
+openpyxl>=3.1.0
 
 # Date/Time utilities
 python-dateutil>=2.8.0
