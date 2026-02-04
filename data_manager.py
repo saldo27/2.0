@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Set, Optional, Tuple, Any, TYPE_CHECKING
 from exceptions import SchedulerError
+from bridge_manager import BridgeManager
 
 if TYPE_CHECKING:
     from scheduler import Scheduler
@@ -39,9 +40,12 @@ class DataManager:
         # Initialize monthly targets structure
         self.monthly_targets = {}
         
+        # Initialize bridge manager
+        self.bridge_manager = BridgeManager()
+        
         self._build_worker_cache()
         
-        logging.info("Enhanced DataManager initialized with caching")
+        logging.info("Enhanced DataManager initialized with caching and bridge detection")
     
     def _build_worker_cache(self) -> None:
         """Build worker cache for faster lookups"""
@@ -190,6 +194,45 @@ class DataManager:
             bool: True if the next day is a holiday, False otherwise
         """
         return self.scheduler.date_utils.is_pre_holiday(date, self.scheduler.holidays)
+    
+    def _is_bridge_day(self, date):
+        """
+        Check if a date is part of a bridge (puente)
+    
+        Args:
+            date: Date to check
+        
+        Returns:
+            bool: True if the date is part of a bridge, False otherwise
+        """
+        return self.bridge_manager.is_bridge_day(date)
+    
+    def _get_bridge_count(self, worker_id):
+        """
+        Get count of bridge days assigned to a worker
+        
+        Args:
+            worker_id: ID of the worker
+        
+        Returns:
+            int: Number of bridge days assigned
+        """
+        return self.bridge_manager.get_bridge_count_for_worker(
+            worker_id, 
+            self.scheduler.worker_assignments
+        )
+    
+    def _get_bridge_for_date(self, date):
+        """
+        Get bridge information for a specific date
+        
+        Args:
+            date: Date to check
+        
+        Returns:
+            dict: Bridge information if date is part of a bridge, None otherwise
+        """
+        return self.bridge_manager.get_bridge_for_date(date)
 
     def _is_authorized_incompatibility(self, date, worker1_id, worker2_id):
         """

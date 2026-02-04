@@ -2239,6 +2239,33 @@ class ScheduleBuilder:
 
         if current_week_count < avg_week_count:
             score += 100  # Reduced from 500 (tertiary priority)
+        
+        # =========================================================================
+        # BRIDGE (PUENTE) BALANCE SCORING - Ensures equitable distribution
+        # =========================================================================
+        if self.data_manager.bridge_manager.bridges:
+            is_bridge = self.data_manager._is_bridge_day(date)
+            if is_bridge:
+                current_bridge_count = self.data_manager._get_bridge_count(worker_id)
+                worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
+                if worker_config:
+                    work_percentage = worker_config.get('work_percentage', 100) / 100.0
+                    normalized_bridges = current_bridge_count / work_percentage if work_percentage > 0 else 0
+                    
+                    # Calculate global average
+                    total_normalized = 0
+                    worker_count = 0
+                    for w_data in self.scheduler.workers_data:
+                        wid = w_data['id']
+                        wpct = w_data.get('work_percentage', 100) / 100.0
+                        bridges = self.data_manager._get_bridge_count(wid)
+                        total_normalized += bridges / wpct if wpct > 0 else 0
+                        worker_count += 1
+                    
+                    avg_normalized = total_normalized / worker_count if worker_count > 0 else 0
+                    bridge_balance = normalized_bridges - avg_normalized
+                    bridge_score = -bridge_balance * 3000
+                    score += bridge_score
 
         # FINAL: Schedule Progression Score - much reduced impact
         total_days = (self.end_date - self.start_date).days if self.end_date > self.start_date else 1
