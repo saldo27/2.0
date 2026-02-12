@@ -505,6 +505,18 @@ def get_worker_statistics():
     
     weekend_ratio = weekend_days / total_days if total_days > 0 else 0
     
+    # Calcular estadísticas de puentes si está disponible
+    bridge_stats = None
+    if hasattr(scheduler, 'data_manager') and hasattr(scheduler.data_manager, 'bridge_manager'):
+        workers_dict = {w['id']: w for w in scheduler.workers_data}
+        bridge_stats = scheduler.data_manager.bridge_manager.calculate_bridge_stats(
+            scheduler.worker_assignments,
+            workers_dict
+        )
+        logging.info(f"Bridge stats calculated: {len(bridge_stats.get('worker_bridge_counts', {}))} workers")
+    else:
+        logging.warning("Bridge manager not available - bridge columns will show zeros")
+    
     stats = []
     for worker_id, data in core_stats['workers'].items():
         # Obtener worker data para acceder a _raw_target y _mandatory_count
@@ -529,6 +541,15 @@ def get_worker_statistics():
         weekend_deviation = weekend_shifts - weekend_target
         weekend_deviation_pct = (weekend_deviation / weekend_target * 100) if weekend_target > 0 else 0
         
+        # Bridge statistics
+        bridge_count = 0
+        bridge_normalized = 0.0
+        bridge_balance = 0.0
+        if bridge_stats:
+            bridge_count = bridge_stats['worker_bridge_counts'].get(worker_id, 0)
+            bridge_normalized = bridge_stats['worker_bridge_normalized'].get(worker_id, 0.0)
+            bridge_balance = bridge_stats['bridge_balance'].get(worker_id, 0.0)
+        
         stats.append({
             'Médico': worker_id,
             'Objetivo': target,
@@ -538,7 +559,10 @@ def get_worker_statistics():
             'Obj. Weekend': weekend_target,
             'Weekend': weekend_shifts,
             'Desv. Wknd': weekend_deviation,
-            'Desv. Wknd %': f"{weekend_deviation_pct:+.1f}%"
+            'Desv. Wknd %': f"{weekend_deviation_pct:+.1f}%",
+            'Puentes': bridge_count,
+            'Normalizado': f"{bridge_normalized:.2f}",
+            'Balance Puentes': f"{bridge_balance:+.2f}"
         })
     
     return pd.DataFrame(stats)
@@ -2053,8 +2077,8 @@ with tab3:
             st.markdown("---")
             
             # Tabla de estadísticas
-            st.subheader("📋 Estadísticas por Médico")
-            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
+            st.subheader("📋 Tabla de Estadísticas Completa")
+            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos | Puentes: días de festivos que forman puente con fin de semana*")
             
             # Colorear según desviación
             def color_deviation(val):
@@ -2068,7 +2092,23 @@ with tab3:
                         return 'background-color: #f8d7da'
                 return ''
             
+            def color_bridge_balance(val):
+                """Color balance de puentes similar a desviaciones"""
+                if isinstance(val, str):
+                    try:
+                        balance = float(val.replace('+', ''))
+                        if abs(balance) <= 0.5:
+                            return 'background-color: #d4edda'
+                        elif abs(balance) <= 1.0:
+                            return 'background-color: #fff3cd'
+                        else:
+                            return 'background-color: #f8d7da'
+                    except:
+                        pass
+                return ''
+            
             styled_df = stats_df.style.map(color_deviation, subset=['Desv. %', 'Desv. Wknd %'])
+            styled_df = styled_df.map(color_bridge_balance, subset=['Balance Puentes'])
             st.dataframe(styled_df, width='stretch', hide_index=True)
             
             # Gráfico de barras
@@ -2160,103 +2200,6 @@ with tab3:
                 yaxis_title="Desviación (turnos)"
             )
             st.plotly_chart(fig4, width='stretch')
-            
-            # Sección de Puentes (Bridge Holidays)
-            st.markdown("---")
-            st.subheader("🌉 Estadísticas de Puentes")
-            st.caption("*Puentes detectados automáticamente cuando festivos se solapan con fines de semana*")
-            
-            # Verificar si hay puentes detectados
-            scheduler = st.session_state.scheduler
-            if hasattr(scheduler, 'data_manager') and hasattr(scheduler.data_manager, 'bridge_manager'):
-                bridges = scheduler.data_manager.bridge_manager.bridges
-                
-                if bridges:
-                    # Métricas de puentes
-                    col_b1, col_b2, col_b3 = st.columns(3)
-                    
-                    with col_b1:
-                        st.metric("Total Puentes", len(bridges))
-                    with col_b2:
-                        total_bridge_days = len(scheduler.data_manager.bridge_manager.bridge_days_set)
-                        st.metric("Días de Puente", total_bridge_days)
-                    with col_b3:
-                        # Usar las asignaciones ya calculadas del scheduler
-                        workers_dict = {w['id']: w for w in scheduler.workers_data}
-                        
-                        bridge_stats = scheduler.data_manager.bridge_manager.calculate_bridge_stats(
-                            scheduler.worker_assignments,
-                            workers_dict
-                        )
-                        avg_bridges = bridge_stats['average_normalized']
-                        st.metric("Promedio Normalizado", f"{avg_bridges:.2f}")
-                    
-                    # Mostrar lista de puentes detectados
-                    with st.expander("📋 Puentes Detectados", expanded=False):
-                        for i, bridge in enumerate(bridges, 1):
-                            bridge_type = "Posterior" if bridge['bridge_type'] == 'posterior' else "Anterior"
-                            st.write(f"**{i}. {bridge['holiday_date'].strftime('%d-%m-%Y')} ({bridge['weekday_name']})**")
-                            st.caption(f"   Tipo: {bridge_type} | Período: {bridge['bridge_start'].strftime('%d-%m')} a {bridge['bridge_end'].strftime('%d-%m')} | {len(bridge['bridge_days'])} días")
-                    
-                    # Gráfico de distribución de puentes por trabajador
-                    st.markdown("**Distribución de Puentes por Médico**")
-                    
-                    # Preparar datos para el gráfico
-                    bridge_data = []
-                    for worker_id in stats_df['Médico']:
-                        bridge_count = bridge_stats['worker_bridge_counts'].get(worker_id, 0)
-                        bridge_normalized = bridge_stats['worker_bridge_normalized'].get(worker_id, 0)
-                        bridge_balance = bridge_stats['bridge_balance'].get(worker_id, 0)
-                        bridge_data.append({
-                            'Médico': worker_id,
-                            'Puentes': bridge_count,
-                            'Normalizado': bridge_normalized,
-                            'Balance': bridge_balance
-                        })
-                    
-                    import pandas as pd
-                    bridge_df = pd.DataFrame(bridge_data)
-                    
-                    # Gráfico de barras de puentes
-                    fig_bridge = go.Figure()
-                    fig_bridge.add_trace(go.Bar(
-                        name='Días de Puente',
-                        x=bridge_df['Médico'],
-                        y=bridge_df['Puentes'],
-                        marker_color='lightgreen'
-                    ))
-                    
-                    fig_bridge.update_layout(
-                        xaxis_title="Médico",
-                        yaxis_title="Días de Puente Asignados",
-                        height=400
-                    )
-                    
-                    st.plotly_chart(fig_bridge, width='stretch')
-                    
-                    # Gráfico de balance normalizado
-                    st.markdown("**Balance de Puentes (Normalizado por % Jornada)**")
-                    st.caption("*Balance = 0 indica distribución perfecta proporcional al % de jornada*")
-                    
-                    fig_bridge_balance = px.bar(
-                        bridge_df,
-                        x='Médico',
-                        y='Balance',
-                        color='Balance',
-                        color_continuous_scale=['red', 'yellow', 'green', 'yellow', 'red'],
-                        color_continuous_midpoint=0
-                    )
-                    
-                    fig_bridge_balance.update_layout(
-                        height=400,
-                        yaxis_title="Balance (desviación del promedio)"
-                    )
-                    st.plotly_chart(fig_bridge_balance, width='stretch')
-                    
-                else:
-                    st.info("ℹ️ No se detectaron puentes en el período configurado")
-            else:
-                st.info("ℹ️ Sistema de puentes no disponible")
 
 
 # ==================== TAB 4: VERIFICACIÓN ====================
@@ -2702,8 +2645,8 @@ with tab5:
 
 # ==================== TAB 6: REVISIÓN ====================
 with tab6:
-    st.header("🔍 Revisión de Horarios")
-    st.markdown("Cargue un archivo de horario (PDF, Excel o CSV) para analizarlo y generar reportes.")
+    st.header("🔍 Revisión de Calendario")
+    st.markdown("Cargue un archivo de guardias (PDF, Excel o CSV) para analizarlo y generar reportes.")
     
     # Sección 1: Carga de archivo
     st.subheader("📂 Carga de Archivo")
@@ -2714,7 +2657,7 @@ with tab6:
         uploaded_file = st.file_uploader(
             "Seleccione archivo (PDF, Excel, CSV)",
             type=["pdf", "xlsx", "xls", "csv"],
-            help="Archivo con horario de guardias a analizar"
+            help="Archivo con guardias a analizar"
         )
     
     with col2:
@@ -2813,9 +2756,9 @@ with tab6:
         st.markdown("---")
         st.subheader("🔍 Análisis")
         
-        if st.button("🚀 Analizar Horario", key="btn_analyze_schedule"):
+        if st.button("🚀 Analizar Calendario", key="btn_analyze_schedule"):
             try:
-                with st.spinner("Analizando horario..."):
+                with st.spinner("Analizando..."):
                     # Crear analizador
                     analyzer = ScheduleAnalyzer(
                         start_date=start_date_revision,
@@ -2891,92 +2834,6 @@ with tab6:
                 use_container_width=True,
                 hide_index=True
             )
-            
-            # Sección de Puentes
-            st.markdown("---")
-            st.subheader("🌉 Análisis de Puentes")
-            st.caption("*Puentes detectados automáticamente cuando festivos se solapan con fines de semana*")
-            
-            # Detectar puentes usando el bridge_manager
-            if holidays_from_sidebar:
-                from bridge_manager import BridgeManager
-                bridge_mgr = BridgeManager()
-                
-                # Calcular fecha final del análisis
-                # Asumimos que el análisis cubre el mismo período que el horario cargado
-                # Podemos estimar basándonos en el número de días en el calendario
-                analyzer = st.session_state.get('revision_analyzer')
-                if analyzer and hasattr(analyzer, 'schedule'):
-                    # Obtener la última fecha del schedule
-                    all_dates = []
-                    for worker_schedule in analyzer.schedule.values():
-                        all_dates.extend(worker_schedule.keys())
-                    if all_dates:
-                        end_date_revision = max(all_dates)
-                    else:
-                        # Fallback: asumir 1 año desde start_date
-                        from datetime import timedelta
-                        end_date_revision = start_date_revision + timedelta(days=365)
-                else:
-                    # Fallback: asumir 1 año desde start_date
-                    from datetime import timedelta
-                    end_date_revision = start_date_revision + timedelta(days=365)
-                
-                bridges = bridge_mgr.detect_bridges(holidays_from_sidebar, start_date_revision, end_date_revision)
-                
-                if bridges:
-                    # Métricas de puentes
-                    col_b1, col_b2 = st.columns(2)
-                    
-                    with col_b1:
-                        st.metric("Total Puentes Detectados", len(bridges))
-                    with col_b2:
-                        total_bridge_days = len(bridge_mgr.bridge_days_set)
-                        st.metric("Total Días de Puente", total_bridge_days)
-                    
-                    # Mostrar lista de puentes
-                    with st.expander("📋 Detalle de Puentes", expanded=True):
-                        for i, bridge in enumerate(bridges, 1):
-                            bridge_type = "Posterior" if bridge['bridge_type'] == 'posterior' else "Anterior"
-                            st.write(f"**{i}. {bridge['holiday_date'].strftime('%d-%m-%Y')} ({bridge['weekday_name']})**")
-                            st.caption(f"   Tipo: {bridge_type} | Período: {bridge['bridge_start'].strftime('%d-%m')} a {bridge['bridge_end'].strftime('%d-%m')} | {len(bridge['bridge_days'])} días")
-                    
-                    # Calcular distribución de puentes por trabajador
-                    if analyzer and hasattr(analyzer, 'schedule'):
-                        st.markdown("**Distribución de Puentes por Trabajador**")
-                        
-                        bridge_counts = {}
-                        for worker_id, worker_schedule in analyzer.schedule.items():
-                            count = 0
-                            for date in worker_schedule.keys():
-                                if bridge_mgr.is_bridge_day(date):
-                                    count += 1
-                            bridge_counts[worker_id] = count
-                        
-                        # Crear DataFrame
-                        import pandas as pd
-                        bridge_df = pd.DataFrame([
-                            {'Trabajador': worker, 'Días de Puente': count}
-                            for worker, count in bridge_counts.items()
-                        ]).sort_values('Días de Puente', ascending=False)
-                        
-                        # Mostrar tabla
-                        st.dataframe(bridge_df, use_container_width=True, hide_index=True)
-                        
-                        # Gráfico de barras
-                        fig_bridges = px.bar(
-                            bridge_df,
-                            x='Trabajador',
-                            y='Días de Puente',
-                            color='Días de Puente',
-                            color_continuous_scale='Greens'
-                        )
-                        fig_bridges.update_layout(height=400)
-                        st.plotly_chart(fig_bridges, use_container_width=True)
-                else:
-                    st.info("ℹ️ No se detectaron puentes en el período analizado")
-            else:
-                st.info("ℹ️ Configure festivos en el Sidebar para detectar puentes")
             
             # Mostrar alertas de guardias consecutivas en CAJA SEPARADA
             st.markdown("---")
@@ -3055,7 +2912,7 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "Sistema de Generación de Horarios v2.0 | "
+    "Sistema de Generación de Horarios v2.3 | "
     "Interfaz Streamlit | "
     f"© {datetime.now().year}"
     "</div>",
