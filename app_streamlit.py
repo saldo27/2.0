@@ -2829,10 +2829,19 @@ with tab6:
             # Filtrar solo columnas que existen
             cols_a_mostrar = [c for c in cols_a_mostrar if c in st.session_state.revision_stats.columns]
             
+            # Configurar ancho fijo de 9 caracteres para todas las columnas
+            column_config = {}
+            for col in cols_a_mostrar:
+                column_config[col] = st.column_config.TextColumn(
+                    col,
+                    width="9ch"  # 9 caracteres de ancho
+                )
+            
             st.dataframe(
                 st.session_state.revision_stats[cols_a_mostrar],
-                use_container_width=True,
-                hide_index=True
+                width="content",  # Ajustar al contenido sin estirar
+                hide_index=True,
+                column_config=column_config
             )
             
             # Mostrar alertas de guardias consecutivas en CAJA SEPARADA
