@@ -121,7 +121,6 @@ dmypy.json
 
 # Logs
 logs/
-*.log
 
 # IDE
 .vscode/
