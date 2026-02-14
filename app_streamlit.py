@@ -961,7 +961,7 @@ if not st.session_state.can_use:
                 help="Ejemplo: GP-AB12-CD34-5678"
             )
             
-            submit = st.form_submit_button("🚀 Activar Licencia",use_container_width=True')
+            submit = st.form_submit_button("🚀 Activar Licencia", use_container_width=True)
             
             if submit and license_key: 
                 success, message = license_manager. activate_license(license_key)
