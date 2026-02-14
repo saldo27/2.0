@@ -961,7 +961,7 @@ if not st.session_state.can_use:
                 help="Ejemplo: GP-AB12-CD34-5678"
             )
             
-            submit = st.form_submit_button("🚀 Activar Licencia", width='stretch')
+            submit = st.form_submit_button("🚀 Activar Licencia",use_container_width=True')
             
             if submit and license_key: 
                 success, message = license_manager. activate_license(license_key)
@@ -2112,7 +2112,7 @@ with tab3:
             
             styled_df = stats_df.style.map(color_deviation, subset=['Desv. %', 'Desv. Wknd %'])
             styled_df = styled_df.map(color_bridge_balance, subset=['Balance Puentes'])
-            st.dataframe(styled_df, width='stretch', hide_index=True)
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
             
             # Gráfico de barras
             st.markdown("---")
@@ -2139,7 +2139,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
             
             # Gráfico de desviación
             st.markdown("---")
@@ -2155,7 +2155,7 @@ with tab3:
             )
             
             fig2.update_layout(height=400)
-            st.plotly_chart(fig2, width='stretch')
+            st.plotly_chart(fig2, use_container_width=True)
             
             # Gráfico de Weekend (Vie/Sab/Dom + Festivos + Pre-festivos)
             st.markdown("---")
@@ -2183,7 +2183,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig3, width='stretch')
+            st.plotly_chart(fig3, use_container_width=True)
             
             # Gráfico de desviación de weekend
             st.markdown("---")
@@ -2202,7 +2202,7 @@ with tab3:
                 height=400,
                 yaxis_title="Desviación (turnos)"
             )
-            st.plotly_chart(fig4, width='stretch')
+            st.plotly_chart(fig4, use_container_width=True)
 
 
 # ==================== TAB 4: VERIFICACIÓN ====================
@@ -2342,7 +2342,7 @@ with tab5:
                     markers=True
                 )
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
                 
                 # Statistics
                 col_avg, col_max, col_min = st.columns(3)
