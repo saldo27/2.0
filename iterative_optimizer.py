@@ -816,8 +816,8 @@ class IterativeOptimizer:
                             else:
                                 try:
                                     worker_assignments.add(datetime.strptime(date, "%Y-%m-%d"))
-                                except:
-                                    continue
+                                except ValueError:
+                                    continue  # Skip invalid date format
                 elif isinstance(assignments, list):
                     if worker_name in assignments:
                         if isinstance(date, datetime):
@@ -825,8 +825,8 @@ class IterativeOptimizer:
                         else:
                             try:
                                 worker_assignments.add(datetime.strptime(date, "%Y-%m-%d"))
-                            except:
-                                continue
+                            except ValueError:
+                                continue  # Skip invalid date format
             
             # Check 7/14 day pattern violations
             for assigned_date in worker_assignments:
@@ -895,7 +895,8 @@ class IterativeOptimizer:
                                     for shift_workers in assigns.values():
                                         if isinstance(shift_workers, list) and worker_name in shift_workers:
                                             mandatory_count += 1
-                        except:
+                        except (KeyError, ValueError, AttributeError) as e:
+                            logging.debug(f"Error counting mandatory shifts: {e}")
                             continue
                 except Exception:
                     pass
@@ -914,8 +915,8 @@ class IterativeOptimizer:
                                     shifts_this_month += 1
                         elif isinstance(assignments, list):
                             shifts_this_month += assignments.count(worker_name)
-                except:
-                    continue
+                except (KeyError, ValueError, AttributeError):
+                    continue  # Skip invalid schedule data
             
             # Calculate expected monthly target (simplified version)
             # Use _raw_target if available, otherwise use target_shifts
@@ -1200,8 +1201,8 @@ class IterativeOptimizer:
                 
                 if date_obj.weekday() in [5, 6]:  # Saturday or Sunday
                     weekend_dates.append(date_key)  # Use original key format
-            except:
-                continue
+            except (ValueError, AttributeError):
+                continue  # Skip invalid date format
         
         logging.info(f"   📅 Processing {len(weekend_dates)} weekend dates")
         
@@ -1389,8 +1390,8 @@ class IterativeOptimizer:
                 
                 if date_obj.weekday() in [5, 6]:  # Saturday or Sunday
                     weekend_dates.append(date_key)
-            except:
-                continue
+            except (ValueError, AttributeError):
+                continue  # Skip invalid date format
         
         logging.info(f"   📅 Processing {len(weekend_dates)} weekend dates for swaps")
         
@@ -1863,8 +1864,8 @@ class IterativeOptimizer:
                         date_str2 = check_date.strftime('%Y-%m-%d')
                         if date_str1 in mandatory_dates_str or date_str2 in mandatory_dates_str:
                             is_mandatory = True
-                    except:
-                        pass
+                    except (ValueError, AttributeError):
+                        pass  # Skip date conversion errors
                 
                 if isinstance(assignments, dict):
                     # Dictionary format: {date: {'Morning': [workers], 'Afternoon': [workers]}}
@@ -2116,8 +2117,8 @@ class IterativeOptimizer:
                     from datetime import datetime
                     date_obj = datetime.strptime(date, '%Y-%m-%d')
                     is_weekend = date_obj.weekday() in [5, 6]
-            except:
-                pass
+            except ValueError:
+                pass  # Skip invalid date format
             
             if isinstance(assignments, list):
                 for worker in assignments:
@@ -2198,8 +2199,8 @@ class IterativeOptimizer:
                                             for shift_workers in assigns.values():
                                                 if isinstance(shift_workers, list) and worker_name in shift_workers:
                                                     mandatory_count += 1
-                                except:
-                                    continue
+                                except (KeyError, ValueError, AttributeError):
+                                    continue  # Skip invalid schedule data
                         except Exception:
                             pass
                     
@@ -2247,8 +2248,8 @@ class IterativeOptimizer:
                             days_diff = abs((date - worker_date).days)
                             if days_diff < gap and days_diff > 0:
                                 return False
-                    except:
-                        pass
+                    except (ValueError, AttributeError):
+                        pass  # Skip date comparison errors
             
             return True
             
