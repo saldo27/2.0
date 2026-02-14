@@ -12,7 +12,8 @@ from kivy.uix.slider import Slider
 import copy
 from kivy.graphics import Color, Line, Rectangle
 from datetime import datetime, timedelta
-from scheduler import  Scheduler, SchedulerError
+from scheduler import Scheduler
+from exceptions import SchedulerError
 from exporters import StatsExporter
 from pdf_exporter import PDFExporter
 from utilities import numeric_sort_key

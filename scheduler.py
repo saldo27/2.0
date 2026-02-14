@@ -18,10 +18,6 @@ from worker_eligibility import WorkerEligibilityTracker
 # Initialize logging using the configuration module
 setup_logging()
 
-class SchedulerError(Exception):
-    """Custom exception for Scheduler errors"""
-    pass
-
 class Scheduler:
     """Main Scheduler class that coordinates all scheduling operations"""
     
