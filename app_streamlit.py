@@ -1852,7 +1852,7 @@ with tab2:
             st.subheader("📋 Calendario Detallado")
             st.dataframe(
                 df,
-                width='stretch',
+                use_container_width=True,
                 height=600,
                 hide_index=True
             )
