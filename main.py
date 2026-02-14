@@ -12,7 +12,8 @@ from kivy.uix.slider import Slider
 import copy
 from kivy.graphics import Color, Line, Rectangle
 from datetime import datetime, timedelta
-from scheduler import  Scheduler, SchedulerError
+from scheduler import Scheduler
+from exceptions import SchedulerError
 from exporters import StatsExporter
 from pdf_exporter import PDFExporter
 from utilities import numeric_sort_key
@@ -915,8 +916,8 @@ Error al acceder a datos históricos: {str(e)}
             # Extra Workers
             try:
                 extra_workers = int(self.sim_workers_input.text)
-            except:
-                extra_workers = 0
+            except (ValueError, AttributeError):
+                extra_workers = 0  # Invalid input, use default
             
             # WORKERS Period String
             w_start_str = self.sim_workers_date_start.text.strip()
@@ -963,8 +964,8 @@ Error al acceder a datos históricos: {str(e)}
             # Shift Change (Variable Shifts)
             try:
                 shift_change = int(self.sim_shift_change_input.text)
-            except:
-                shift_change = 0
+            except (ValueError, AttributeError):
+                shift_change = 0  # Invalid input, use default
 
             if shift_change != 0:
                 # SHIFTS Period
@@ -980,7 +981,8 @@ Error al acceder a datos históricos: {str(e)}
                          end_dt = datetime.strptime(s_end_str, '%d-%m-%Y')
                          range_start = start_dt
                          range_end = end_dt
-                     except:
+                     except ValueError:
+                         # Invalid date format, use full schedule range
                          range_start = sim_config['start_date']
                          range_end = sim_config['end_date']
                 else:
@@ -1069,8 +1071,8 @@ Error al acceder a datos históricos: {str(e)}
                         workers = len(sch.workers_data)
                         if workers == 0: return 0
                         return (real_assigned / workers) / months
-                    except:
-                        return 0
+                    except (AttributeError, ZeroDivisionError):
+                        return 0  # Handle missing data or division by zero
 
                 base_avg = 0
                 if app.scheduler:
@@ -1238,7 +1240,8 @@ Error al acceder a datos históricos: {str(e)}
                                 try:
                                     dt = datetime.fromisoformat(date_str)
                                     schedule[dt] = workers
-                                except: pass
+                                except (ValueError, TypeError):
+                                    pass  # Skip invalid date entries
                             
                             if schedule:
                                 app.schedule_config['schedule'] = schedule

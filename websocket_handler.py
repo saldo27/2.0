@@ -360,8 +360,8 @@ class WebSocketHandler:
                     if user:
                         try:
                             await user.websocket.close()
-                        except:
-                            pass
+                        except (ConnectionClosed, RuntimeError):
+                            pass  # Already closed or connection error
                         await self._broadcast_user_status(user_id, 'disconnected')
                 
             except Exception as e:

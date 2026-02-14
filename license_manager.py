@@ -38,8 +38,8 @@ class LicenseManager:
             license_key = license_data.get('key', '')
             if self._validate_license_key(license_key):
                 return True
-        except:
-            return False
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            return False  # License file not found or invalid
         
         return False
     
@@ -67,8 +67,8 @@ class LicenseManager:
             base = '-'.join(parts[: 3])
             expected = hashlib.md5(base.encode()).hexdigest()[:4].upper()
             return parts[3] == expected
-        except:
-            return False
+        except (IndexError, AttributeError):
+            return False  # Invalid license key format
     
     def get_usage_stats(self):
         """Obtener estadísticas de uso"""
@@ -82,8 +82,8 @@ class LicenseManager:
         try: 
             with open(self.usage_file, 'r') as f:
                 return json.load(f)
-        except:
-            return {'uses':  0, 'first_use': None, 'last_use': None}
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {'uses':  0, 'first_use': None, 'last_use': None}  # No usage file or invalid format
     
     def increment_usage(self):
         """Incrementar contador de uso"""

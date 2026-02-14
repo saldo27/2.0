@@ -165,8 +165,8 @@ class BalanceValidator:
                         date_str2 = check_date.strftime('%Y-%m-%d')
                         if date_str1 in mandatory_dates or date_str2 in mandatory_dates:
                             is_mandatory = True
-                    except:
-                        pass
+                    except (ValueError, AttributeError) as e:
+                        logging.warning(f"Error checking mandatory dates: {e}")
                 
                 # Solo contar si NO es mandatory
                 if not is_mandatory:

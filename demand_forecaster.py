@@ -258,7 +258,8 @@ class DemandForecaster:
                                 if fitted_model.aic < best_aic:
                                     best_aic = fitted_model.aic
                                     best_model = fitted_model
-                            except:
+                            except Exception as e:
+                                logging.debug(f"ARIMA model fitting failed for parameters {p},{d},{q}: {e}")
                                 continue
                 
                 if best_model:

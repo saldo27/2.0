@@ -286,7 +286,8 @@ def load_schedule_from_json(uploaded_file):
                         holidays.append(datetime.fromisoformat(h))
                     else:
                         holidays.append(h)
-                except: pass
+                except (ValueError, TypeError, AttributeError):
+                    pass  # Skip invalid holiday entries
             config['holidays'] = holidays
             
         if 'variable_shifts' in data: config['variable_shifts'] = data['variable_shifts']
@@ -302,7 +303,8 @@ def load_schedule_from_json(uploaded_file):
                     try:
                         dt = datetime.fromisoformat(date_str)
                         schedule[dt] = workers
-                    except: pass
+                    except (ValueError, TypeError):
+                        pass  # Skip invalid date entries
                 
                 if schedule:
                     # Crear scheduler dummy con esta config
@@ -1097,7 +1099,7 @@ with st.sidebar:
             try:
                 holiday_date = datetime.strptime(line, '%d-%m-%Y')
                 holidays.append(holiday_date)
-            except:
+            except ValueError:
                 st.warning(f"⚠️ Fecha inválida ignorada: {line}")
     
     # Guardar festivos en session_state para acceso desde otras tabs
@@ -1168,7 +1170,7 @@ with st.sidebar:
                         'end_date': date_obj,
                         'shifts': shifts_num
                     })
-                except:
+                except (ValueError, IndexError):
                     st.warning(f"⚠️ Línea inválida: {line}")
         
         if variable_shifts:
@@ -1932,7 +1934,8 @@ with tab2:
                                         try:
                                             p_idx = scheduler.schedule[date].index(w_id)
                                             post_counts[p_idx] = post_counts.get(p_idx, 0) + 1
-                                        except: pass
+                                        except (ValueError, KeyError):
+                                            pass  # Worker not found in schedule for this date
                                         # Weekdays
                                         wd = date.weekday()
                                         weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
@@ -2103,8 +2106,8 @@ with tab3:
                             return 'background-color: #fff3cd'
                         else:
                             return 'background-color: #f8d7da'
-                    except:
-                        pass
+                    except (ValueError, TypeError, KeyError):
+                        pass  # Skip invalid balance values
                 return ''
             
             styled_df = stats_df.style.map(color_deviation, subset=['Desv. %', 'Desv. Wknd %'])

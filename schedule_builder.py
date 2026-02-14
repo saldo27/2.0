@@ -275,8 +275,8 @@ class ScheduleBuilder:
         try:
             mandatory_dates = self.date_utils.parse_dates(mandatory_days_str)
             return date in mandatory_dates
-        except:
-            return False
+        except (ValueError, AttributeError):
+            return False  # Invalid date format or missing data
     
     def _is_slot_protected_mandatory(self, date, post):
         """
@@ -2469,8 +2469,8 @@ class ScheduleBuilder:
             mandatory_str = worker.get('mandatory_days', '')
             try:
                 dates = self.date_utils.parse_dates(mandatory_str)
-            except:
-                continue
+            except (ValueError, AttributeError):
+                continue  # Skip worker with invalid mandatory dates
             
             for date in dates:
                 if not (self.start_date <= date <= self.end_date):
@@ -4795,8 +4795,8 @@ class ScheduleBuilder:
             if worker_data and worker_data.get('mandatory_days'):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker_data['mandatory_days']))
-                except:
-                    pass
+                except (ValueError, AttributeError):
+                    pass  # Skip invalid mandatory dates
             
             transferable_dates = [d for d in self.worker_assignments.get(over_id, set()) 
                                   if d not in mandatory_dates]
@@ -4868,8 +4868,8 @@ class ScheduleBuilder:
             if to_worker_data.get('mandatory_days'):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(to_worker_data['mandatory_days']))
-                except:
-                    pass
+                except (ValueError, AttributeError):
+                    pass  # Skip invalid mandatory dates
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
             current_non_mandatory = len(all_assignments) - mandatory_assigned
             global_deficit = target - current_non_mandatory
@@ -4912,8 +4912,8 @@ class ScheduleBuilder:
             if worker.get('mandatory_days'):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker['mandatory_days']))
-                except:
-                    pass
+                except (ValueError, AttributeError):
+                    pass  # Skip invalid mandatory dates
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
             current = len(all_assignments) - mandatory_assigned
             
@@ -5069,8 +5069,8 @@ class ScheduleBuilder:
             if worker.get('mandatory_days'):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker['mandatory_days']))
-                except:
-                    pass
+                except (ValueError, AttributeError):
+                    pass  # Skip invalid mandatory dates
             non_mandatory = len(all_assignments) - sum(1 for d in all_assignments if d in mandatory_dates)
             deviation = non_mandatory - target
             

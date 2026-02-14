@@ -261,7 +261,8 @@ class TurnAdjustmentManager:
                     if single_date.date() == date.date():
                         return True
             return False
-        except:
+        except (ValueError, AttributeError) as e:
+            logging.warning(f"Error parsing work period: {e}")
             return True  # En caso de error, asumir disponible
     
     def _is_date_in_days_off(self, date: datetime, days_off_str: str) -> bool:
@@ -284,7 +285,8 @@ class TurnAdjustmentManager:
                     if single_date.date() == date.date():
                         return True
             return False
-        except:
+        except (ValueError, AttributeError) as e:
+            logging.warning(f"Error parsing days off: {e}")
             return False
     
     def _check_minimum_gap(self, worker_id: str, target_date: datetime, min_gap: int) -> bool:
