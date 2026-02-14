@@ -885,7 +885,7 @@ def show_license_info():
                     max_chars=25
                 )
                 
-                submit = st.form_submit_button("Activar", width='stretch')
+                submit = st.form_submit_button("Activar", use_container_width=True)
                 
                 if submit and license_key:
                     success, message = license_manager.activate_license(license_key)
