@@ -167,7 +167,6 @@ class BalanceValidator:
                             is_mandatory = True
                     except (ValueError, AttributeError) as e:
                         logging.warning(f"Error checking mandatory dates: {e}")
-                        pass
                 
                 # Solo contar si NO es mandatory
                 if not is_mandatory:
