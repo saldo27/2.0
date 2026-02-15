@@ -1,6 +1,6 @@
 ================================================================================
                     GuardiasApp - Aplicación para Distribución de Guardias
-                                  Versión 2.3
+                                  Versión 2.5
 ================================================================================
 
 DESCRIPCIÓN:
@@ -12,16 +12,20 @@ CARACTERÍSTICAS:
 ----------------
 ✓ Generación automática de horarios optimizados
 ✓ Balance proporcional de turnos y fines de semana
+✓ Balance equitativo de turnos en días puente (NUEVO v2.5)
 ✓ Gestión de incompatibilidades entre trabajadores
 ✓ Días obligatorios y días libres configurables
 ✓ Períodos de trabajo personalizados
 ✓ Exportación a PDF y CSV
 ✓ Análisis predictivo y simulador de escenarios
 ✓ Verificación automática de restricciones
-✓ NUEVO: Análisis de calendarios de guardias (tab "Revisión")
-✓ NUEVO: Cálculo de estadísticas por trabajador (Fin de Semana, Festivos, Rosell)
-✓ NUEVO: Detección de guardias consecutivas
-✓ NUEVO: Exportación de análisis a PDF y Excel
+✓ Análisis de calendarios de guardias (tab "Revisión")
+✓ Cálculo de estadísticas por trabajador (Fin de Semana, Festivos, Rosell, Puentes)
+✓ Estadísticas y gráficos de turnos en puente (NUEVO v2.5)
+✓ Detección de guardias consecutivas
+✓ Exportación de análisis a PDF y Excel
+✓ Interfaz optimizada con columnas de ancho fijo (NUEVO v2.5)
+✓ Configuración de locale español para calendarios L-D (NUEVO v2.5)
 
 REQUISITOS DEL SISTEMA:
 -----------------------
@@ -153,6 +157,19 @@ v2.2 (Enero 2026):
 - Exportación de análisis a PDF y Excel
 - Mapeo automático de nombres compuestos (ej: "LUIS H")
 - Configuración flexible de guardias por día (shifts_per_day)
+
+v2.5 (Febrero 2026):
+- Estadísticas completas de turnos en días puente (gráficos y tablas)
+- Integración de datos de puente en pestaña Revisión
+- Corrección de fórmula de objetivo de puentes (basada en shifts individuales)
+- Detección automática de períodos puente (Thu/Fri/Mon/Tue + festivos)
+- Tolerancia estricta para puentes: ±0.5 shifts
+- Ancho de columna fijo (72px) en tablas de Estadísticas y Revisión
+- Indicadores (L-D) en todos los selectores de fecha
+- Configuración de locale español (es_ES.utf8) para calendarios
+- Tooltips de ayuda en calendarios explicando formato Lunes-Domingo
+- Limpieza de interfaz: eliminada información redundante de puentes
+- Mejoras de usabilidad y consistencia visual en toda la aplicación
 
 v2.1 (Enero 2026):
 - Interfaz mejorada de Gestión de Médicos

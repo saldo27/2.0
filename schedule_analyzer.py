@@ -10,6 +10,7 @@ Funcionalidades:
 """
 
 import pandas as pd  # type: ignore
+import datetime as dt
 from datetime import datetime, timedelta, date
 import re
 import logging
@@ -39,6 +40,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle  # type: ig
 from reportlab.lib.units import inch  # type: ignore
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image  # type: ignore
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT  # type: ignore
+from utilities import DateTimeUtils
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +190,28 @@ class ScheduleAnalyzer:
         self.workers_stats = {}
         self.calendar_dates = []
         self.calendar_array = []
+        
+        # Identificar períodos de puente
+        date_utils = DateTimeUtils()
+        year = start_date.year if hasattr(start_date, 'year') else datetime.now().year
+        self.bridge_periods = date_utils.identify_bridge_periods(self.holidays, year)
+        
+        logging.info(f"ScheduleAnalyzer: Detectados {len(self.bridge_periods)} períodos de puente para año {year}")
+        
+        # Crear conjunto de fechas de puente para búsqueda rápida
+        self.bridge_dates = set()
+        for bridge_period in self.bridge_periods:
+            current = bridge_period['start_date']
+            end = bridge_period['end_date']
+            while current <= end:
+                # Convertir datetime a date si es necesario
+                if isinstance(current, dt.datetime):
+                    self.bridge_dates.add(current.date())
+                else:
+                    self.bridge_dates.add(current)
+                current += timedelta(days=1)
+        
+        logging.info(f"ScheduleAnalyzer: Total de {len(self.bridge_dates)} fechas de puente: {sorted(self.bridge_dates)}")
         
     def parse_calendar(self):
         """
@@ -458,6 +482,7 @@ class ScheduleAnalyzer:
                         'domingo': 0,
                         'weekend': 0,
                         'rosell': 0,
+                        'bridge': 0,
                         'monthly': {}
                     }
                 
@@ -472,6 +497,12 @@ class ScheduleAnalyzer:
                 # Contar Rosell (última posición)
                 if idx == last_pos:
                     stats['rosell'] += 1
+                
+                # Contar puentes (días en períodos de puente)
+                # actual_date ya es un objeto date del parse_calendar
+                if actual_date in self.bridge_dates:
+                    stats['bridge'] += 1
+                    logging.debug(f"Turno de puente detectado para {worker} en {actual_date}")
                 
                 # LÓGICA DE CONTABILIZACIÓN DE FIN DE SEMANA:
                 # 1. Si es FESTIVO → cuenta como DOMINGO (sin importar qué día sea)
@@ -502,6 +533,7 @@ class ScheduleAnalyzer:
             total = stats['total']
             weekend_pct = (stats['weekend'] / total * 100) if total > 0 else 0
             rosell_pct = (stats['rosell'] / total * 100) if total > 0 else 0
+            bridge_pct = (stats['bridge'] / total * 100) if total > 0 else 0
             
             stats_list.append({
                 'Trabajador': worker,
@@ -511,6 +543,8 @@ class ScheduleAnalyzer:
                 'Domingo': stats['domingo'],
                 'Total FS': stats['weekend'],
                 '% FS': round(weekend_pct, 1),
+                'Puente': stats['bridge'],
+                '% Puente': round(bridge_pct, 1),
                 'Rosell': stats['rosell'],
                 '% Rosell': round(rosell_pct, 1),
                 'monthly_stats': stats['monthly'],
@@ -538,6 +572,8 @@ class ScheduleAnalyzer:
                 'Domingo': stat['Domingo'],
                 'Total FS': stat['Total FS'],
                 '% FS': stat['% FS'],
+                'Puente': stat['Puente'],
+                '% Puente': stat['% Puente'],
                 'Rosell': stat['Rosell'],
                 '% Rosell': stat['% Rosell']
             }
@@ -546,6 +582,13 @@ class ScheduleAnalyzer:
                 row[f'Mes: {month}'] = stat['monthly_stats'].get(month, 0)
             
             df_data.append(row)
+        
+        # Log resumen de puentes
+        total_bridge_shifts = sum(stat['Puente'] for stat in stats_list)
+        logging.info(f"Total de turnos en puente detectados: {total_bridge_shifts}")
+        for stat in stats_list:
+            if stat['Puente'] > 0:
+                logging.info(f"  {stat['Trabajador']}: {stat['Puente']} turnos en puente ({stat['% Puente']}%)")
         
         return pd.DataFrame(df_data)
     

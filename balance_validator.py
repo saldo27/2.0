@@ -280,15 +280,15 @@ class BalanceValidator:
     def validate_bridge_balance(self, scheduler, bridge_periods: List[dict], 
                                tolerance: float = 0.5) -> Dict:
         """
-        Validate bridge period distribution balance.
+        Validate bridge shift distribution balance.
         
-        Bridge periods have stricter tolerance (±0.5) compared to general shifts (±1).
-        Each bridge period counts as 1 unit regardless of how many days it contains.
+        Bridge shifts have stricter tolerance (±0.5) compared to general weekend shifts (±1).
+        Each shift on a bridge day is counted individually.
         
         Args:
             scheduler: Scheduler instance with worker data and bridge tracking
             bridge_periods: List of bridge period dictionaries
-            tolerance: Maximum allowed deviation in bridge periods (default: 0.5)
+            tolerance: Maximum allowed deviation in bridge shifts (default: 0.5)
             
         Returns:
             Dict with bridge balance statistics and violations

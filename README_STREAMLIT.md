@@ -1,5 +1,7 @@
 # Sistema de Generación de Horarios - Interfaz Streamlit
 
+**Versión actual: 2.5 (Febrero 2026)**
+
 ## 🚀 Inicio Rápido
 
 ### Ejecutar la aplicación
@@ -41,6 +43,10 @@ streamlit run app_streamlit.py --server.port 8501
 - ✅ Comparación objetivo vs asignado (gráfico)
 - ✅ Visualización de desviaciones (gráfico)
 - ✅ Código de colores según tolerancia
+- ✅ **NUEVO v2.5**: Estadísticas de turnos en puente
+- ✅ **NUEVO v2.5**: Gráficos de asignación y desviación de puentes
+- ✅ **NUEVO v2.5**: Tabla resumen con objetivo vs asignado de puentes
+- ✅ **NUEVO v2.5**: Columnas de ancho fijo (72px) para mejor legibilidad
 
 ### 4. **Verificación de Restricciones** ⚠️
 - ✅ Verificación de incompatibilidades
@@ -155,7 +161,29 @@ streamlit run app_streamlit.py --server.port 8501
 - ✅ **Patrón 7/14 Días**: Mismo día de semana a 7 o 14 días
 - ✅ **Gap entre Turnos**: Días mínimos de descanso
 - ✅ **Balance de Fines de Semana**: Distribución proporcional
+- ✅ **Balance de Puentes**: Distribución equitativa de turnos en días puente
 - ✅ **Tolerancia**: Desviación máxima respecto al objetivo
+
+## 🆕 New Features (v2.5) - Febrero 2026
+
+### Estadísticas de Turnos en Puente 🌉
+- **Visualización completa**: Tres gráficos dedicados en pestaña Estadísticas
+  - Gráfico comparativo de turnos asignados en puente por trabajador
+  - Gráfico de desviaciones respecto al objetivo de puentes  
+  - Tabla resumen con asignado, objetivo y desviación
+- **Integración en Revisión**: Columnas "Puente" y "% Puente" en tabla de estadísticas
+- **Cálculo preciso**: Objetivo basado en shifts individuales (no períodos)
+  - Fórmula: `(total_puente_shifts / total_FTE) × worker_FTE`
+- **Tolerancia estricta**: ±0.5 shifts (más estricta que fin de semana)
+- **Detección automática**: Identifica puentes (Thu/Fri/Mon/Tue adyacentes a festivos)
+- **Código de colores**: Verde (dentro de tolerancia) / Rojo (fuera de tolerancia)
+
+### Mejoras de Interfaz de Usuario 🎨
+- **Columnas de ancho fijo**: 72px (≈9 caracteres) para tablas consistentes
+- **Indicadores de calendario**: Etiquetas "(L-D)" en todos los selectores de fecha
+- **Configuración de locale**: Sistema configurado para español (es_ES.utf8)
+- **Ayuda contextual**: Tooltips explicando formato Lunes-Domingo en calendarios
+- **Limpieza de UI**: Removida información redundante de detección de puentes
 
 ## 🆕 New Features (v2.1)
 

@@ -4410,23 +4410,23 @@ class ScheduleBuilder:
 
     def _distribute_bridge_shifts_proportionally(self):
         """
-        Distribute bridge period shifts proportionally based on work percentage.
+        Distribute bridge shifts proportionally based on work percentage.
         This complements (does not replace) the existing weekend/holiday distribution.
         
-        A bridge period is counted as a single unit, regardless of how many days it contains.
-        Tolerance: ±0.5 bridge periods (stricter than weekend tolerance of ±1)
+        Each shift on a bridge day is counted individually.
+        Tolerance: ±0.5 bridge shifts (stricter than weekend tolerance of ±1)
         
         Returns:
             bool: True if changes were made
         """
-        logging.info("Starting proportional distribution of bridge periods...")
+        logging.info("Starting proportional distribution of bridge shifts...")
         
         if not self.bridge_periods:
             logging.info("No bridge periods identified for this scheduling period")
             return False
         
-        total_bridges = len(self.bridge_periods)
-        logging.info(f"Total bridge periods to distribute: {total_bridges}")
+        num_bridge_periods = len(self.bridge_periods)
+        logging.info(f"Identified {num_bridge_periods} bridge periods in schedule")
         
         # Calculate current bridge assignments per worker
         current_bridge_assignments = {}
@@ -4443,7 +4443,7 @@ class ScheduleBuilder:
             
             current = current_bridge_assignments[worker_id]
             deviation = current - target
-            logging.info(f"Worker {worker_id}: current={current}, target={target:.2f}, deviation={deviation:+.2f}")
+            logging.info(f"Worker {worker_id}: current={current} shifts, target={target:.2f} shifts, deviation={deviation:+.2f}")
         
         # Identify workers needing adjustment (tolerance ±0.5)
         tolerance = self.scheduler.bridge_tolerance

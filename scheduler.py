@@ -1054,26 +1054,43 @@ class Scheduler:
     
     def count_bridges_for_worker(self, worker_id: str) -> int:
         """
-        Count the number of bridge periods assigned to a worker.
+        Count the number of bridge SHIFTS assigned to a worker.
+        (Counts individual shifts in bridge days, not bridge periods)
         
         Args:
             worker_id: ID of the worker
             
         Returns:
-            Number of distinct bridge periods assigned to the worker
+            Number of shifts in bridge days assigned to the worker
         """
-        return len(self.worker_bridge_counts.get(worker_id, set()))
+        bridge_shift_count = 0
+        
+        # Get all bridge dates
+        bridge_dates = set()
+        for bridge_period in self.bridge_periods:
+            for date in self._get_dates_in_bridge(bridge_period):
+                bridge_dates.add(date)
+        
+        # Count how many shifts this worker has on bridge dates
+        for date, shifts in self.schedule.items():
+            if date in bridge_dates:
+                # Count how many of the shifts on this date are assigned to this worker
+                bridge_shift_count += shifts.count(worker_id)
+        
+        return bridge_shift_count
     
     def get_bridge_objective_for_worker(self, worker_id: str) -> float:
         """
-        Calculate the objective (target) number of bridge periods for a worker
-        based on their work percentage.
+        Calculate the objective (target) number of bridge shifts for a worker
+        based on their work percentage and total bridge shifts to distribute.
+        
+        Formula: (total_bridge_shifts / total_FTE) * worker_FTE
         
         Args:
             worker_id: ID of the worker
             
         Returns:
-            Target number of bridge periods (float)
+            Target number of bridge shifts (float)
         """
         # Find worker data
         worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
@@ -1081,10 +1098,28 @@ class Scheduler:
             return 0.0
         
         work_percentage = worker.get('work_percentage', 100)
-        total_bridges = len(self.bridge_periods)
+        worker_fte = work_percentage / 100.0
         
-        # Objective = (total_bridge_periods × work_percentage) / 100
-        return (total_bridges * work_percentage) / 100.0
+        # Calculate total bridge shifts (number of shifts in days that are part of bridge periods)
+        total_bridge_shifts = 0
+        bridge_dates = set()
+        for bridge_period in self.bridge_periods:
+            for date in self._get_dates_in_bridge(bridge_period):
+                if date in self.schedule:
+                    bridge_dates.add(date)
+        
+        for date in bridge_dates:
+            if date in self.schedule:
+                total_bridge_shifts += len(self.schedule[date])
+        
+        # Calculate total FTE of all workers
+        total_fte = sum(w.get('work_percentage', 100) / 100.0 for w in self.workers_data)
+        
+        if total_fte == 0:
+            return 0.0
+        
+        # Objective = (total_bridge_shifts / total_FTE) * worker_FTE
+        return (total_bridge_shifts / total_fte) * worker_fte
     
     def _get_dates_in_bridge(self, bridge_period: dict) -> List[datetime]:
         """

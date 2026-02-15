@@ -1,18 +1,24 @@
-"""
+""" 
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 2.3 (Enero 2026)
+Versión: 2.5 (Febrero 2026)
 """
+# IMPORTANTE: Configurar locale ANTES de importar streamlit
+# Esto asegura que los calendarios muestren Lunes-Domingo (formato español/ISO 8601)
+import os
+os.environ['LANG'] = 'es_ES.utf8'
+os.environ['LC_ALL'] = 'es_ES.utf8'
+os.environ['LC_TIME'] = 'es_ES.utf8'
+
 import streamlit as st  # type: ignore
 import pandas as pd  # type: ignore
 import plotly.graph_objects as go  # type: ignore
 import plotly.express as px  # type: ignore
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import json
 import copy
 import logging
-import os
 import io
 from pathlib import Path
 import traceback
@@ -27,7 +33,7 @@ logging.getLogger('PIL').setLevel(logging.WARNING)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 # Constante de versión
-APP_VERSION = "2.3"
+APP_VERSION = "2.5"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -50,6 +56,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Configurar locale para calendarios (Lunes como primer día de la semana)
+import locale
+try:
+    locale.setlocale(locale.LC_TIME, 'es_ES.utf8')
+except:
+    try:
+        locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
+    except:
+        try:
+            locale.setlocale(locale.LC_TIME, 'es_ES')
+        except:
+            pass  # Mantener locale por defecto si no está disponible
+
 # Configurar logging (solo una vez por sesión)
 @st.cache_resource
 def initialize_logging():
@@ -59,7 +78,7 @@ def initialize_logging():
 
 initialize_logging()
 
-# Custom CSS para mejor apariencia
+# Custom CSS y JavaScript para mejor apariencia y configuración de calendarios
 st.markdown("""
 <style>
     .main > div {
@@ -90,6 +109,42 @@ st.markdown("""
         color: #856404;
     }
 </style>
+
+<script>
+// Configurar calendarios para que comiencen en Lunes (formato español/ISO 8601)
+(function() {
+    // Esperar a que el DOM esté listo
+    function setMondayAsFirstDay() {
+        // Buscar todos los inputs de tipo date
+        const dateInputs = document.querySelectorAll('input[type="date"]');
+        
+        dateInputs.forEach(input => {
+            // Forzar locale español
+            input.setAttribute('lang', 'es-ES');
+            
+            // Añadir atributo data-firstday para calendarios personalizados
+            input.setAttribute('data-firstday', '1'); // 1 = Lunes
+        });
+    }
+    
+    // Ejecutar al cargar
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', setMondayAsFirstDay);
+    } else {
+        setMondayAsFirstDay();
+    }
+    
+    // Observar cambios en el DOM para aplicar a nuevos calendarios
+    const observer = new MutationObserver(function(mutations) {
+        setMondayAsFirstDay();
+    });
+    
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+})();
+</script>
 """, unsafe_allow_html=True)
 
 # Inicializar session state
@@ -286,8 +341,7 @@ def load_schedule_from_json(uploaded_file):
                         holidays.append(datetime.fromisoformat(h))
                     else:
                         holidays.append(h)
-                except (ValueError, TypeError, AttributeError):
-                    pass  # Skip invalid holiday entries
+                except: pass
             config['holidays'] = holidays
             
         if 'variable_shifts' in data: config['variable_shifts'] = data['variable_shifts']
@@ -303,8 +357,7 @@ def load_schedule_from_json(uploaded_file):
                     try:
                         dt = datetime.fromisoformat(date_str)
                         schedule[dt] = workers
-                    except (ValueError, TypeError):
-                        pass  # Skip invalid date entries
+                    except: pass
                 
                 if schedule:
                     # Crear scheduler dummy con esta config
@@ -507,18 +560,6 @@ def get_worker_statistics():
     
     weekend_ratio = weekend_days / total_days if total_days > 0 else 0
     
-    # Calcular estadísticas de puentes si está disponible
-    bridge_stats = None
-    if hasattr(scheduler, 'data_manager') and hasattr(scheduler.data_manager, 'bridge_manager'):
-        workers_dict = {w['id']: w for w in scheduler.workers_data}
-        bridge_stats = scheduler.data_manager.bridge_manager.calculate_bridge_stats(
-            scheduler.worker_assignments,
-            workers_dict
-        )
-        logging.info(f"Bridge stats calculated: {len(bridge_stats.get('worker_bridge_counts', {}))} workers")
-    else:
-        logging.warning("Bridge manager not available - bridge columns will show zeros")
-    
     stats = []
     for worker_id, data in core_stats['workers'].items():
         # Obtener worker data para acceder a _raw_target y _mandatory_count
@@ -543,15 +584,6 @@ def get_worker_statistics():
         weekend_deviation = weekend_shifts - weekend_target
         weekend_deviation_pct = (weekend_deviation / weekend_target * 100) if weekend_target > 0 else 0
         
-        # Bridge statistics
-        bridge_count = 0
-        bridge_normalized = 0.0
-        bridge_balance = 0.0
-        if bridge_stats:
-            bridge_count = bridge_stats['worker_bridge_counts'].get(worker_id, 0)
-            bridge_normalized = bridge_stats['worker_bridge_normalized'].get(worker_id, 0.0)
-            bridge_balance = bridge_stats['bridge_balance'].get(worker_id, 0.0)
-        
         stats.append({
             'Médico': worker_id,
             'Objetivo': target,
@@ -561,10 +593,7 @@ def get_worker_statistics():
             'Obj. Weekend': weekend_target,
             'Weekend': weekend_shifts,
             'Desv. Wknd': weekend_deviation,
-            'Desv. Wknd %': f"{weekend_deviation_pct:+.1f}%",
-            'Puentes': bridge_count,
-            'Normalizado': f"{bridge_normalized:.2f}",
-            'Balance Puentes': f"{bridge_balance:+.2f}"
+            'Desv. Wknd %': f"{weekend_deviation_pct:+.1f}%"
         })
     
     return pd.DataFrame(stats)
@@ -885,7 +914,7 @@ def show_license_info():
                     max_chars=25
                 )
                 
-                submit = st.form_submit_button("Activar", use_container_width=True)
+                submit = st.form_submit_button("Activar", width='stretch')
                 
                 if submit and license_key:
                     success, message = license_manager.activate_license(license_key)
@@ -961,7 +990,7 @@ if not st.session_state.can_use:
                 help="Ejemplo: GP-AB12-CD34-5678"
             )
             
-            submit = st.form_submit_button("🚀 Activar Licencia", use_container_width=True)
+            submit = st.form_submit_button("🚀 Activar Licencia", width='stretch')
             
             if submit and license_key: 
                 success, message = license_manager. activate_license(license_key)
@@ -1062,16 +1091,16 @@ with st.sidebar:
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input(
-            "Fecha Inicial",
+            "Fecha Inicial (L-D)",
             value=datetime(2026, 1, 1),
-            help="Fecha de inicio del período a programar",
+            help="Fecha de inicio del período a programar. Calendario: Lunes a Domingo",
             format="DD/MM/YYYY"
         )
     with col2:
         end_date = st.date_input(
-            "Fecha Final",
+            "Fecha Final (L-D)",
             value=datetime(2026, 12, 31),
-            help="Fecha de fin del período a programar",
+            help="Fecha de fin del período a programar. Calendario: Lunes a Domingo",
             format="DD/MM/YYYY"
         )
 
@@ -1099,7 +1128,7 @@ with st.sidebar:
             try:
                 holiday_date = datetime.strptime(line, '%d-%m-%Y')
                 holidays.append(holiday_date)
-            except ValueError:
+            except:
                 st.warning(f"⚠️ Fecha inválida ignorada: {line}")
     
     # Guardar festivos en session_state para acceso desde otras tabs
@@ -1108,18 +1137,6 @@ with st.sidebar:
     
     if holidays:
         st.success(f"✅ {len(holidays)} festivos configurados")
-        
-        # Detect and display bridges (puentes)
-        if st.session_state.scheduler and hasattr(st.session_state.scheduler, 'data_manager'):
-            bridges = st.session_state.scheduler.data_manager.bridge_manager.detect_bridges(
-                holidays, start_date, end_date
-            )
-            if bridges:
-                with st.expander(f"🌉 Puentes Detectados ({len(bridges)})", expanded=False):
-                    for bridge in bridges:
-                        bridge_type = "Posterior" if bridge['bridge_type'] == 'posterior' else "Anterior"
-                        st.write(f"**{bridge['holiday_date'].strftime('%d-%m-%Y')} ({bridge['weekday_name']})**")
-                        st.caption(f"Tipo: {bridge_type} | Período: {bridge['bridge_start'].strftime('%d-%m')} a {bridge['bridge_end'].strftime('%d-%m')} ({len(bridge['bridge_days'])} días)")
     
     st.markdown("---")
     
@@ -1170,7 +1187,7 @@ with st.sidebar:
                         'end_date': date_obj,
                         'shifts': shifts_num
                     })
-                except (ValueError, IndexError):
+                except:
                     st.warning(f"⚠️ Línea inválida: {line}")
         
         if variable_shifts:
@@ -1934,8 +1951,7 @@ with tab2:
                                         try:
                                             p_idx = scheduler.schedule[date].index(w_id)
                                             post_counts[p_idx] = post_counts.get(p_idx, 0) + 1
-                                        except (ValueError, KeyError):
-                                            pass  # Worker not found in schedule for this date
+                                        except: pass
                                         # Weekdays
                                         wd = date.weekday()
                                         weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
@@ -2080,8 +2096,8 @@ with tab3:
             st.markdown("---")
             
             # Tabla de estadísticas
-            st.subheader("📋 Tabla de Estadísticas Completa")
-            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos | Puentes: días de festivos que forman puente con fin de semana*")
+            st.subheader("📋 Estadísticas por Médico")
+            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
             
             # Colorear según desviación
             def color_deviation(val):
@@ -2095,24 +2111,17 @@ with tab3:
                         return 'background-color: #f8d7da'
                 return ''
             
-            def color_bridge_balance(val):
-                """Color balance de puentes similar a desviaciones"""
-                if isinstance(val, str):
-                    try:
-                        balance = float(val.replace('+', ''))
-                        if abs(balance) <= 0.5:
-                            return 'background-color: #d4edda'
-                        elif abs(balance) <= 1.0:
-                            return 'background-color: #fff3cd'
-                        else:
-                            return 'background-color: #f8d7da'
-                    except (ValueError, TypeError, KeyError):
-                        pass  # Skip invalid balance values
-                return ''
-            
             styled_df = stats_df.style.map(color_deviation, subset=['Desv. %', 'Desv. Wknd %'])
-            styled_df = styled_df.map(color_bridge_balance, subset=['Balance Puentes'])
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            
+            # Configurar ancho de columnas (9 caracteres ≈ 72px)
+            column_config_stats = {}
+            for col in styled_df.columns:
+                column_config_stats[col] = st.column_config.Column(
+                    col,
+                    width=72
+                )
+            
+            st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config=column_config_stats)
             
             # Gráfico de barras
             st.markdown("---")
@@ -2203,7 +2212,121 @@ with tab3:
                 yaxis_title="Desviación (turnos)"
             )
             st.plotly_chart(fig4, use_container_width=True)
-
+            
+            # Gráficos de Puentes (Bridge)
+            st.markdown("---")
+            st.subheader("🌉 Turnos de Puente por Médico")
+            st.caption("*Puente: periodos de 3-4 días que incluyen festivos adyacentes a fin de semana (Jue-Dom, Vie-Dom, Vie-Lun, Vie-Mar). Se cuenta cada turno individual en días de puente.*")
+            
+            # Verificar si el scheduler tiene soporte para puentes
+            scheduler = st.session_state.scheduler
+            has_bridge_support = (hasattr(scheduler, 'worker_bridge_counts') and 
+                                 hasattr(scheduler, 'get_bridge_objective_for_worker') and
+                                 hasattr(scheduler, 'count_bridges_for_worker'))
+            
+            if not has_bridge_support:
+                st.info("ℹ️ El horario actual no incluye información de puentes. Genere un nuevo horario para ver estas estadísticas.")
+            else:
+                # Obtener estadísticas de puentes
+                bridge_stats = {}
+                
+                for worker in scheduler.workers_data:
+                    worker_id = worker['id']
+                    assigned_bridges = scheduler.count_bridges_for_worker(worker_id)
+                    objective = scheduler.get_bridge_objective_for_worker(worker_id)
+                    deviation = assigned_bridges - objective
+                    bridge_stats[worker_id] = {
+                        'Asignados': assigned_bridges,
+                        'Objetivo': objective,
+                        'Desviación': deviation
+                    }
+                
+                # Crear DataFrame de puentes
+                bridge_df = pd.DataFrame.from_dict(bridge_stats, orient='index').reset_index()
+                bridge_df.columns = ['Médico', 'Asignados', 'Objetivo', 'Desviación']
+                
+                # Gráfico comparativo de puentes
+                fig5 = go.Figure()
+                fig5.add_trace(go.Bar(
+                    name='Objetivo Turnos Puente',
+                    x=bridge_df['Médico'],
+                    y=bridge_df['Objetivo'],
+                    marker_color='lightgreen'
+                ))
+                fig5.add_trace(go.Bar(
+                    name='Turnos Puente Asignados',
+                    x=bridge_df['Médico'],
+                    y=bridge_df['Asignados'],
+                    marker_color='darkgreen'
+                ))
+                
+                fig5.update_layout(
+                    barmode='group',
+                    xaxis_title="Médico",
+                    yaxis_title="Número de Turnos en Puente",
+                    height=400
+                )
+                
+                st.plotly_chart(fig5, use_container_width=True)
+                
+                # Gráfico de desviación de puentes
+                st.markdown("---")
+                st.subheader("📉 Desviación de Turnos en Puente por Médico")
+                st.caption("*Tolerancia objetivo: ±0.5 turnos*")
+                
+                # Añadir indicador de tolerancia
+                bridge_df['Dentro_Tolerancia'] = bridge_df['Desviación'].abs() <= 0.5
+                
+                fig6 = go.Figure()
+                
+                # Barras coloreadas según tolerancia
+                colors = ['green' if x else 'red' for x in bridge_df['Dentro_Tolerancia']]
+                
+                fig6.add_trace(go.Bar(
+                    x=bridge_df['Médico'],
+                    y=bridge_df['Desviación'],
+                    marker_color=colors,
+                    text=bridge_df['Desviación'].round(2),
+                    textposition='outside'
+                ))
+                
+                # Líneas de tolerancia
+                fig6.add_hline(y=0.5, line_dash="dash", line_color="orange", 
+                              annotation_text="Tolerancia +0.5", annotation_position="right")
+                fig6.add_hline(y=-0.5, line_dash="dash", line_color="orange",
+                              annotation_text="Tolerancia -0.5", annotation_position="right")
+                fig6.add_hline(y=0, line_dash="solid", line_color="gray", line_width=1)
+                
+                fig6.update_layout(
+                    height=400,
+                    yaxis_title="Desviación (turnos)",
+                    xaxis_title="Médico",
+                    showlegend=False
+                )
+                st.plotly_chart(fig6, use_container_width=True)
+                
+                # Tabla resumen de puentes
+                st.markdown("---")
+                st.subheader("📋 Resumen de Puentes por Médico")
+                
+                # Formatear la tabla
+                bridge_display_df = bridge_df.copy()
+                bridge_display_df['Objetivo'] = bridge_display_df['Objetivo'].round(2)
+                bridge_display_df['Desviación'] = bridge_display_df['Desviación'].apply(lambda x: f"{x:+.2f}")
+                bridge_display_df['Estado'] = bridge_display_df['Dentro_Tolerancia'].apply(
+                    lambda x: "✅ OK" if x else "⚠️ Fuera de tolerancia"
+                )
+                bridge_display_df = bridge_display_df[['Médico', 'Objetivo', 'Asignados', 'Desviación', 'Estado']]
+                
+                # Colorear según estado
+                def color_bridge_status(row):
+                    if '⚠️' in str(row['Estado']):
+                        return ['background-color: #f8d7da'] * len(row)
+                    else:
+                        return ['background-color: #d4edda'] * len(row)
+                
+                styled_bridge_df = bridge_display_df.style.apply(color_bridge_status, axis=1)
+                st.dataframe(styled_bridge_df, use_container_width=True, hide_index=True)
 
 # ==================== TAB 4: VERIFICACIÓN ====================
 with tab4:
@@ -2376,9 +2499,9 @@ with tab5:
                 st.caption("Periodo afectado (Médicos)")
                 col_wd1, col_wd2 = st.columns(2)
                 with col_wd1:
-                    sim_workers_start = st.date_input("Desde", value=None, key="sim_w_start")
+                    sim_workers_start = st.date_input("Desde (L-D)", value=None, key="sim_w_start", help="Calendario: Lunes a Domingo")
                 with col_wd2:
-                    sim_workers_end = st.date_input("Hasta", value=None, key="sim_w_end")
+                    sim_workers_end = st.date_input("Hasta (L-D)", value=None, key="sim_w_end", help="Calendario: Lunes a Domingo")
             
             with col_sim_2:
                 st.markdown("#### 🏥 Demanda (Guardias)")
@@ -2392,9 +2515,9 @@ with tab5:
                 st.caption("Periodo afectado (Guardias)")
                 col_sd1, col_sd2 = st.columns(2)
                 with col_sd1:
-                    sim_shifts_start = st.date_input("Desde", value=None, key="sim_s_start")
+                    sim_shifts_start = st.date_input("Desde (L-D)", value=None, key="sim_s_start", help="Calendario: Lunes a Domingo")
                 with col_sd2:
-                    sim_shifts_end = st.date_input("Hasta", value=None, key="sim_s_end")
+                    sim_shifts_end = st.date_input("Hasta (L-D)", value=None, key="sim_s_end", help="Calendario: Lunes a Domingo")
                 
             run_simulation = st.button("🚀 Ejecutar Simulación", type="primary")
             
@@ -2648,8 +2771,8 @@ with tab5:
 
 # ==================== TAB 6: REVISIÓN ====================
 with tab6:
-    st.header("🔍 Revisión de Calendario")
-    st.markdown("Cargue un archivo de guardias (PDF, Excel o CSV) para analizarlo y generar reportes.")
+    st.header("🔍 Revisión de Horarios")
+    st.markdown("Cargue un archivo de horario (PDF, Excel o CSV) para analizarlo y generar reportes.")
     
     # Sección 1: Carga de archivo
     st.subheader("📂 Carga de Archivo")
@@ -2660,7 +2783,7 @@ with tab6:
         uploaded_file = st.file_uploader(
             "Seleccione archivo (PDF, Excel, CSV)",
             type=["pdf", "xlsx", "xls", "csv"],
-            help="Archivo con guardias a analizar"
+            help="Archivo con horario de guardias a analizar"
         )
     
     with col2:
@@ -2697,10 +2820,10 @@ with tab6:
         
         with col1:
             start_date_revision = st.date_input(
-                "Fecha inicial del horario",
+                "Fecha inicial del horario (L-D)",
                 value=datetime.now(),
                 format="DD/MM/YYYY",
-                help="Fecha de inicio del calendario cargado"
+                help="Fecha de inicio del calendario cargado. Calendario de Lunes a Domingo"
             )
         
         with col2:
@@ -2759,17 +2882,38 @@ with tab6:
         st.markdown("---")
         st.subheader("🔍 Análisis")
         
-        if st.button("🚀 Analizar Calendario", key="btn_analyze_schedule"):
+        if st.button("🚀 Analizar Horario", key="btn_analyze_schedule"):
             try:
-                with st.spinner("Analizando..."):
+                with st.spinner("Analizando horario..."):
+                    # Convertir start_date a datetime si es date object
+                    if isinstance(start_date_revision, date) and not isinstance(start_date_revision, datetime):
+                        start_datetime = datetime.combine(start_date_revision, datetime.min.time())
+                    else:
+                        start_datetime = start_date_revision
+                    
+                    # Convertir holidays a datetime si son date objects
+                    holidays_datetime = []
+                    for h in holidays_from_sidebar:
+                        if isinstance(h, date) and not isinstance(h, datetime):
+                            holidays_datetime.append(datetime.combine(h, datetime.min.time()))
+                        else:
+                            holidays_datetime.append(h)
+                    
+                    logging.info(f"Analizando horario con {len(holidays_datetime)} festivos")
+                    logging.info(f"Festivos: {[h.strftime('%Y-%m-%d') for h in holidays_datetime]}")
+                    
                     # Crear analizador
                     analyzer = ScheduleAnalyzer(
-                        start_date=start_date_revision,
+                        start_date=start_datetime,
                         calendar_text=st.session_state.revision_calendar_text,
                         name_mapping=name_mapping,
-                        holidays=holidays_from_sidebar,
+                        holidays=holidays_datetime,
                         shifts_per_day=shifts_per_day_revision
                     )
+                    
+                    logging.info(f"Períodos de puente detectados: {len(analyzer.bridge_periods)}")
+                    for bp in analyzer.bridge_periods:
+                        logging.info(f"  Puente {bp['type']}: {bp['start_date'].strftime('%Y-%m-%d')} a {bp['end_date'].strftime('%Y-%m-%d')}")
                     
                     # Parsear y calcular estadísticas
                     analyzer.parse_calendar()
@@ -2815,11 +2959,11 @@ with tab6:
             
             # Tabla de estadísticas
             st.markdown("**Tabla de Estadísticas Completa**")
-            st.caption("📌 Nota: Festivos cuentan como Domingo, PreFestivos cuentan como Viernes")
+            st.caption("📌 Nota: Festivos cuentan como Domingo, PreFestivos cuentan como Viernes, Puente = turnos en períodos de puente")
             
             # Mostrar tabla con columnas organizadas
             # Festivos cuentan como Domingo, PreFestivos (Lun-Jue) cuentan como Viernes
-            cols_principales = ['Trabajador', 'Total', 'Viernes', 'Sábado', 'Domingo', 'Total FS', '% FS', 'Rosell', '% Rosell']
+            cols_principales = ['Trabajador', 'Total', 'Viernes', 'Sábado', 'Domingo', 'Total FS', '% FS', 'Puente', '% Puente', 'Rosell', '% Rosell']
             cols_meses = [c for c in st.session_state.revision_stats.columns if c.startswith('Mes:')]
             
             # Seleccionar columnas disponibles
@@ -2832,17 +2976,17 @@ with tab6:
             # Filtrar solo columnas que existen
             cols_a_mostrar = [c for c in cols_a_mostrar if c in st.session_state.revision_stats.columns]
             
-            # Configurar ancho fijo de 9 caracteres para todas las columnas
+            # Configurar columnas con ancho fijo de 9 caracteres (≈ 72px)
             column_config = {}
             for col in cols_a_mostrar:
-                column_config[col] = st.column_config.TextColumn(
+                column_config[col] = st.column_config.Column(
                     col,
-                    width="9ch"  # 9 caracteres de ancho
+                    width=72
                 )
             
             st.dataframe(
                 st.session_state.revision_stats[cols_a_mostrar],
-                width="content",  # Ajustar al contenido sin estirar
+                use_container_width=True,
                 hide_index=True,
                 column_config=column_config
             )
@@ -2924,7 +3068,7 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "Sistema de Generación de Horarios v2.3 | "
+    "Sistema de Generación de Horarios v2.5 | "
     "Interfaz Streamlit | "
     f"© {datetime.now().year}"
     "</div>",
