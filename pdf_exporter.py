@@ -311,7 +311,7 @@ class PDFExporter:
                     alignment=1  # Center alignment
                 )
                 month_title = Paragraph(
-                    f"Schedule for {current_date.strftime('%B %Y')}",
+                    f"Reparto de Guardias para {current_date.strftime('%B %Y')}",
                     title_style
                 )
                 story.append(month_title)
@@ -319,7 +319,7 @@ class PDFExporter:
                 
                 # Create calendar data for this month
                 cal = monthcalendar(current_date.year, current_date.month)
-                calendar_data = [['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']]
+                calendar_data = [['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']]
                 
                 for week in cal:
                     week_data = []
@@ -334,11 +334,11 @@ class PDFExporter:
                             if date in self.schedule:
                                 for i, worker_id in enumerate(self.schedule[date]):
                                     if worker_id is not None:
-                                        cell_lines.append(f'Post {i+1}: {worker_id}')
+                                        cell_lines.append(f'{worker_id}')
                             
                             # Mark holidays
                             if date in self.holidays_set:
-                                cell_lines.append('<i><font color="red">HOLIDAY</font></i>')
+                                cell_lines.append('<i><font color="red">FESTIVO</font></i>')
                             
                             # Join with line breaks
                             cell_content = Paragraph('<br/>'.join(cell_lines), self.styles['SmallNormal'])
