@@ -216,7 +216,7 @@ def load_workers_from_file(uploaded_file):
         data = json.load(uploaded_file)
         
         if not isinstance(data, list):
-            return False, "❌ El archivo JSON debe contener una lista de trabajadores"
+            return False, "❌ El archivo JSON debe contener una lista de médicos"
             
         validated_data = []
         count = 0
@@ -254,10 +254,10 @@ def load_workers_from_file(uploaded_file):
             count += 1
             
         if count == 0:
-            return False, "⚠️ No se encontraron trabajadores válidos en el archivo"
+            return False, "⚠️ No se encontraron médicos válidos en el archivo"
             
         st.session_state.workers_data = validated_data
-        return True, f"✅ {count} trabajadores importados correctamente"
+        return True, f"✅ {count} médicos importados correctamente"
         
     except json.JSONDecodeError:
         return False, "❌ Error: El archivo no es un JSON válido"
@@ -895,7 +895,7 @@ def show_license_info():
         st.sidebar.warning("🔓 **MODO DEMO**")
         
         with st.sidebar.expander("ℹ️ Limitaciones DEMO", expanded=True):
-            st.write(f"👥 Máx. trabajadores: **{limitations['max_workers']}**")
+            st.write(f"👥 Máx. médicos: **{limitations['max_workers']}**")
             st.write(f"📅 Máx. días horario: **{limitations['max_days']}**")
             st.write(f"🎯 Usos restantes: **{st.session_state.uses_remaining}/{license_manager.DEMO_MAX_USES}**")
             if limitations['watermark']:
@@ -2963,7 +2963,7 @@ with tab6:
             
             # Mostrar tabla con columnas organizadas
             # Festivos cuentan como Domingo, PreFestivos (Lun-Jue) cuentan como Viernes
-            cols_principales = ['Trabajador', 'Total', 'Viernes', 'Sábado', 'Domingo', 'Total FS', '% FS', 'Puente', '% Puente', 'Rosell', '% Rosell']
+            cols_principales = ['Médico', 'Total', 'Viernes', 'Sábado', 'Domingo', 'Total FS', '% FS', 'Puente', '% Puente', 'Rosell', '% Rosell']
             cols_meses = [c for c in st.session_state.revision_stats.columns if c.startswith('Mes:')]
             
             # Seleccionar columnas disponibles
@@ -2993,7 +2993,7 @@ with tab6:
             
             # Mostrar alertas de guardias consecutivas en CAJA SEPARADA
             st.markdown("---")
-            st.subheader("⚠️ Alertas de Guardias Consecutivas")
+            st.subheader("⚠️ Alerta de Guardias Consecutivas")
             
             # Obtener alertas del analyzer (guardado en session_state)
             alerts_df = st.session_state.get('revision_alerts')
@@ -3001,7 +3001,7 @@ with tab6:
             if alerts_df is not None and not alerts_df.empty:
                 # Mostrar cada alerta en una caja de warning
                 for _, alert_row in alerts_df.iterrows():
-                    worker = alert_row['Trabajador']
+                    worker = alert_row['Médico']
                     fecha1 = alert_row['Fecha 1']
                     fecha2 = alert_row['Fecha 2']
                     st.warning(f"**{worker}**: Guardias consecutivas los días {fecha1} y {fecha2}")

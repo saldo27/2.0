@@ -62,7 +62,7 @@ class PDFExporter:
             )
             styles = self.styles
             story = []
-            weekdays_short = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+            weekdays_short = ['L', 'M', 'Mx', 'J', 'V', 'S', 'D']
 
             # --- PDF Title (using new title_text) ---
             title = Paragraph(title_text, styles['h1'])
