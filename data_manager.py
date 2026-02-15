@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Set, Optional, Tuple, Any, TYPE_CHECKING
 from exceptions import SchedulerError
+from bridge_manager import BridgeManager
 
 if TYPE_CHECKING:
     from scheduler import Scheduler
@@ -39,9 +40,12 @@ class DataManager:
         # Initialize monthly targets structure
         self.monthly_targets = {}
         
+        # Initialize bridge manager
+        self.bridge_manager = BridgeManager()
+        
         self._build_worker_cache()
         
-        logging.info("Enhanced DataManager initialized with caching")
+        logging.info("Enhanced DataManager initialized with caching and bridge management")
     
     def _build_worker_cache(self) -> None:
         """Build worker cache for faster lookups"""
