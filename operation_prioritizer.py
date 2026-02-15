@@ -15,6 +15,7 @@ class OperationPrioritizer:
         # Configuración de prioridades base
         self.base_priorities = {
             'fill_empty_shifts': 10,  # Máxima prioridad
+            'distribute_bridge_shifts_proportionally': 9,  # Alta prioridad para puentes (±0.5 tolerance)
             'balance_workloads': 8,
             'balance_weekday_distribution': 6,
             'improve_weekend_distribution': 5,
@@ -197,6 +198,10 @@ class OperationPrioritizer:
             ("distribute_holiday_shifts_proportionally", 
              self.scheduler.schedule_builder.distribute_holiday_shifts_proportionally, 
              self.base_priorities['distribute_holiday_shifts_proportionally']),
+            
+            ("distribute_bridge_shifts_proportionally",
+             self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally,
+             self.base_priorities['distribute_bridge_shifts_proportionally']),
             
             ("rebalance_weekend_distribution", 
              self.scheduler.schedule_builder.rebalance_weekend_distribution, 

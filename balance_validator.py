@@ -165,8 +165,8 @@ class BalanceValidator:
                         date_str2 = check_date.strftime('%Y-%m-%d')
                         if date_str1 in mandatory_dates or date_str2 in mandatory_dates:
                             is_mandatory = True
-                    except (ValueError, AttributeError) as e:
-                        logging.warning(f"Error checking mandatory dates: {e}")
+                    except:
+                        pass
                 
                 # Solo contar si NO es mandatory
                 if not is_mandatory:
@@ -276,3 +276,162 @@ class BalanceValidator:
             return True, "Destination improves, source stays within emergency limit"
         else:
             return False, f"Transfer would worsen balance (from: {from_deviation:.1f}%→{from_deviation_after:.1f}%, to: {to_deviation:.1f}%→{to_deviation_after:.1f}%)"
+
+    def validate_bridge_balance(self, scheduler, bridge_periods: List[dict], 
+                               tolerance: float = 0.5) -> Dict:
+        """
+        Validate bridge period distribution balance.
+        
+        Bridge periods have stricter tolerance (±0.5) compared to general shifts (±1).
+        Each bridge period counts as 1 unit regardless of how many days it contains.
+        
+        Args:
+            scheduler: Scheduler instance with worker data and bridge tracking
+            bridge_periods: List of bridge period dictionaries
+            tolerance: Maximum allowed deviation in bridge periods (default: 0.5)
+            
+        Returns:
+            Dict with bridge balance statistics and violations
+        """
+        violations = {
+            'within_tolerance': [],     # Within ±0.5
+            'exceeds_tolerance': [],    # Beyond ±0.5
+        }
+        
+        stats = {
+            'total_workers': len(scheduler.workers_data),
+            'total_bridges': len(bridge_periods),
+            'max_deviation': 0.0,
+            'avg_deviation': 0.0,
+            'total_deviation': 0.0
+        }
+        
+        if not bridge_periods:
+            logging.info("No bridge periods to validate")
+            return {'violations': violations, 'stats': stats}
+        
+        deviations = []
+        
+        for worker in scheduler.workers_data:
+            worker_id = worker['id']
+            
+            # Get current bridge assignments
+            assigned_bridges = scheduler.count_bridges_for_worker(worker_id)
+            
+            # Calculate target based on work percentage
+            target_bridges = scheduler.get_bridge_objective_for_worker(worker_id)
+            
+            # Calculate deviation
+            deviation = assigned_bridges - target_bridges
+            abs_deviation = abs(deviation)
+            
+            worker_info = {
+                'worker_id': worker_id,
+                'target': target_bridges,
+                'assigned': assigned_bridges,
+                'deviation': deviation,
+                'abs_deviation': abs_deviation,
+                'work_percentage': worker.get('work_percentage', 100)
+            }
+            
+            # Classify by tolerance
+            if abs_deviation <= tolerance:
+                violations['within_tolerance'].append(worker_info)
+            else:
+                violations['exceeds_tolerance'].append(worker_info)
+                logging.warning(f"⚠️  Worker {worker_id}: bridge deviation {deviation:+.2f} "
+                              f"exceeds tolerance (assigned={assigned_bridges}, target={target_bridges:.2f})")
+            
+            # Track statistics
+            deviations.append(abs_deviation)
+            if abs_deviation > stats['max_deviation']:
+                stats['max_deviation'] = abs_deviation
+        
+        # Calculate aggregate statistics
+        if deviations:
+            stats['avg_deviation'] = sum(deviations) / len(deviations)
+            stats['total_deviation'] = sum(deviations)
+        
+        # Log summary
+        within_count = len(violations['within_tolerance'])
+        exceeds_count = len(violations['exceeds_tolerance'])
+        
+        logging.info(f"Bridge Balance Validation Results:")
+        logging.info(f"  Total bridges: {stats['total_bridges']}")
+        logging.info(f"  Within tolerance (±{tolerance}): {within_count}/{stats['total_workers']}")
+        logging.info(f"  Exceeds tolerance: {exceeds_count}/{stats['total_workers']}")
+        logging.info(f"  Max deviation: {stats['max_deviation']:.2f}")
+        logging.info(f"  Avg deviation: {stats['avg_deviation']:.2f}")
+        
+        if exceeds_count > 0:
+            logging.warning(f"⚠️  {exceeds_count} workers exceed bridge tolerance!")
+            for worker_info in violations['exceeds_tolerance'][:5]:  # Show first 5
+                logging.warning(f"     {worker_info['worker_id']}: "
+                              f"{worker_info['assigned']} assigned vs {worker_info['target']:.2f} target "
+                              f"(deviation: {worker_info['deviation']:+.2f})")
+        
+        return {
+            'violations': violations,
+            'stats': stats,
+            'is_balanced': exceeds_count == 0
+        }
+    
+    def get_bridge_rebalancing_recommendations(self, scheduler, bridge_periods: List[dict],
+                                               tolerance: float = 0.5) -> List[Dict]:
+        """
+        Generate recommendations for rebalancing bridge period assignments.
+        
+        Args:
+            scheduler: Scheduler instance
+            bridge_periods: List of bridge period dictionaries
+            tolerance: Maximum allowed deviation
+            
+        Returns:
+            List of transfer recommendations sorted by priority
+        """
+        validation_result = self.validate_bridge_balance(scheduler, bridge_periods, tolerance)
+        
+        overloaded = []
+        underloaded = []
+        
+        for worker_info in validation_result['violations']['exceeds_tolerance']:
+            if worker_info['deviation'] > tolerance:
+                overloaded.append(worker_info)
+            elif worker_info['deviation'] < -tolerance:
+                underloaded.append(worker_info)
+        
+        recommendations = []
+        
+        # Generate transfer recommendations
+        for over_worker in overloaded:
+            for under_worker in underloaded:
+                # Calculate how many bridges to transfer
+                over_excess = over_worker['assigned'] - over_worker['target']
+                under_deficit = under_worker['target'] - under_worker['assigned']
+                
+                # For bridges, we can only transfer in increments of 1 (whole bridge periods)
+                bridges_to_transfer = min(int(over_excess), int(-under_deficit))
+                
+                if bridges_to_transfer > 0:
+                    priority = over_worker['abs_deviation'] + under_worker['abs_deviation']
+                    
+                    recommendations.append({
+                        'from_worker': over_worker['worker_id'],
+                        'to_worker': under_worker['worker_id'],
+                        'bridges_to_transfer': bridges_to_transfer,
+                        'priority': priority,
+                        'from_deviation': over_worker['deviation'],
+                        'to_deviation': under_worker['deviation']
+                    })
+        
+        # Sort by priority
+        recommendations.sort(key=lambda x: x['priority'], reverse=True)
+        
+        if recommendations:
+            logging.info(f"💡 Top bridge rebalancing recommendations:")
+            for i, rec in enumerate(recommendations[:5], 1):
+                logging.info(f"   {i}. Transfer {rec['bridges_to_transfer']} bridge(s) from "
+                           f"{rec['from_worker']} ({rec['from_deviation']:+.2f}) to "
+                           f"{rec['to_worker']} ({rec['to_deviation']:+.2f})")
+        
+        return recommendations

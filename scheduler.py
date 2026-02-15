@@ -18,6 +18,10 @@ from worker_eligibility import WorkerEligibilityTracker
 # Initialize logging using the configuration module
 setup_logging()
 
+class SchedulerError(Exception):
+    """Custom exception for Scheduler errors"""
+    pass
+
 class Scheduler:
     """Main Scheduler class that coordinates all scheduling operations"""
     
@@ -46,6 +50,13 @@ class Scheduler:
             self.holidays = config.get('holidays', [])
             self.enable_proportional_weekends = config.get('enable_proportional_weekends', True)
             self.weekend_tolerance = config.get('weekend_tolerance', 1)  # +/- 1 as specified
+            self.bridge_tolerance = config.get('bridge_tolerance', 0.5)  # +/- 0.5 for bridge periods
+
+            # Initialize bridge periods tracking
+            year = self.start_date.year if hasattr(self, 'start_date') else datetime.now().year
+            self.bridge_periods = self.date_utils.identify_bridge_periods(self.holidays, year)
+            # Track which bridge periods (by ID) are assigned to each worker
+            self.worker_bridge_counts = {w['id']: set() for w in self.workers_data}
 
             # --- START: Build incompatibility lists ---
             incompatible_worker_ids = {
@@ -687,9 +698,31 @@ class Scheduler:
                         current_weekends.remove(date)
                         # current_weekends.sort() # Re-sort if removal changes order and order matters
 
+                # Update bridge tracking
+                bridge_period = self.date_utils.get_bridge_period_for_date(date, self.bridge_periods)
+                if bridge_period:
+                    # Check if worker has ANY other assignments in this bridge period
+                    has_other_assignment = False
+                    for check_date in self._get_dates_in_bridge(bridge_period):
+                        if check_date != date and check_date in self.worker_assignments.get(worker_id, set()):
+                            has_other_assignment = True
+                            break
+                    
+                    # Only remove bridge count if worker has NO other assignments in this bridge period
+                    if not has_other_assignment:
+                        if worker_id in self.worker_bridge_counts:
+                            self.worker_bridge_counts[worker_id].discard(bridge_period['id'])
+
             else: # Adding assignment
                 self.worker_assignments[worker_id].add(date)
                 self.worker_posts[worker_id].add(post) # This should now work
+                # Update bridge tracking
+                bridge_period = self.date_utils.get_bridge_period_for_date(date, self.bridge_periods)
+                if bridge_period:
+                    if worker_id not in self.worker_bridge_counts:
+                        self.worker_bridge_counts[worker_id] = set()
+                    self.worker_bridge_counts[worker_id].add(bridge_period['id'])
+
                 
                 weekday = date.weekday()
                 self.worker_weekdays[worker_id][weekday] = self.worker_weekdays[worker_id].get(weekday, 0) + 1
@@ -1018,6 +1051,60 @@ class Scheduler:
         # Fallback to default
         logging.debug(f"No variable shift override for {date}, default={self.num_shifts}")
         return self.num_shifts
+    
+    def count_bridges_for_worker(self, worker_id: str) -> int:
+        """
+        Count the number of bridge periods assigned to a worker.
+        
+        Args:
+            worker_id: ID of the worker
+            
+        Returns:
+            Number of distinct bridge periods assigned to the worker
+        """
+        return len(self.worker_bridge_counts.get(worker_id, set()))
+    
+    def get_bridge_objective_for_worker(self, worker_id: str) -> float:
+        """
+        Calculate the objective (target) number of bridge periods for a worker
+        based on their work percentage.
+        
+        Args:
+            worker_id: ID of the worker
+            
+        Returns:
+            Target number of bridge periods (float)
+        """
+        # Find worker data
+        worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        if not worker:
+            return 0.0
+        
+        work_percentage = worker.get('work_percentage', 100)
+        total_bridges = len(self.bridge_periods)
+        
+        # Objective = (total_bridge_periods × work_percentage) / 100
+        return (total_bridges * work_percentage) / 100.0
+    
+    def _get_dates_in_bridge(self, bridge_period: dict) -> List[datetime]:
+        """
+        Get all dates that are part of a bridge period.
+        
+        Args:
+            bridge_period: Bridge period dictionary with 'start_date' and 'end_date'
+            
+        Returns:
+            List of datetime objects for all dates in the bridge period
+        """
+        dates = []
+        current = bridge_period['start_date']
+        end = bridge_period['end_date']
+        
+        while current <= end:
+            dates.append(current)
+            current += timedelta(days=1)
+        
+        return dates
     
     # ========================================
     # 4. ASSIGNMENT AND CONSTRAINT CHECKING

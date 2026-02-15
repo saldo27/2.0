@@ -3,7 +3,6 @@ from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Set, Optional, Tuple, Any, TYPE_CHECKING
 from exceptions import SchedulerError
-from bridge_manager import BridgeManager
 
 if TYPE_CHECKING:
     from scheduler import Scheduler
@@ -40,12 +39,9 @@ class DataManager:
         # Initialize monthly targets structure
         self.monthly_targets = {}
         
-        # Initialize bridge manager
-        self.bridge_manager = BridgeManager()
-        
         self._build_worker_cache()
         
-        logging.info("Enhanced DataManager initialized with caching and bridge detection")
+        logging.info("Enhanced DataManager initialized with caching")
     
     def _build_worker_cache(self) -> None:
         """Build worker cache for faster lookups"""
@@ -194,45 +190,6 @@ class DataManager:
             bool: True if the next day is a holiday, False otherwise
         """
         return self.scheduler.date_utils.is_pre_holiday(date, self.scheduler.holidays)
-    
-    def _is_bridge_day(self, date):
-        """
-        Check if a date is part of a bridge (puente)
-    
-        Args:
-            date: Date to check
-        
-        Returns:
-            bool: True if the date is part of a bridge, False otherwise
-        """
-        return self.bridge_manager.is_bridge_day(date)
-    
-    def _get_bridge_count(self, worker_id):
-        """
-        Get count of bridge days assigned to a worker
-        
-        Args:
-            worker_id: ID of the worker
-        
-        Returns:
-            int: Number of bridge days assigned
-        """
-        return self.bridge_manager.get_bridge_count_for_worker(
-            worker_id, 
-            self.scheduler.worker_assignments
-        )
-    
-    def _get_bridge_for_date(self, date):
-        """
-        Get bridge information for a specific date
-        
-        Args:
-            date: Date to check
-        
-        Returns:
-            dict: Bridge information if date is part of a bridge, None otherwise
-        """
-        return self.bridge_manager.get_bridge_for_date(date)
 
     def _is_authorized_incompatibility(self, date, worker1_id, worker2_id):
         """
@@ -886,6 +843,149 @@ class DataManager:
                 f"Worker {worker_id} has {len(assignments)} shifts "
                 f"(target: {target_shifts})"
             )
+    
+    def calculate_bridge_statistics(self, bridge_periods: List[dict]) -> Dict[str, Any]:
+        """
+        Calculate comprehensive statistics for bridge period distribution.
+        
+        Args:
+            bridge_periods: List of bridge period dictionaries
+            
+        Returns:
+            Dict with bridge statistics including:
+                - per_worker: Individual worker stats
+                - global: Aggregate statistics
+                - fairness: Fairness metrics
+        """
+        if not bridge_periods:
+            return {
+                'per_worker': {},
+                'global': {
+                    'total_bridges': 0,
+                    'total_assigned': 0,
+                    'avg_per_worker': 0.0
+                },
+                'fairness': {
+                    'max_deviation': 0.0,
+                    'avg_deviation': 0.0,
+                    'fairness_score': 100.0
+                }
+            }
+        
+        total_bridges = len(bridge_periods)
+        per_worker_stats = {}
+        deviations = []
+        
+        for worker in self.workers_data:
+            worker_id = worker['id']
+            
+            # Get assignments and target
+            assigned = self.scheduler.count_bridges_for_worker(worker_id)
+            target = self.scheduler.get_bridge_objective_for_worker(worker_id)
+            work_percentage = worker.get('work_percentage', 100)
+            
+            # Calculate deviation
+            deviation = assigned - target
+            abs_deviation = abs(deviation)
+            deviation_percentage = (deviation / target * 100) if target > 0 else 0
+            
+            # Determine status
+            tolerance = self.scheduler.bridge_tolerance
+            if abs_deviation <= tolerance:
+                status = 'within_tolerance'
+            else:
+                status = 'exceeds_tolerance'
+            
+            per_worker_stats[worker_id] = {
+                'assigned': assigned,
+                'target': target,
+                'deviation': deviation,
+                'abs_deviation': abs_deviation,
+                'deviation_percentage': deviation_percentage,
+                'work_percentage': work_percentage,
+                'status': status
+            }
+            
+            deviations.append(abs_deviation)
+        
+        # Calculate global statistics
+        total_assigned = sum(s['assigned'] for s in per_worker_stats.values())
+        avg_per_worker = total_assigned / len(self.workers_data) if self.workers_data else 0
+        
+        # Calculate fairness metrics
+        max_deviation = max(deviations) if deviations else 0.0
+        avg_deviation = sum(deviations) / len(deviations) if deviations else 0.0
+        
+        # Fairness score: 100 = perfect, decreases with deviation
+        # Score formula: max(0, 100 - (avg_deviation * 100 / tolerance))
+        tolerance = self.scheduler.bridge_tolerance
+        fairness_score = max(0, 100 - (avg_deviation * 100 / tolerance)) if tolerance > 0 else 0
+        
+        # Count workers within/exceeding tolerance
+        within_tolerance = sum(1 for s in per_worker_stats.values() if s['status'] == 'within_tolerance')
+        exceeds_tolerance = len(per_worker_stats) - within_tolerance
+        
+        return {
+            'per_worker': per_worker_stats,
+            'global': {
+                'total_bridges': total_bridges,
+                'total_assigned': total_assigned,
+                'avg_per_worker': avg_per_worker,
+                'within_tolerance_count': within_tolerance,
+                'exceeds_tolerance_count': exceeds_tolerance
+            },
+            'fairness': {
+                'max_deviation': max_deviation,
+                'avg_deviation': avg_deviation,
+                'fairness_score': fairness_score,
+                'tolerance': tolerance
+            }
+        }
+    
+    def log_bridge_statistics_summary(self, bridge_stats: Dict[str, Any]) -> None:
+        """
+        Log a summary of bridge statistics.
+        
+        Args:
+            bridge_stats: Dictionary returned from calculate_bridge_statistics()
+        """
+        if not bridge_stats or not bridge_stats.get('global'):
+            logging.info("No bridge statistics available")
+            return
+        
+        global_stats = bridge_stats['global']
+        fairness = bridge_stats['fairness']
+        
+        logging.info("=" * 80)
+        logging.info("BRIDGE PERIOD DISTRIBUTION STATISTICS")
+        logging.info("=" * 80)
+        logging.info(f"Total bridge periods: {global_stats['total_bridges']}")
+        logging.info(f"Total assignments: {global_stats['total_assigned']}")
+        logging.info(f"Average per worker: {global_stats['avg_per_worker']:.2f}")
+        logging.info(f"Within tolerance (±{fairness['tolerance']}): {global_stats['within_tolerance_count']}")
+        logging.info(f"Exceeds tolerance: {global_stats['exceeds_tolerance_count']}")
+        logging.info("")
+        logging.info(f"Fairness Metrics:")
+        logging.info(f"  Max deviation: {fairness['max_deviation']:.2f}")
+        logging.info(f"  Avg deviation: {fairness['avg_deviation']:.2f}")
+        logging.info(f"  Fairness score: {fairness['fairness_score']:.1f}/100")
+        logging.info("")
+        
+        # Log per-worker details for those exceeding tolerance
+        exceeding_workers = [
+            (wid, stats) for wid, stats in bridge_stats['per_worker'].items()
+            if stats['status'] == 'exceeds_tolerance'
+        ]
+        
+        if exceeding_workers:
+            logging.warning(f"Workers exceeding tolerance:")
+            for worker_id, stats in sorted(exceeding_workers, key=lambda x: abs(x[1]['deviation']), reverse=True):
+                logging.warning(f"  {worker_id}: {stats['assigned']} assigned, "
+                              f"{stats['target']:.2f} target (deviation: {stats['deviation']:+.2f})")
+        else:
+            logging.info("✓ All workers within bridge tolerance!")
+        
+        logging.info("=" * 80)
     
     def clear_caches(self) -> None:
         """Clear all caches when data changes"""

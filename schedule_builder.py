@@ -275,8 +275,8 @@ class ScheduleBuilder:
         try:
             mandatory_dates = self.date_utils.parse_dates(mandatory_days_str)
             return date in mandatory_dates
-        except (ValueError, AttributeError):
-            return False  # Invalid date format or missing data
+        except:
+            return False
     
     def _is_slot_protected_mandatory(self, date, post):
         """
@@ -2239,33 +2239,6 @@ class ScheduleBuilder:
 
         if current_week_count < avg_week_count:
             score += 100  # Reduced from 500 (tertiary priority)
-        
-        # =========================================================================
-        # BRIDGE (PUENTE) BALANCE SCORING - Ensures equitable distribution
-        # =========================================================================
-        if self.data_manager.bridge_manager.bridges:
-            is_bridge = self.data_manager._is_bridge_day(date)
-            if is_bridge:
-                current_bridge_count = self.data_manager._get_bridge_count(worker_id)
-                worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
-                if worker_config:
-                    work_percentage = worker_config.get('work_percentage', 100) / 100.0
-                    normalized_bridges = current_bridge_count / work_percentage if work_percentage > 0 else 0
-                    
-                    # Calculate global average
-                    total_normalized = 0
-                    worker_count = 0
-                    for w_data in self.scheduler.workers_data:
-                        wid = w_data['id']
-                        wpct = w_data.get('work_percentage', 100) / 100.0
-                        bridges = self.data_manager._get_bridge_count(wid)
-                        total_normalized += bridges / wpct if wpct > 0 else 0
-                        worker_count += 1
-                    
-                    avg_normalized = total_normalized / worker_count if worker_count > 0 else 0
-                    bridge_balance = normalized_bridges - avg_normalized
-                    bridge_score = -bridge_balance * 3000
-                    score += bridge_score
 
         # FINAL: Schedule Progression Score - much reduced impact
         total_days = (self.end_date - self.start_date).days if self.end_date > self.start_date else 1
@@ -2469,8 +2442,8 @@ class ScheduleBuilder:
             mandatory_str = worker.get('mandatory_days', '')
             try:
                 dates = self.date_utils.parse_dates(mandatory_str)
-            except (ValueError, AttributeError):
-                continue  # Skip worker with invalid mandatory dates
+            except:
+                continue
             
             for date in dates:
                 if not (self.start_date <= date <= self.end_date):
@@ -4435,6 +4408,208 @@ class ScheduleBuilder:
         
         return False
 
+    def _distribute_bridge_shifts_proportionally(self):
+        """
+        Distribute bridge period shifts proportionally based on work percentage.
+        This complements (does not replace) the existing weekend/holiday distribution.
+        
+        A bridge period is counted as a single unit, regardless of how many days it contains.
+        Tolerance: ±0.5 bridge periods (stricter than weekend tolerance of ±1)
+        
+        Returns:
+            bool: True if changes were made
+        """
+        logging.info("Starting proportional distribution of bridge periods...")
+        
+        if not self.bridge_periods:
+            logging.info("No bridge periods identified for this scheduling period")
+            return False
+        
+        total_bridges = len(self.bridge_periods)
+        logging.info(f"Total bridge periods to distribute: {total_bridges}")
+        
+        # Calculate current bridge assignments per worker
+        current_bridge_assignments = {}
+        for worker in self.workers_data:
+            worker_id = worker['id']
+            current_bridge_assignments[worker_id] = self.scheduler.count_bridges_for_worker(worker_id)
+        
+        # Calculate target bridge assignments based on work percentage
+        bridge_targets = {}
+        for worker in self.workers_data:
+            worker_id = worker['id']
+            target = self.scheduler.get_bridge_objective_for_worker(worker_id)
+            bridge_targets[worker_id] = target
+            
+            current = current_bridge_assignments[worker_id]
+            deviation = current - target
+            logging.info(f"Worker {worker_id}: current={current}, target={target:.2f}, deviation={deviation:+.2f}")
+        
+        # Identify workers needing adjustment (tolerance ±0.5)
+        tolerance = self.scheduler.bridge_tolerance
+        overloaded_workers = []
+        underloaded_workers = []
+        
+        for worker_id, target in bridge_targets.items():
+            current = current_bridge_assignments[worker_id]
+            deviation = current - target
+            
+            if deviation > tolerance:
+                overloaded_workers.append((worker_id, deviation))
+            elif deviation < -tolerance:
+                underloaded_workers.append((worker_id, abs(deviation)))
+        
+        if not overloaded_workers and not underloaded_workers:
+            logging.info("Bridge distribution already within tolerance (±0.5)")
+            return False
+        
+        logging.info(f"Overloaded workers: {len(overloaded_workers)}, Underloaded workers: {len(underloaded_workers)}")
+        
+        # Sort by priority (workers furthest from target first)
+        overloaded_workers.sort(key=lambda x: x[1], reverse=True)
+        underloaded_workers.sort(key=lambda x: x[1], reverse=True)
+        
+        # Perform redistribution
+        changes_made = 0
+        max_iterations = 100
+        iteration = 0
+        
+        while iteration < max_iterations and overloaded_workers and underloaded_workers:
+            iteration += 1
+            progress_made = False
+            
+            # Try to move shifts from overloaded to underloaded workers
+            for over_worker_id, over_deviation in overloaded_workers[:]:
+                for under_worker_id, under_deficit in underloaded_workers[:]:
+                    # Try to find a swap within a bridge period
+                    swap_made = self._attempt_bridge_swap(over_worker_id, under_worker_id)
+                    
+                    if swap_made:
+                        changes_made += 1
+                        progress_made = True
+                        
+                        # Update current assignments
+                        current_bridge_assignments[over_worker_id] = self.scheduler.count_bridges_for_worker(over_worker_id)
+                        current_bridge_assignments[under_worker_id] = self.scheduler.count_bridges_for_worker(under_worker_id)
+                        
+                        # Recalculate deviations
+                        over_deviation_new = current_bridge_assignments[over_worker_id] - bridge_targets[over_worker_id]
+                        under_deficit_new = bridge_targets[under_worker_id] - current_bridge_assignments[under_worker_id]
+                        
+                        # Update or remove from lists
+                        if over_deviation_new <= tolerance:
+                            overloaded_workers.remove((over_worker_id, over_deviation))
+                        else:
+                            idx = overloaded_workers.index((over_worker_id, over_deviation))
+                            overloaded_workers[idx] = (over_worker_id, over_deviation_new)
+                        
+                        if under_deficit_new <= tolerance:
+                            underloaded_workers.remove((under_worker_id, under_deficit))
+                        else:
+                            idx = underloaded_workers.index((under_worker_id, under_deficit))
+                            underloaded_workers[idx] = (under_worker_id, under_deficit_new)
+                        
+                        logging.info(f"Bridge swap: {over_worker_id} -> {under_worker_id} "
+                                   f"(over: {over_deviation_new:+.2f}, under: {-under_deficit_new:+.2f})")
+                        break
+                
+                if progress_made:
+                    break
+            
+            if not progress_made:
+                break
+        
+        logging.info(f"Bridge distribution completed: {changes_made} changes in {iteration} iterations")
+        
+        # Log final distribution
+        for worker_id in sorted(bridge_targets.keys()):
+            current = self.scheduler.count_bridges_for_worker(worker_id)
+            target = bridge_targets[worker_id]
+            deviation = current - target
+            status = "✓" if abs(deviation) <= tolerance else "✗"
+            logging.info(f"{status} Worker {worker_id}: bridges={current}, target={target:.2f}, deviation={deviation:+.2f}")
+        
+        if changes_made > 0:
+            self._synchronize_tracking_data()
+            self._save_current_as_best()
+        
+        return changes_made > 0
+
+    def _attempt_bridge_swap(self, over_worker_id: str, under_worker_id: str) -> bool:
+        """
+        Attempt to swap a shift in a bridge period from over_worker to under_worker.
+        
+        CRITICAL: Never swaps mandatory assignments.
+        Updates both bridge counts AND weekend/holiday counts (parallel tracking).
+        
+        Args:
+            over_worker_id: Worker with too many bridge periods
+            under_worker_id: Worker with too few bridge periods
+            
+        Returns:
+            bool: True if swap was successful
+        """
+        # Find bridge periods where over_worker has assignments
+        over_worker_bridges = self.scheduler.worker_bridge_counts.get(over_worker_id, set())
+        
+        for bridge_id in over_worker_bridges:
+            # Find the bridge period details
+            bridge = next((b for b in self.bridge_periods if b['id'] == bridge_id), None)
+            if not bridge:
+                continue
+            
+            # Get all dates in this bridge period
+            bridge_dates = self.scheduler._get_dates_in_bridge(bridge)
+            
+            # Find dates where over_worker is assigned
+            over_worker_dates = []
+            for date in bridge_dates:
+                # CRITICAL: Skip mandatory assignments
+                if self._is_mandatory(over_worker_id, date):
+                    continue
+                
+                if date in self.worker_assignments.get(over_worker_id, set()):
+                    over_worker_dates.append(date)
+            
+            if not over_worker_dates:
+                continue
+            
+            # Try to swap with under_worker's assignment on a different date
+            # or find an empty slot in the bridge period
+            for over_date in over_worker_dates:
+                # Check if under_worker can take this shift
+                if not self._can_assign_worker(under_worker_id, over_date, 0):
+                    continue
+                
+                # Find the post of over_worker on this date
+                over_post = None
+                for post_idx, assigned_worker in enumerate(self.schedule.get(over_date, [])):
+                    if assigned_worker == over_worker_id:
+                        over_post = post_idx
+                        break
+                
+                if over_post is None:
+                    continue
+                
+                # Try direct swap (simple replacement)
+                # Remove over_worker from this date
+                self.schedule[over_date][over_post] = under_worker_id
+                
+                # Update tracking - CRITICAL: This updates BOTH bridge AND weekend counts
+                self.scheduler._update_tracking_data(over_worker_id, over_date, over_post, removing=True)
+                self.scheduler._update_tracking_data(under_worker_id, over_date, over_post, removing=False)
+                
+                # Update worker_assignments
+                if over_worker_id in self.worker_assignments:
+                    self.worker_assignments[over_worker_id].discard(over_date)
+                if under_worker_id not in self.worker_assignments:
+                    self.worker_assignments[under_worker_id] = set()
+                self.worker_assignments[under_worker_id].add(over_date)
+                
+                return True
+        
+        return False
+
     def _get_work_percentage(self, worker_id):
         """Get work percentage for a worker"""
         for worker in self.workers_data:
@@ -4795,8 +4970,8 @@ class ScheduleBuilder:
             if worker_data and worker_data.get('mandatory_days'):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker_data['mandatory_days']))
-                except (ValueError, AttributeError):
-                    pass  # Skip invalid mandatory dates
+                except:
+                    pass
             
             transferable_dates = [d for d in self.worker_assignments.get(over_id, set()) 
                                   if d not in mandatory_dates]
@@ -4868,8 +5043,8 @@ class ScheduleBuilder:
             if to_worker_data.get('mandatory_days'):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(to_worker_data['mandatory_days']))
-                except (ValueError, AttributeError):
-                    pass  # Skip invalid mandatory dates
+                except:
+                    pass
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
             current_non_mandatory = len(all_assignments) - mandatory_assigned
             global_deficit = target - current_non_mandatory
@@ -4912,8 +5087,8 @@ class ScheduleBuilder:
             if worker.get('mandatory_days'):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker['mandatory_days']))
-                except (ValueError, AttributeError):
-                    pass  # Skip invalid mandatory dates
+                except:
+                    pass
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
             current = len(all_assignments) - mandatory_assigned
             
@@ -5069,8 +5244,8 @@ class ScheduleBuilder:
             if worker.get('mandatory_days'):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker['mandatory_days']))
-                except (ValueError, AttributeError):
-                    pass  # Skip invalid mandatory dates
+                except:
+                    pass
             non_mandatory = len(all_assignments) - sum(1 for d in all_assignments if d in mandatory_dates)
             deviation = non_mandatory - target
             

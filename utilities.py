@@ -214,3 +214,127 @@ class DateTimeUtils:
         if self.is_pre_holiday(date, holidays):
             return 4  # Friday
         return date.weekday()
+
+    def identify_bridge_periods(self, holidays: List[datetime], year: int) -> List[dict]:
+        """
+        Identify bridge periods (puentes) where a holiday is adjacent to a weekend.
+        
+        A bridge period is defined as:
+        - Holiday Thursday: Thu-Fri-Sat-Sun
+        - Holiday Friday: Fri-Sat-Sun
+        - Holiday Monday: Fri-Sat-Sun-Mon
+        - Holiday Tuesday: Fri-Sat-Sun-Mon-Tue
+        
+        Args:
+            holidays: List of holiday dates
+            year: Year to process
+            
+        Returns:
+            List of dictionaries with bridge period information:
+            [{
+                'id': 'bridge_YYYY-MM-DD',
+                'start_date': datetime,
+                'end_date': datetime,
+                'holiday': datetime,
+                'type': 'thursday'|'friday'|'monday'|'tuesday'
+            }]
+        """
+        if not holidays:
+            return []
+        
+        bridge_periods = []
+        holidays_set = set(holidays)
+        
+        for holiday in holidays:
+            # Only process holidays in the specified year
+            if holiday.year != year:
+                continue
+            
+            weekday = holiday.weekday()  # 0=Monday, 1=Tuesday, ..., 6=Sunday
+            
+            # Holiday on Thursday (3) -> Bridge: Thu-Fri-Sat-Sun
+            if weekday == 3:
+                start_date = holiday
+                end_date = holiday + timedelta(days=3)  # Sunday
+                bridge_periods.append({
+                    'id': f"bridge_{holiday.strftime('%Y-%m-%d')}",
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'holiday': holiday,
+                    'type': 'thursday'
+                })
+            
+            # Holiday on Friday (4) -> Bridge: Fri-Sat-Sun
+            elif weekday == 4:
+                start_date = holiday
+                end_date = holiday + timedelta(days=2)  # Sunday
+                bridge_periods.append({
+                    'id': f"bridge_{holiday.strftime('%Y-%m-%d')}",
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'holiday': holiday,
+                    'type': 'friday'
+                })
+            
+            # Holiday on Monday (0) -> Bridge: Fri-Sat-Sun-Mon
+            elif weekday == 0:
+                start_date = holiday - timedelta(days=3)  # Friday
+                end_date = holiday
+                bridge_periods.append({
+                    'id': f"bridge_{holiday.strftime('%Y-%m-%d')}",
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'holiday': holiday,
+                    'type': 'monday'
+                })
+            
+            # Holiday on Tuesday (1) -> Bridge: Fri-Sat-Sun-Mon-Tue
+            elif weekday == 1:
+                start_date = holiday - timedelta(days=4)  # Friday
+                end_date = holiday
+                bridge_periods.append({
+                    'id': f"bridge_{holiday.strftime('%Y-%m-%d')}",
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'holiday': holiday,
+                    'type': 'tuesday'
+                })
+        
+        logging.info(f"Identified {len(bridge_periods)} bridge periods for year {year}")
+        for bp in bridge_periods:
+            logging.debug(f"  Bridge {bp['type']}: {bp['start_date'].strftime('%Y-%m-%d')} to {bp['end_date'].strftime('%Y-%m-%d')}")
+        
+        return bridge_periods
+
+    def get_bridge_period_for_date(self, date: datetime, bridge_periods: List[dict]) -> Optional[dict]:
+        """
+        Get the bridge period that contains the given date.
+        
+        Args:
+            date: Date to check
+            bridge_periods: List of bridge period dictionaries from identify_bridge_periods()
+            
+        Returns:
+            Bridge period dict if date is within a bridge period, None otherwise
+        """
+        if not bridge_periods:
+            return None
+        
+        for bridge in bridge_periods:
+            if bridge['start_date'] <= date <= bridge['end_date']:
+                return bridge
+        
+        return None
+
+    def is_bridge_day(self, date: datetime, bridge_periods: List[dict]) -> bool:
+        """
+        Check if a date is part of any bridge period.
+        
+        Args:
+            date: Date to check
+            bridge_periods: List of bridge period dictionaries from identify_bridge_periods()
+            
+        Returns:
+            True if date is within a bridge period, False otherwise
+        """
+        return self.get_bridge_period_for_date(date, bridge_periods) is not None
