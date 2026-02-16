@@ -311,7 +311,7 @@ class PDFExporter:
                     alignment=1  # Center alignment
                 )
                 month_title = Paragraph(
-                    f"Reparto de Guardias para {current_date.strftime('%B %Y')}",
+                    f" {current_date.strftime('%B %Y')}",
                     title_style
                 )
                 story.append(month_title)

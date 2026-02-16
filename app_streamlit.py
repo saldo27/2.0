@@ -1156,7 +1156,7 @@ with st.sidebar:
         "Guardias por día (por defecto)",
         min_value=1,
         max_value=10,
-        value=st.session_state.config.get('num_shifts', 3),
+        value=st.session_state.config.get('num_shifts', 4),
         help="Número de Guardias a cubrir por día"
     )
     st.session_state.config['num_shifts'] = num_shifts
@@ -1772,7 +1772,7 @@ with tab2:
     st.header("📅 Calendario Generado")
     
     if st.session_state.schedule is None:
-        st.info("ℹ️ No hay horario generado. Use el botón '🚀 Generar Horario' en la barra lateral.")
+        st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Calendario' en la barra lateral.")
     else:
         # Obtener DataFrame
         df = get_schedule_dataframe()
@@ -1789,7 +1789,7 @@ with tab2:
             with col1:
                 st.metric("Días programados", len(df))
             with col2:
-                st.metric("Guardias cubiertos", f"{total_slots}/{total_possible}")
+                st.metric("Guardias cubiertas", f"{total_slots}/{total_possible}")
             with col3:
                 st.metric("Cobertura", f"{coverage:.1f}%")
             with col4:
@@ -2041,7 +2041,7 @@ with tab3:
     st.header("📊 Estadísticas de Asignación")
     
     if st.session_state.scheduler is None:
-        st.info("ℹ️ No hay horario generado. Use el botón '🚀 Generar Horario' en la barra lateral.")
+        st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Horario' en la barra lateral.")
     else:
         # Estadísticas por trabajador
         stats_df = get_worker_statistics()
@@ -2066,8 +2066,8 @@ with tab3:
                 st.metric("Desviación Promedio", f"{avg_deviation:+.1f}")
             
             # Métricas de Weekend
-            st.subheader("🌙 Resumen Weekend")
-            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
+            st.subheader("🌙 Resumen Fines de semana")
+            st.caption("*Incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
             col4, col5, col6 = st.columns(3)
             
             # CORRECCIÓN: Objetivo Weekend debe ser el número real de slots de weekend a cubrir
@@ -2087,9 +2087,9 @@ with tab3:
             avg_weekend_deviation = stats_df['Desv. Wknd'].mean()
             
             with col4:
-                st.metric("Objetivo Weekend", total_weekend_target)
+                st.metric("Objetivo Fines de Semana", total_weekend_target)
             with col5:
-                st.metric("Weekend Asignado", total_weekend_assigned, f"{total_weekend_assigned - total_weekend_target:+d}")
+                st.metric("Fines de semana Asignados", total_weekend_assigned, f"{total_weekend_assigned - total_weekend_target:+d}")
             with col6:
                 st.metric("Desv. Weekend Prom.", f"{avg_weekend_deviation:+.1f}")
             
@@ -2097,7 +2097,7 @@ with tab3:
             
             # Tabla de estadísticas
             st.subheader("📋 Estadísticas por Médico")
-            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
+            st.caption("*Fin de semana: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
             
             # Colorear según desviación
             def color_deviation(val):
@@ -2168,12 +2168,12 @@ with tab3:
             
             # Gráfico de Weekend (Vie/Sab/Dom + Festivos + Pre-festivos)
             st.markdown("---")
-            st.subheader("🌙 Turnos de Weekend por Médico")
-            st.caption("*Weekend incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
+            st.subheader("🌙 Turnos de Finde por Médico")
+            st.caption("*Incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
             
             fig3 = go.Figure()
             fig3.add_trace(go.Bar(
-                name='Objetivo Weekend',
+                name='Objetivo Findes',
                 x=stats_df['Médico'],
                 y=stats_df['Obj. Weekend'],
                 marker_color='lightsalmon'
@@ -2272,7 +2272,7 @@ with tab3:
                 # Gráfico de desviación de puentes
                 st.markdown("---")
                 st.subheader("📉 Desviación de Turnos en Puente por Médico")
-                st.caption("*Tolerancia objetivo: ±0.5 turnos*")
+                st.caption("*Tolerancia objetivo: ±0.5 guardias*")
                 
                 # Añadir indicador de tolerancia
                 bridge_df['Dentro_Tolerancia'] = bridge_df['Desviación'].abs() <= 0.5
@@ -2333,7 +2333,7 @@ with tab4:
     st.header("⚠️ Verificación de Restricciones")
     
     if st.session_state.scheduler is None:
-        st.info("ℹ️ No hay horario generado. Use el botón '🚀 Generar Horario' en la barra lateral.")
+        st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Horario' en la barra lateral.")
     else:
         violations = check_violations()
         
@@ -2771,8 +2771,8 @@ with tab5:
 
 # ==================== TAB 6: REVISIÓN ====================
 with tab6:
-    st.header("🔍 Revisión de Horarios")
-    st.markdown("Cargue un archivo de horario (PDF, Excel o CSV) para analizarlo y generar reportes.")
+    st.header("🔍 Revisión de Calendario")
+    st.markdown("Cargue un archivo (PDF, Excel o CSV) para analizarlo y generar reportes.")
     
     # Sección 1: Carga de archivo
     st.subheader("📂 Carga de Archivo")
@@ -2783,7 +2783,7 @@ with tab6:
         uploaded_file = st.file_uploader(
             "Seleccione archivo (PDF, Excel, CSV)",
             type=["pdf", "xlsx", "xls", "csv"],
-            help="Archivo con horario de guardias a analizar"
+            help="Archivo con guardias a analizar"
         )
     
     with col2:
@@ -2820,7 +2820,7 @@ with tab6:
         
         with col1:
             start_date_revision = st.date_input(
-                "Fecha inicial del horario (L-D)",
+                "Fecha inicial del reparto (L-D)",
                 value=datetime.now(),
                 format="DD/MM/YYYY",
                 help="Fecha de inicio del calendario cargado. Calendario de Lunes a Domingo"
@@ -2832,7 +2832,7 @@ with tab6:
                 min_value=1,
                 max_value=10,
                 value=4,
-                help="Número de trabajadores/guardias por día (filas de trabajadores en el calendario)"
+                help="Número de guardias por día"
             )
         
         with col3:
@@ -2882,9 +2882,9 @@ with tab6:
         st.markdown("---")
         st.subheader("🔍 Análisis")
         
-        if st.button("🚀 Analizar Horario", key="btn_analyze_schedule"):
+        if st.button("🚀 Analizar Reparto", key="btn_analyze_schedule"):
             try:
-                with st.spinner("Analizando horario..."):
+                with st.spinner("Analizando ..."):
                     # Convertir start_date a datetime si es date object
                     if isinstance(start_date_revision, date) and not isinstance(start_date_revision, datetime):
                         start_datetime = datetime.combine(start_date_revision, datetime.min.time())
@@ -2899,7 +2899,7 @@ with tab6:
                         else:
                             holidays_datetime.append(h)
                     
-                    logging.info(f"Analizando horario con {len(holidays_datetime)} festivos")
+                    logging.info(f"Analizando calendario con {len(holidays_datetime)} festivos")
                     logging.info(f"Festivos: {[h.strftime('%Y-%m-%d') for h in holidays_datetime]}")
                     
                     # Crear analizador
@@ -3068,7 +3068,7 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "Sistema de Generación de Horarios v2.5 | "
+    "Sistema de Generación de Guardias v2.5 | "
     "Interfaz Streamlit | "
     f"© {datetime.now().year}"
     "</div>",
