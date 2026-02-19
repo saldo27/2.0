@@ -1,5 +1,5 @@
 """ 
-Sistema de Generación de Horarios - Interfaz Streamlit
+Sistema de Generación de Guardias - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
 Versión: 2.5 (Febrero 2026)
