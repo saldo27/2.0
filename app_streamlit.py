@@ -12,6 +12,7 @@ os.environ['LC_ALL'] = 'es_ES.utf8'
 os.environ['LC_TIME'] = 'es_ES.utf8'
 
 import streamlit as st  # type: ignore
+import streamlit.components.v1 as components  # type: ignore
 import pandas as pd  # type: ignore
 import plotly.graph_objects as go  # type: ignore
 import plotly.express as px  # type: ignore
@@ -110,42 +111,79 @@ st.markdown("""
     }
 </style>
 
+""", unsafe_allow_html=True)
+
+# Inyectar JavaScript para calendarios Lunes-Domingo
+# st.markdown() ignora <script>; components.html() ejecuta JS real vía window.parent
+components.html("""
 <script>
-// Configurar calendarios para que comiencen en Lunes (formato español/ISO 8601)
 (function() {
-    // Esperar a que el DOM esté listo
-    function setMondayAsFirstDay() {
-        // Buscar todos los inputs de tipo date
-        const dateInputs = document.querySelectorAll('input[type="date"]');
+    var MAX_RETRIES = 60;
+    var retries = 0;
+    
+    function shiftSundayToEnd(table) {
+        // Evitar procesar la misma tabla dos veces
+        if (table.dataset.mondayFixed) return;
+        table.dataset.mondayFixed = '1';
         
-        dateInputs.forEach(input => {
-            // Forzar locale español
-            input.setAttribute('lang', 'es-ES');
-            
-            // Añadir atributo data-firstday para calendarios personalizados
-            input.setAttribute('data-firstday', '1'); // 1 = Lunes
+        // Cabecera (th)
+        var headRow = table.querySelector('thead tr');
+        if (headRow && headRow.cells.length > 0) {
+            var sun = headRow.cells[0];
+            headRow.appendChild(sun);          // mueve (no copia)
+        }
+        
+        // Filas de días (td)
+        table.querySelectorAll('tbody tr').forEach(function(row) {
+            if (row.cells.length > 0) {
+                row.appendChild(row.cells[0]); // mueve la celda Domingo al final
+            }
         });
     }
     
-    // Ejecutar al cargar
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', setMondayAsFirstDay);
-    } else {
-        setMondayAsFirstDay();
+    function fixAllCalendars(root) {
+        (root || window.parent.document).querySelectorAll(
+            'table[role="grid"]'
+        ).forEach(shiftSundayToEnd);
     }
     
-    // Observar cambios en el DOM para aplicar a nuevos calendarios
-    const observer = new MutationObserver(function(mutations) {
-        setMondayAsFirstDay();
-    });
+    function waitForParent() {
+        try {
+            var parentDoc = window.parent.document;
+            if (!parentDoc) { retry(); return; }
+            
+            // Corregir calendarios ya abiertos
+            fixAllCalendars(parentDoc);
+            
+            // Observar futuras aperturas de calendario
+            var observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(m) {
+                    m.addedNodes.forEach(function(node) {
+                        if (node.nodeType === 1) {
+                            // Si el nodo añadido contiene tablas de calendario
+                            if (node.querySelector) {
+                                node.querySelectorAll('table[role="grid"]').forEach(shiftSundayToEnd);
+                            }
+                            if (node.matches && node.matches('table[role="grid"]')) {
+                                shiftSundayToEnd(node);
+                            }
+                        }
+                    });
+                });
+            });
+            observer.observe(parentDoc.body, { childList: true, subtree: true });
+            
+        } catch(e) { retry(); }
+    }
     
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
+    function retry() {
+        if (retries++ < MAX_RETRIES) setTimeout(waitForParent, 150);
+    }
+    
+    waitForParent();
 })();
 </script>
-""", unsafe_allow_html=True)
+""", height=0)
 
 # Inicializar session state
 if 'workers_data' not in st.session_state:
@@ -1079,15 +1117,8 @@ with st.sidebar:
     # Período de reparto (Fecha Inicial - Fecha Final)
     st.subheader("📅 Período de Reparto")
     
-    # Aplicar configuración de calendario Lunes-Domingo
-    st.markdown("""
-        <style>
-        [role="presentation"] {
-            direction: ltr;
-        }
-        </style>
-    """, unsafe_allow_html=True)
     
+
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input(
