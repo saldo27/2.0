@@ -1,5 +1,5 @@
 """ 
-Sistema de Generación de Guardias - Interfaz Streamlit
+Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
 Versión: 2.5 (Febrero 2026)
@@ -1900,7 +1900,7 @@ with tab2:
             st.subheader("📋 Calendario Detallado")
             st.dataframe(
                 df,
-                use_container_width=True,
+                width='stretch',
                 height=600,
                 hide_index=True
             )
@@ -2152,7 +2152,7 @@ with tab3:
                     width=72
                 )
             
-            st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config=column_config_stats)
+            st.dataframe(styled_df, width='stretch', hide_index=True, column_config=column_config_stats)
             
             # Gráfico de barras
             st.markdown("---")
@@ -2179,7 +2179,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Gráfico de desviación
             st.markdown("---")
@@ -2195,7 +2195,7 @@ with tab3:
             )
             
             fig2.update_layout(height=400)
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
             
             # Gráfico de Weekend (Vie/Sab/Dom + Festivos + Pre-festivos)
             st.markdown("---")
@@ -2223,7 +2223,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, width='stretch')
             
             # Gráfico de desviación de weekend
             st.markdown("---")
@@ -2242,7 +2242,7 @@ with tab3:
                 height=400,
                 yaxis_title="Desviación (turnos)"
             )
-            st.plotly_chart(fig4, use_container_width=True)
+            st.plotly_chart(fig4, width='stretch')
             
             # Gráficos de Puentes (Bridge)
             st.markdown("---")
@@ -2298,7 +2298,7 @@ with tab3:
                     height=400
                 )
                 
-                st.plotly_chart(fig5, use_container_width=True)
+                st.plotly_chart(fig5, width='stretch')
                 
                 # Gráfico de desviación de puentes
                 st.markdown("---")
@@ -2334,7 +2334,7 @@ with tab3:
                     xaxis_title="Médico",
                     showlegend=False
                 )
-                st.plotly_chart(fig6, use_container_width=True)
+                st.plotly_chart(fig6, width='stretch')
                 
                 # Tabla resumen de puentes
                 st.markdown("---")
@@ -2357,7 +2357,7 @@ with tab3:
                         return ['background-color: #d4edda'] * len(row)
                 
                 styled_bridge_df = bridge_display_df.style.apply(color_bridge_status, axis=1)
-                st.dataframe(styled_bridge_df, use_container_width=True, hide_index=True)
+                st.dataframe(styled_bridge_df, width='stretch', hide_index=True)
 
 # ==================== TAB 4: VERIFICACIÓN ====================
 with tab4:
@@ -2496,7 +2496,7 @@ with tab5:
                     markers=True
                 )
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 
                 # Statistics
                 col_avg, col_max, col_min = st.columns(3)
@@ -3017,7 +3017,7 @@ with tab6:
             
             st.dataframe(
                 st.session_state.revision_stats[cols_a_mostrar],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config=column_config
             )
