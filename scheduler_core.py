@@ -51,7 +51,7 @@ class SchedulerCore:
         self.tolerance_validator = ShiftToleranceValidator(scheduler)
         # Iterative optimizer works with Phase 2 tolerance (±12% absolute limit)
         # Note: Initial distribution uses Phase 1 (±10% objective), optimizer handles both phases
-        self.iterative_optimizer = IterativeOptimizer(max_iterations=50, tolerance=0.12)
+        self.iterative_optimizer = IterativeOptimizer(max_iterations=80, tolerance=0.12)
         
         # Initialize adaptive iteration manager for intelligent optimization
         self.adaptive_manager = AdaptiveIterationManager(scheduler)
@@ -64,7 +64,7 @@ class SchedulerCore:
         
         logging.info("SchedulerCore initialized with enhanced optimization systems and tolerance validation")
     
-    def orchestrate_schedule_generation(self, max_improvement_loops: int = 70, max_complete_attempts: int = 1) -> bool:
+    def orchestrate_schedule_generation(self, max_improvement_loops: int = 90, max_complete_attempts: int = 1) -> bool:
         """
         Main orchestration method for schedule generation workflow with multiple complete attempts.
         
@@ -559,10 +559,10 @@ class SchedulerCore:
         try:
             # Aumentar el número de ciclos por defecto si no se especifica, pero limitar en simulación
             if self.config.get('is_simulation', False):
-                 max_improvement_loops = min(max_improvement_loops, 50)
+                 max_improvement_loops = min(max_improvement_loops, 120)
                  logging.info(f"🧪 Simulation Mode: Capped improvement loops to {max_improvement_loops}")
-            elif max_improvement_loops < 60:
-                max_improvement_loops = 60
+            elif max_improvement_loops < 120:
+                max_improvement_loops = 120
                 
             # Calculate initial score for comparison
             current_overall_score = self.metrics.calculate_overall_schedule_score()
@@ -693,7 +693,7 @@ class SchedulerCore:
                     logging.info(f"Empty slots before advanced engine: {empty_before_advanced}")
                     
                     # Run advanced distribution engine
-                    self.advanced_engine.enhanced_fill_schedule(max_iterations=100)
+                    self.advanced_engine.enhanced_fill_schedule(max_iterations=150)
                     
                     empty_after_advanced = self.metrics.count_empty_shifts()
                     improvement = empty_before_advanced - empty_after_advanced
@@ -716,7 +716,7 @@ class SchedulerCore:
                     # Aplicar optimización de balance estricto
                     # Primero intentamos con tolerancia ±1
                     balance_achieved = self.balance_optimizer.optimize_balance(
-                        max_iterations=200,
+                        max_iterations=300,
                         target_tolerance=1  # ±1 turno máximo
                     )
                     
@@ -724,13 +724,13 @@ class SchedulerCore:
                     if not balance_achieved:
                         logging.info("🔄 Running second balance pass with relaxed constraints...")
                         balance_achieved = self.balance_optimizer.optimize_balance(
-                            max_iterations=150,
+                            max_iterations=250,
                             target_tolerance=2  # Aceptar ±2 temporalmente
                         )
                         # Luego intentar ajustar a ±1 de nuevo
                         if balance_achieved:
                             self.balance_optimizer.optimize_balance(
-                                max_iterations=110,
+                                max_iterations=200,
                                 target_tolerance=1
                             )
                     
@@ -823,12 +823,11 @@ class SchedulerCore:
             self.scheduler.schedule_builder._balance_weekday_distribution()
 
             # Iterar hasta que todos los trabajadores estén dentro de la tolerancia ±1 en turnos y last posts
-            # REDUCED iterations to avoid over-optimization that degrades results
-            max_final_balance_loops = 20  # Reduced from 50
+            max_final_balance_loops = 40  
             for i in range(max_final_balance_loops):
                 logging.info(f"Final strict balance loop {i+1}/{max_final_balance_loops}")
                 changed1 = self.scheduler.schedule_builder._balance_workloads()
-                changed2 = self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=5)
+                changed2 = self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=7)
                 changed3 = self.scheduler.schedule_builder._balance_weekday_distribution()
                 changed4 = self.scheduler.schedule_builder._balance_monthly_distribution()
                 if not changed1 and not changed2 and not changed3 and not changed4:
@@ -845,7 +844,7 @@ class SchedulerCore:
                 try:
                     # Ejecutar balance estricto final con más iteraciones
                     final_balance = self.balance_optimizer.optimize_balance(
-                        max_iterations=180,
+                        max_iterations=250,
                         target_tolerance=1
                     )
                     if final_balance:
@@ -854,7 +853,7 @@ class SchedulerCore:
                         # Intentar con tolerancia más flexible
                         logging.info("🔄 Retrying with tolerance ±2...")
                         self.balance_optimizer.optimize_balance(
-                            max_iterations=120,
+                            max_iterations=180,
                             target_tolerance=2
                         )
                 except Exception as e:
@@ -865,16 +864,11 @@ class SchedulerCore:
                 logging.info("Rebalancing last post distribution after balance optimization...")
                 self.scheduler.schedule_builder._adjust_last_post_distribution(
                     balance_tolerance=1.0,
-                    max_iterations=10
+                    max_iterations=20
                 )
 
-            # FINAL MONTHLY BALANCE PASS — run after all other optimizers
-            # to improve per-worker monthly distribution via cross-month swaps
-            logging.info("Running final monthly distribution balance pass...")
-            for _pass in range(3):
-                if not self.scheduler.schedule_builder._balance_monthly_distribution():
-                    logging.info(f"Monthly distribution converged after {_pass + 1} pass(es)")
-                    break
+            # NOTE: Monthly balance pass removed here — it now runs as the
+            # ABSOLUTE LAST STEP after bridge rebalancing (see below).
 
             # ================================================================
             # CRITICAL: Compare post-finalization with pre-finalization
@@ -942,6 +936,15 @@ class SchedulerCore:
                         logging.info("🌉 Bridge rebalancing completed all 3 passes")
             except Exception as e:
                 logging.warning(f"Bridge rebalancing post-finalization failed: {e}")
+
+            # --- ABSOLUTE LAST STEP: Monthly distribution balance ---
+            # Run AFTER bridges and everything else so no subsequent pass can
+            # break the monthly balance.
+            logging.info("Running FINAL monthly distribution balance pass (absolute last)...")
+            for _pass in range(5):
+                if not self.scheduler.schedule_builder._balance_monthly_distribution():
+                    logging.info(f"Monthly distribution converged after {_pass + 1} pass(es)")
+                    break
 
             # Final validation y logging
             self._perform_final_validation()
