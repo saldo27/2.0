@@ -50,6 +50,42 @@ class StrictBalanceOptimizer:
         }
         
         logging.info("💎 Strict Balance Optimizer initialized")
+
+    def _sort_dates_by_monthly_excess(self, worker_id, dates):
+        """Sort dates so that months where the worker is ABOVE their monthly
+        target come first.  This way, swaps preferentially remove shifts from
+        over-target months, preserving monthly balance."""
+        worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        if not worker_config or not hasattr(self.builder, '_get_expected_monthly_target'):
+            random.shuffle(dates)
+            return dates
+
+        # Pre-compute monthly counts
+        month_counts = {}
+        for d in self.worker_assignments.get(worker_id, set()):
+            key = (d.year, d.month)
+            month_counts[key] = month_counts.get(key, 0) + 1
+
+        def excess(d):
+            key = (d.year, d.month)
+            target = self.builder._get_expected_monthly_target(worker_config, d.year, d.month)
+            return month_counts.get(key, 0) - target
+
+        # Sort descending by excess (highest excess first = best to give away)
+        dates.sort(key=excess, reverse=True)
+        return dates
+
+    def _giver_month_ok(self, worker_id, date):
+        """Check that removing a shift from this month won't drop the giver
+        more than 1 below their monthly target."""
+        worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        if not worker_config or not hasattr(self.builder, '_get_expected_monthly_target'):
+            return True
+        target = self.builder._get_expected_monthly_target(worker_config, date.year, date.month)
+        current = sum(1 for d in self.worker_assignments.get(worker_id, set())
+                      if d.year == date.year and d.month == date.month)
+        # Allow at most 1 below target (since target may be fractional/rounded)
+        return (current - 1) >= (target - 1)
     
     def optimize_balance(self, max_iterations: int = 500, target_tolerance: int = 1) -> bool:
         """
@@ -275,8 +311,9 @@ class StrictBalanceOptimizer:
             for under_id, under_dev in underloaded[:5]:  # Top 5 subcargados
                 
                 # Buscar un turno del sobrecargado que pueda mover
+                # CRITICAL: Prefer dates from months where giver is ABOVE target
                 over_assignments = list(self.worker_assignments.get(over_id, set()))
-                random.shuffle(over_assignments)
+                over_assignments = self._sort_dates_by_monthly_excess(over_id, over_assignments)
                 
                 for date in over_assignments:
                     # No tocar mandatory
@@ -290,6 +327,11 @@ class StrictBalanceOptimizer:
                     try:
                         post = self.schedule[date].index(over_id)
                     except (ValueError, KeyError):
+                        continue
+                    
+                    # Check giver's monthly balance: don't take from a month
+                    # where giver is already at or below target
+                    if not self._giver_month_ok(over_id, date):
                         continue
                     
                     # Verificar que el subcargado puede tomar este turno
@@ -315,7 +357,7 @@ class StrictBalanceOptimizer:
                         monthly_tolerance = 1 if work_pct >= 100 else 0
                         max_monthly = expected_monthly + monthly_tolerance
                         
-                        if shifts_this_month + 1 > max_monthly + 1:
+                        if shifts_this_month + 1 > max_monthly:
                             logging.debug(f"Strict balance: {under_id} blocked by monthly limit")
                             continue
                     
@@ -377,13 +419,16 @@ class StrictBalanceOptimizer:
         """
         for over_id, over_dev in overloaded[:5]:  # Top 5 sobrecargados
             over_dates = list(self.worker_assignments.get(over_id, set()))
-            random.shuffle(over_dates)
+            over_dates = self._sort_dates_by_monthly_excess(over_id, over_dates)
             
             for date_a in over_dates[:10]:  # Limitar para rendimiento
                 if (over_id, date_a) in self.builder._locked_mandatory:
                     continue
                 
                 if not self.builder._can_modify_assignment(over_id, date_a, "three_way"):
+                    continue
+                
+                if not self._giver_month_ok(over_id, date_a):
                     continue
                 
                 try:
@@ -434,7 +479,7 @@ class StrictBalanceOptimizer:
                         max_monthly = expected_monthly + monthly_tolerance
                         
                         # C va a ganar un turno pero también perderá uno, así que solo bloqueamos si está muy alto
-                        if shifts_c_month_a + 1 > max_monthly + 2:
+                        if shifts_c_month_a + 1 > max_monthly + 1:
                             skip_c_take = True
                     
                     # Validar fines de semana consecutivos para C (incluyendo holidays y pre-holidays)
@@ -448,13 +493,18 @@ class StrictBalanceOptimizer:
                     
                     # Ahora buscar un turno de C que pueda dar a B (subcargado)
                     c_dates = list(self.worker_assignments.get(c_id, set()))
-                    random.shuffle(c_dates)
+                    c_dates = self._sort_dates_by_monthly_excess(c_id, c_dates)
                     
                     for date_c in c_dates[:10]:
                         if date_c == date_a:  # No puede ser el mismo día
                             continue
                         
                         if (c_id, date_c) in self.builder._locked_mandatory:
+                            continue
+                        
+                        # C gives away date_c — check monthly floor
+                        # (C also gains date_a, but that could be a different month)
+                        if not self._giver_month_ok(c_id, date_c):
                             continue
                         
                         if not self.builder._can_modify_assignment(c_id, date_c, "three_way_intermediary"):
@@ -497,7 +547,7 @@ class StrictBalanceOptimizer:
                                 monthly_tolerance_b = 1 if work_pct_b >= 100 else 0
                                 max_monthly_b = expected_monthly_b + monthly_tolerance_b
                                 
-                                if shifts_b_month_c + 1 > max_monthly_b + 1:
+                                if shifts_b_month_c + 1 > max_monthly_b:
                                     skip_b_take = True
                             
                             # Validar fines de semana consecutivos para B (incluyendo holidays y pre-holidays)
@@ -564,12 +614,17 @@ class StrictBalanceOptimizer:
         """
         for over_id, over_dev in overloaded[:3]:
             over_dates = list(self.worker_assignments.get(over_id, set()))
+            over_dates = self._sort_dates_by_monthly_excess(over_id, over_dates)
             
             for date in over_dates:
                 if (over_id, date) in self.builder._locked_mandatory:
                     continue
                 
                 if not self.builder._can_modify_assignment(over_id, date, "reassignment"):
+                    continue
+                
+                # Don't take from a month where giver is at/below target
+                if not self._giver_month_ok(over_id, date):
                     continue
                 
                 try:
@@ -607,7 +662,7 @@ class StrictBalanceOptimizer:
                             monthly_tolerance = 1 if work_pct >= 100 else 0
                             max_monthly = expected_monthly + monthly_tolerance
                             
-                            if shifts_this_month + 1 > max_monthly + 1:
+                            if shifts_this_month + 1 > max_monthly:
                                 skip_assign = True
                         
                         # Validate consecutive weekends (including holidays and pre-holidays)
@@ -686,13 +741,16 @@ class StrictBalanceOptimizer:
         
         for over_id, over_dev in overloaded[:8]:  # Más trabajadores
             over_dates = list(self.worker_assignments.get(over_id, set()))
-            random.shuffle(over_dates)
+            over_dates = self._sort_dates_by_monthly_excess(over_id, over_dates)
             
             for date_a in over_dates[:15]:  # Más fechas
                 if (over_id, date_a) in self.builder._locked_mandatory:
                     continue
                 
                 if not self.builder._can_modify_assignment(over_id, date_a, "aggressive_three_way"):
+                    continue
+                
+                if not self._giver_month_ok(over_id, date_a):
                     continue
                 
                 try:
@@ -731,13 +789,17 @@ class StrictBalanceOptimizer:
                     
                     # Buscar turnos de C que pueda ceder
                     c_dates = list(self.worker_assignments.get(c_id, set()))
-                    random.shuffle(c_dates)
+                    c_dates = self._sort_dates_by_monthly_excess(c_id, c_dates)
                     
                     for date_c in c_dates[:15]:
                         if date_c == date_a:
                             continue
                         
                         if (c_id, date_c) in self.builder._locked_mandatory:
+                            continue
+                        
+                        # C gives away date_c — check monthly floor
+                        if not self._giver_month_ok(c_id, date_c):
                             continue
                         
                         if not self.builder._can_modify_assignment(c_id, date_c, "aggressive_intermediary"):
@@ -842,13 +904,16 @@ class StrictBalanceOptimizer:
         """
         for over_id, over_dev in overloaded[:3]:  # Top 3 más sobrecargados
             over_dates = list(self.worker_assignments.get(over_id, set()))
-            random.shuffle(over_dates)
+            over_dates = self._sort_dates_by_monthly_excess(over_id, over_dates)
             
             for date_a in over_dates[:8]:
                 if (over_id, date_a) in self.builder._locked_mandatory:
                     continue
                 
                 if not self.builder._can_modify_assignment(over_id, date_a, "chain_swap"):
+                    continue
+                
+                if not self._giver_month_ok(over_id, date_a):
                     continue
                 
                 try:
@@ -922,6 +987,10 @@ class StrictBalanceOptimizer:
                         continue
                     
                     if not self.builder._can_modify_assignment(next_id, next_date, "chain"):
+                        continue
+                    
+                    # Giver monthly check for intermediary
+                    if not self._giver_month_ok(next_id, next_date):
                         continue
                     
                     try:
@@ -1028,6 +1097,10 @@ class StrictBalanceOptimizer:
                         continue
                     
                     if not self.builder._can_modify_assignment(mid_id, date, "forced"):
+                        continue
+                    
+                    # Giver monthly check
+                    if not self._giver_month_ok(mid_id, date):
                         continue
                     
                     try:

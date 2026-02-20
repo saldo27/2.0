@@ -3,6 +3,10 @@ from datetime import datetime, timedelta
 import copy
 import logging
 import random
+
+# Performance: cache debug level check to avoid f-string formatting overhead
+# in scoring methods that are called thousands of times per generation.
+_DEBUG = logging.getLogger().isEnabledFor(logging.DEBUG)
 import math
 from typing import Dict, List, Set, Optional, Tuple, Any, TYPE_CHECKING
 from exceptions import SchedulerError
@@ -997,7 +1001,21 @@ class ScheduleBuilder:
                 if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
                     logging.debug(f"Sim Check Fail: {days_between} day pattern conflict for {worker_id} between {prev_date} and {date}")
                     return False
-                
+
+            # 9. Monthly balance check (prevent swaps that create monthly imbalance)
+            if hasattr(self, '_get_expected_monthly_target'):
+                worker_data_month = next((w for w in self.workers_data if w['id'] == worker_id), None)
+                if worker_data_month:
+                    expected_monthly = self._get_expected_monthly_target(worker_data_month, date.year, date.month)
+                    if expected_monthly > 0:
+                        month_count_sim = sum(1 for d in simulated_assignments.get(worker_id, set())
+                                             if d.year == date.year and d.month == date.month)
+                        work_pct = worker_data_month.get('work_percentage', 100)
+                        monthly_tolerance = 1 if work_pct >= 100 else 0
+                        if month_count_sim > expected_monthly + monthly_tolerance:
+                            logging.debug(f"Sim Check Fail: Monthly limit {worker_id} in {date.year}-{date.month:02d}")
+                            return False
+
             return True # All checks passed on simulated data        
         except Exception as e:
             logging.error(f"Error during _check_constraints_on_simulated for {worker_id} on {date}: {e}", exc_info=True)
@@ -1401,13 +1419,13 @@ class ScheduleBuilder:
         if total_monthly_target == 0 and month_fraction > 0:
             # Si el mes tiene alguna fracción, permitir al menos 1 turno
             total_monthly_target = 1
-            logging.debug(f"MONTHLY ADJUST - Worker {worker_config.get('id', 'unknown')}: "
+            if _DEBUG: logging.debug(f"MONTHLY ADJUST - Worker {worker_config.get('id', 'unknown')}: "
                         f"Month {year}-{month:02d} has fraction {month_fraction:.2f}, setting min target to 1")
         
         # DEBUG: Log monthly target calculation
         work_percentage = worker_config.get('work_percentage', 100) if worker_config else 100
         if work_percentage < 100 or mandatory_this_month > 0:
-            logging.debug(f"MONTHLY TARGET - Worker {worker_config.get('id', 'unknown')} ({work_percentage}%): "
+            if _DEBUG: logging.debug(f"MONTHLY TARGET - Worker {worker_config.get('id', 'unknown')} ({work_percentage}%): "
                         f"Month {year}-{month:02d} = {total_monthly_target} total "
                         f"(includes {mandatory_this_month} mandatory) - raw calculation: {expected_monthly:.2f}")
         
@@ -1494,7 +1512,7 @@ class ScheduleBuilder:
         # accommodate them — the worker has no choice about mandatory.
         if mandatory_this_month > effective_max_monthly:
             effective_max_monthly = mandatory_this_month
-            logging.debug(f"Worker {worker_id}: MANDATORY HEAVY MONTH - "
+            if _DEBUG: logging.debug(f"Worker {worker_id}: MANDATORY HEAVY MONTH - "
                         f"{mandatory_this_month} mandatory exceeds monthly cap, "
                         f"raising effective_max to {effective_max_monthly}")
         
@@ -1508,7 +1526,7 @@ class ScheduleBuilder:
         should_block_monthly = shifts_this_month + 1 > effective_max_monthly
         
         if should_block_monthly:
-            logging.debug(f"🚫 Worker {worker_id} ({work_percentage}%): BLOCKED by monthly limit - "
+            if _DEBUG: logging.debug(f"🚫 Worker {worker_id} ({work_percentage}%): BLOCKED by monthly limit - "
                         f"month {date.strftime('%Y-%m')}: would have {shifts_this_month + 1} (max: {effective_max_monthly:.0f}) "
                         f"[target={expected_monthly_target:.1f}, tol={base_tolerance}] "
                         f"GLOBAL: total_shifts={len(all_assignments)}, target_shifts={overall_target}, deficit={deficit_pct:.1f}%")
@@ -1609,7 +1627,7 @@ class ScheduleBuilder:
             
             # CRITICAL: Block if would exceed tolerance limit
             if shifts_after_assignment > max_allowed:
-                logging.debug(f"Worker {worker_id}: BLOCKED by tolerance limit - would have {shifts_after_assignment} "
+                if _DEBUG: logging.debug(f"Worker {worker_id}: BLOCKED by tolerance limit - would have {shifts_after_assignment} "
                             f"(max allowed: {max_allowed}, target: {adjusted_target}, tolerance: ±{tolerance*100:.0f}%)")
                 return float('-inf')
             
@@ -1683,7 +1701,7 @@ class ScheduleBuilder:
             # Only if worker has significant deficit
             if relaxation_level >= 1 and target_deficit >= 3:
                 min_gap = max(1, base_min_gap - 1)  # Reduce gap by 1 ONLY, minimum 1
-                logging.debug(f"RELAXED: Worker {worker_id} gap reduced by 1 to {min_gap} (deficit: {target_deficit})")
+                if _DEBUG: logging.debug(f"RELAXED: Worker {worker_id} gap reduced by 1 to {min_gap} (deficit: {target_deficit})")
             else:
                 min_gap = base_min_gap
         
@@ -1704,7 +1722,7 @@ class ScheduleBuilder:
             # CRITICAL: 7/14 day pattern check (same weekday constraint)
             # This constraint applies to ALL days (including weekends) - NO exceptions
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                logging.debug(f"Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')} - same weekday as {prev_date.strftime('%Y-%m-%d')} ({days_between} days apart)")
+                if _DEBUG: logging.debug(f"Worker {worker_id} blocked by 7/14 pattern on {date.strftime('%Y-%m-%d')} - same weekday as {prev_date.strftime('%Y-%m-%d')} ({days_between} days apart)")
                 return False
         
         return True
@@ -1755,7 +1773,7 @@ class ScheduleBuilder:
                     ratio_score += (0.6 - completion_ratio) * 15000
                 
                 score = ratio_score
-                logging.debug(f"TARGET RATIO SCORE: {worker_id} ratio={completion_ratio:.2f} ({non_mandatory_assigned}/{target_shifts}) -> score={score:.0f}")
+                if _DEBUG: logging.debug(f"TARGET RATIO SCORE: {worker_id} ratio={completion_ratio:.2f} ({non_mandatory_assigned}/{target_shifts}) -> score={score:.0f}")
             else:
                 # At or above target - penalty proportional to excess
                 excess_ratio = completion_ratio - 1.0
@@ -1814,7 +1832,7 @@ class ScheduleBuilder:
             
             # Check hard constraints first
             if not self._check_hard_constraints(worker_id, date, post):
-                logging.debug(f"    🚫 {worker_id}: BLOCKED by hard constraints")
+                if _DEBUG: logging.debug(f"    🚫 {worker_id}: BLOCKED by hard constraints")
                 return float('-inf')
             
             # Check for mandatory shifts
@@ -1825,7 +1843,7 @@ class ScheduleBuilder:
             # Calculate target shift score
             score = self._calculate_target_shift_score(worker, mandatory_dates, relaxation_level)
             if score == float('-inf'):
-                logging.debug(f"    🚫 {worker_id}: BLOCKED by target shift score")
+                if _DEBUG: logging.debug(f"    🚫 {worker_id}: BLOCKED by target shift score")
                 return score
             
             # Check gap constraints
@@ -1833,7 +1851,7 @@ class ScheduleBuilder:
             if not gap_ok:
                 if worker_id in ['LUIS H', 'M.JOSE'] and shift_deficit > 2:
                     logging.info(f"    ⚠️ {worker_id}: BLOCKED by gap constraints despite deficit={shift_deficit}")
-                logging.debug(f"    🚫 {worker_id}: BLOCKED by gap constraints (min gap or 7/14 pattern)")
+                if _DEBUG: logging.debug(f"    🚫 {worker_id}: BLOCKED by gap constraints (min gap or 7/14 pattern)")
                 return float('-inf')
             
             # Calculate monthly target score
@@ -1841,7 +1859,7 @@ class ScheduleBuilder:
             if monthly_score == float('-inf'):
                 if worker_id in ['LUIS H', 'M.JOSE'] and shift_deficit > 2:
                     logging.info(f"    ⚠️ {worker_id}: BLOCKED by monthly target despite deficit={shift_deficit}")
-                logging.debug(f"    🚫 {worker_id}: BLOCKED by monthly target (exceeded monthly max)")
+                if _DEBUG: logging.debug(f"    🚫 {worker_id}: BLOCKED by monthly target (exceeded monthly max)")
                 return float('-inf')
             score += monthly_score
             
@@ -1851,7 +1869,7 @@ class ScheduleBuilder:
             if overall_score == float('-inf'):
                 if worker_id in ['LUIS H', 'M.JOSE'] and shift_deficit > 2:
                     logging.info(f"    ⚠️ {worker_id}: BLOCKED by overall target (exceeded +10% tolerance) despite deficit={shift_deficit}")
-                logging.debug(f"    🚫 {worker_id}: BLOCKED by overall target (exceeded +10% tolerance)")
+                if _DEBUG: logging.debug(f"    🚫 {worker_id}: BLOCKED by overall target (exceeded +10% tolerance)")
                 return float('-inf')
             score += overall_score
             
@@ -2023,7 +2041,7 @@ class ScheduleBuilder:
                         )
                         if weekend_shifts_this_week >= 1:
                             # Would be 2+ weekend shifts in same week - BLOCK completely
-                            logging.debug(f"Worker {worker_id}: BLOCKED - already has {weekend_shifts_this_week} weekend shift(s) in week starting {current_week_start.strftime('%Y-%m-%d')}")
+                            if _DEBUG: logging.debug(f"Worker {worker_id}: BLOCKED - already has {weekend_shifts_this_week} weekend shift(s) in week starting {current_week_start.strftime('%Y-%m-%d')}")
                             return float('-inf')
                         
                         # NOTE: Do NOT reduce max_consecutive_weekends for part-time workers
@@ -2059,7 +2077,7 @@ class ScheduleBuilder:
                         elif consecutive_count == max_weekend_limit - 1:
                             # One away from limit - heavy penalty
                             score -= 15000
-                            logging.debug(f"Worker {worker_id}: Near weekend limit ({consecutive_count}/{max_weekend_limit}) - heavy penalty")
+                            if _DEBUG: logging.debug(f"Worker {worker_id}: Near weekend limit ({consecutive_count}/{max_weekend_limit}) - heavy penalty")
                         elif consecutive_count == max_weekend_limit - 2:
                             # Two away from limit - moderate penalty
                             score -= 5000
@@ -2068,7 +2086,7 @@ class ScheduleBuilder:
                     # CRITICAL: Weekend tolerance is NEVER relaxed - always use config value
                     if weekend_after > max_weekend_allowed:
                         # ALWAYS block weekend tolerance violations, regardless of relaxation_level
-                        logging.debug(f"Worker {worker_id}: BLOCKED weekend - would exceed tolerance "
+                        if _DEBUG: logging.debug(f"Worker {worker_id}: BLOCKED weekend - would exceed tolerance "
                                     f"({weekend_after} > {max_weekend_allowed}, target: {weekend_target:.1f}, tolerance: ±{weekend_tolerance_shifts})")
                         return float('-inf')
                     elif weekend_after < weekend_target:
@@ -2086,7 +2104,7 @@ class ScheduleBuilder:
                         weekend_deficit_bonus = int((1 - weekend_completion) * 60000)
                         score += weekend_deficit_bonus
                         
-                        logging.debug(f"Worker {worker_id}: Weekend DEFICIT bonus - "
+                        if _DEBUG: logging.debug(f"Worker {worker_id}: Weekend DEFICIT bonus - "
                                     f"({weekend_after}/{weekend_target:.1f}, completion={weekend_completion:.2f}, bonus={weekend_deficit_bonus})")
                     elif weekend_after >= weekend_target:
                         # HEAVY penalty for workers AT or ABOVE weekend target
@@ -2186,13 +2204,13 @@ class ScheduleBuilder:
                     # Apply heavy penalty to discourage MORE last posts
                     excess = last_post_after - expected_last_posts
                     score -= excess * 15000  # Heavy penalty
-                    logging.debug(f"Worker {worker_id}: Last post EXCESS penalty "
+                    if _DEBUG: logging.debug(f"Worker {worker_id}: Last post EXCESS penalty "
                                 f"({last_post_after:.1f} > {expected_last_posts:.1f} expected)")
                 elif last_post_after < expected_last_posts - 0.5:
                     # Worker NEEDS more last posts - give bonus
                     deficit = expected_last_posts - last_post_after
                     score += deficit * 10000  # Bonus for balancing
-                    logging.debug(f"Worker {worker_id}: Last post DEFICIT bonus "
+                    if _DEBUG: logging.debug(f"Worker {worker_id}: Last post DEFICIT bonus "
                                 f"({last_post_after:.1f} < {expected_last_posts:.1f} expected)")
             else:
                 # Assigning to non-last post
@@ -3249,11 +3267,32 @@ class ScheduleBuilder:
                     logging.warning(f"Worker {over_worker_id} has assignment for date {date_val} but is not in schedule")
                     continue
     
-            # Shuffle to introduce randomness
-            random.shuffle(possible_shifts)
+            # Sort shifts so we preferentially give away from months where
+            # the overloaded worker is ABOVE their monthly target.
+            over_worker_obj = next((w for w in self.workers_data if w['id'] == over_worker_id), None)
+            if over_worker_obj:
+                month_counts = {}
+                for d in self.scheduler.worker_assignments.get(over_worker_id, set()):
+                    key = (d.year, d.month)
+                    month_counts[key] = month_counts.get(key, 0) + 1
+                def _excess(item):
+                    d = item[0]
+                    target = self._get_expected_monthly_target(over_worker_obj, d.year, d.month)
+                    return month_counts.get((d.year, d.month), 0) - target
+                possible_shifts.sort(key=_excess, reverse=True)
+            else:
+                random.shuffle(possible_shifts)
     
             # Try each shift
             for date_val, post_val in possible_shifts: # Renamed date, post
+                # Don't take from a month where giver is at/below target
+                if over_worker_obj:
+                    _mo_target = self._get_expected_monthly_target(over_worker_obj, date_val.year, date_val.month)
+                    _mo_current = sum(1 for d in self.scheduler.worker_assignments.get(over_worker_id, set())
+                                      if d.year == date_val.year and d.month == date_val.month)
+                    if _mo_current - 1 < _mo_target - 1:
+                        continue  # Would drop giver 2+ below monthly target
+                
                 reassigned = False
                 for under_worker_id, _ in underloaded:
                     # ... (check if under_worker already assigned) ...
@@ -3406,6 +3445,10 @@ class ScheduleBuilder:
                 
                 # CRITICAL: Verificación centralizada de protección mandatory
                 if not self._can_modify_assignment(worker_id, date, "balance_weekday_distribution"):
+                    continue
+                
+                # Giver monthly check: don't take from a month where worker is at/below target
+                if self._would_drop_below_monthly_floor(worker_id, date):
                     continue
                 
                 # Find the post this worker is assigned to
@@ -3799,6 +3842,10 @@ class ScheduleBuilder:
                         random.shuffle(possible_from_dates)
                     
                         for from_date in possible_from_dates:
+                            # Giver monthly check: don't take weekend from a month at/below target
+                            if self._would_drop_below_monthly_floor(worker_id_val, from_date):
+                                continue
+                            
                             # Find the post this worker is assigned to
                             from_post = self.schedule[from_date].index(worker_id_val)
                         
@@ -3806,7 +3853,8 @@ class ScheduleBuilder:
                             partner_assignments = self.worker_assignments.get(swap_partner_id, set())
                             possible_to_dates = [d_val for d_val in partner_assignments # Renamed d
                                                if not (self.date_utils.is_weekend_day(d_val) or d_val in self.holidays)\
-                                               and not self._is_mandatory(swap_partner_id, d_val)]
+                                               and not self._is_mandatory(swap_partner_id, d_val)\
+                                               and not self._would_drop_below_monthly_floor(swap_partner_id, d_val)]
                         
                             if not possible_to_dates:
                                 continue  # No swappable weekday shifts for partner
@@ -3876,12 +3924,17 @@ class ScheduleBuilder:
                         random.shuffle(possible_from_dates)
                     
                         for from_date in possible_from_dates:
+                            # Giver monthly check: don't take weekend from partner's month at/below target
+                            if self._would_drop_below_monthly_floor(swap_partner_id, from_date):
+                                continue
+                            
                             from_post = self.schedule[from_date].index(swap_partner_id)
                         
                             # Find a weekday assignment from this worker
                             possible_to_dates = [d_val for d_val in assignments # Renamed d
                                                if not (self.date_utils.is_weekend_day(d_val) or d_val in self.holidays)\
-                                               and not self._is_mandatory(worker_id_val, d_val)]
+                                               and not self._is_mandatory(worker_id_val, d_val)\
+                                               and not self._would_drop_below_monthly_floor(worker_id_val, d_val)]
                         
                             if not possible_to_dates:
                                 continue
@@ -4025,6 +4078,10 @@ class ScheduleBuilder:
                 for special_day_to_reassign in possible_dates_to_move_from:
                     # CRITICAL: Verificación centralizada de protección mandatory
                     if not self._can_modify_assignment(over_worker_id, special_day_to_reassign, "balance_weekend_shifts"):
+                        continue
+                    
+                    # Giver monthly check: don't take from a month where giver is at/below target
+                    if self._would_drop_below_monthly_floor(over_worker_id, special_day_to_reassign):
                         continue
                     
                     try:
@@ -5252,6 +5309,9 @@ class ScheduleBuilder:
                         continue
                     if not self._can_modify_assignment(over_id, date, "weekend_rebalance"):
                         continue
+                    # Giver monthly check: don't take from a month where giver is at/below target
+                    if self._would_drop_below_monthly_floor(over_id, date):
+                        continue
                     if date not in self.schedule:
                         continue
                     if over_id not in self.schedule[date]:
@@ -5451,6 +5511,10 @@ class ScheduleBuilder:
                 if moved >= shifts_to_move:
                     break
                 
+                # Giver monthly check: don't take from a month where giver is at/below target
+                if self._would_drop_below_monthly_floor(over_id, date):
+                    continue
+                
                 # Try each underloaded worker
                 for idx_u, (under_id, under_dev, under_tgt, under_cur, under_pct) in enumerate(underloaded_workers):
                     if under_dev >= 0:
@@ -5593,6 +5657,10 @@ class ScheduleBuilder:
                 if not self._can_modify_assignment(overloaded_id, date, "steal_for_underloaded"):
                     continue
                 
+                # Giver monthly check: don't take from a month where giver is at/below target
+                if self._would_drop_below_monthly_floor(overloaded_id, date):
+                    continue
+                
                 try:
                     post = self.schedule[date].index(overloaded_id)
                 except (ValueError, KeyError):
@@ -5724,6 +5792,10 @@ class ScheduleBuilder:
                 if not self._can_modify_assignment(overloaded_id, date_a, "three_way_steal"):
                     continue
                 
+                # Giver monthly check
+                if self._would_drop_below_monthly_floor(overloaded_id, date_a):
+                    continue
+                
                 try:
                     post_a = self.schedule[date_a].index(overloaded_id)
                 except (ValueError, KeyError):
@@ -5771,6 +5843,10 @@ class ScheduleBuilder:
                             continue
                         
                         if not self._can_modify_assignment(c_id, date_c, "three_way_intermediary"):
+                            continue
+                        
+                        # C gives away date_c — check monthly floor
+                        if self._would_drop_below_monthly_floor(c_id, date_c):
                             continue
                         
                         try:
@@ -5829,6 +5905,23 @@ class ScheduleBuilder:
         
         return changes
     
+    def _would_drop_below_monthly_floor(self, worker_id, date):
+        """
+        Check if REMOVING a shift on this date would drop the worker more than 1
+        below their monthly target.  Used as a giver-side guard in all swap/
+        transfer operations to preserve monthly balance.
+        """
+        worker_config = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        if not worker_config:
+            return False
+        expected = self._get_expected_monthly_target(worker_config, date.year, date.month)
+        if expected <= 0:
+            return False
+        current = sum(1 for d in self.worker_assignments.get(worker_id, set())
+                      if d.year == date.year and d.month == date.month)
+        # Block if removing would leave worker 2+ below target
+        return (current - 1) < (expected - 1)
+
     def _would_exceed_monthly_limit(self, worker_id, date):
         """
         Check if assigning a shift on this date would exceed the worker's monthly limit.
@@ -5989,6 +6082,10 @@ class ScheduleBuilder:
         for date in assignments[:max_attempts]:
             # CRITICAL: Verificación centralizada de protección mandatory
             if not self._can_modify_assignment(overloaded_worker_id, date, "redistribute_excess"):
+                continue
+            
+            # Giver monthly check: don't take from a month where giver is at/below target
+            if self._would_drop_below_monthly_floor(overloaded_worker_id, date):
                 continue
             
             try:
