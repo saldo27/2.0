@@ -3389,7 +3389,7 @@ class ScheduleBuilder:
         """
         logging.info("Balancing weekday distribution across workers...")
         changes_made = 0
-        max_changes = 70
+        max_changes = 90
         
         # Ensure data consistency
         self._ensure_data_integrity()
@@ -3569,7 +3569,7 @@ class ScheduleBuilder:
         """
         logging.info("Balancing monthly distribution across workers...")
         changes_made = 0
-        max_changes = 100
+        max_changes = 150
 
         # Ensure data consistency
         self._ensure_data_integrity()
@@ -4328,7 +4328,7 @@ class ScheduleBuilder:
             adjusted_targets = integer_targets.copy()
             
             # Iteratively reduce the range by moving shifts from extreme workers
-            max_iterations = 20
+            max_iterations = 40
             iteration = 0
             
             while max_target - min_target > tolerance and iteration < max_iterations:
@@ -4434,7 +4434,7 @@ class ScheduleBuilder:
         
         # Perform redistribution to meet adjusted targets using improved algorithm
         changes_made = 0
-        max_iterations = 50
+        max_iterations = 75
         iteration = 0
         
         while iteration < max_iterations:
@@ -4683,7 +4683,7 @@ class ScheduleBuilder:
         
         # Perform redistribution
         changes_made = 0
-        max_iterations = 200
+        max_iterations = 400
         iteration = 0
         stall_count = 0
         max_stalls = 5
@@ -5289,7 +5289,7 @@ class ScheduleBuilder:
         logging.info(f"Found {len(overloaded)} overloaded and {len(underloaded)} underloaded workers")
         
         changes_made = 0
-        max_iterations = 100
+        max_iterations = 150
         
         for iteration in range(max_iterations):
             if not overloaded or not underloaded:
@@ -6255,7 +6255,7 @@ class ScheduleBuilder:
 
         return overassigned_simple, underassigned_simple
         
-    def _adjust_last_post_distribution(self, balance_tolerance=1.0, max_iterations=10): # balance_tolerance of 1 means +/-1
+    def _adjust_last_post_distribution(self, balance_tolerance=1.0, max_iterations=20): # balance_tolerance of 1 means +/-1
         """
         Adjusts the distribution of last-post slots among workers for days NOT in variable_shifts periods.
         Uses improved formula: turnos por trabajador = (turnos asignados al trabajador / turnos al día) ± 1
@@ -6279,7 +6279,7 @@ class ScheduleBuilder:
         
         return result
     
-    def _adjust_last_post_distribution_strict(self, max_iterations=10):
+    def _adjust_last_post_distribution_strict(self, max_iterations=20):
         """
         STRICT last post distribution that ensures proportional assignment.
         
@@ -6442,7 +6442,7 @@ class ScheduleBuilder:
         
         return total_swaps > 0
     
-    def _adjust_last_post_distribution_improved(self, balance_tolerance=1.0, max_iterations=10):
+    def _adjust_last_post_distribution_improved(self, balance_tolerance=1.0, max_iterations=20):
         """
         Improved last post distribution using formula:
         Turnos por trabajador = (turnos asignados al trabajador / turnos al día) ± 1
