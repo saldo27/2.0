@@ -44,10 +44,30 @@ class OperationPrioritizer:
             empty_shifts_count = self.metrics.count_empty_shifts()
             workload_imbalance = self.metrics.calculate_workload_imbalance()
             weekend_imbalance = self.metrics.calculate_weekend_imbalance()
+
+            # Evaluar desequilibrio de puentes
+            bridge_imbalance = 0.0
+            try:
+                scheduler = self.scheduler
+                if (hasattr(scheduler, 'workers_data') and
+                        hasattr(scheduler, 'count_bridges_for_worker') and
+                        hasattr(scheduler, 'get_bridge_objective_for_worker')):
+                    deviations = []
+                    for w in scheduler.workers_data:
+                        wid = w['id']
+                        assigned = scheduler.count_bridges_for_worker(wid)
+                        target = scheduler.get_bridge_objective_for_worker(wid)
+                        if target > 0:
+                            deviations.append(abs(assigned - target) / target)
+                    if deviations:
+                        bridge_imbalance = sum(deviations) / len(deviations)
+            except Exception:
+                pass
             
             logging.info(f"Estado actual - Turnos vacíos: {empty_shifts_count}, "
                         f"Desbalance carga: {workload_imbalance:.3f}, "
-                        f"Desbalance fines de semana: {weekend_imbalance:.3f}")
+                        f"Desbalance fines de semana: {weekend_imbalance:.3f}, "
+                        f"Desbalance puentes: {bridge_imbalance:.3f}")
             
             # Crear lista de operaciones con prioridades ajustadas
             prioritized_operations = []
@@ -75,6 +95,18 @@ class OperationPrioritizer:
                     ("improve_weekend_distribution_aggressive", 
                      lambda: self._improve_weekend_distribution_aggressive(), 12)
                 )
+
+            # Urgencia de puentes: si desequilibrio normalizado > 20%, prioridad alta
+            if bridge_imbalance > 0.20:
+                logging.info(f"Activando modo urgente de puentes (desequilibrio: {bridge_imbalance:.1%})")
+                prioritized_operations.extend([
+                    ("distribute_bridge_shifts_urgent_1",
+                     self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally,
+                     11),
+                    ("distribute_bridge_shifts_urgent_2",
+                     self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally,
+                     10),
+                ])
             
             # Operaciones estándar con prioridades ajustadas
             standard_operations = self._get_standard_operations_with_adjusted_priority(

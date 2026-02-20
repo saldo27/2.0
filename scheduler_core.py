@@ -891,6 +891,24 @@ class SchedulerCore:
             # Update scheduler state with final schedule
             self._apply_final_schedule(final_schedule_data)
 
+            # --- Post-finalization bridge rebalancing ---
+            # Run bridge distribution as a FINAL dedicated pass after all
+            # other optimizations are done and the schedule is frozen.
+            try:
+                if (hasattr(self.scheduler, 'bridge_periods') and
+                        self.scheduler.bridge_periods and
+                        hasattr(self.scheduler, 'schedule_builder')):
+                    logging.info("🌉 Running dedicated post-finalization bridge rebalancing...")
+                    for pass_num in range(3):
+                        changed = self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally()
+                        if not changed:
+                            logging.info(f"🌉 Bridge rebalancing converged after {pass_num + 1} pass(es)")
+                            break
+                    else:
+                        logging.info("🌉 Bridge rebalancing completed all 3 passes")
+            except Exception as e:
+                logging.warning(f"Bridge rebalancing post-finalization failed: {e}")
+
             # Final validation y logging
             self._perform_final_validation()
 

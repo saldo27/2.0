@@ -598,6 +598,15 @@ def get_worker_statistics():
     
     weekend_ratio = weekend_days / total_days if total_days > 0 else 0
     
+    # Rosell (último puesto) pre-calculations
+    last_post_idx = scheduler.num_shifts - 1
+    total_last_post_slots = sum(
+        1 for date, shifts in scheduler.schedule.items()
+        if len(shifts) > last_post_idx
+    )
+    total_schedule_slots = sum(len(shifts) for shifts in scheduler.schedule.values())
+    rosell_ratio = total_last_post_slots / total_schedule_slots if total_schedule_slots > 0 else 0
+
     stats = []
     for worker_id, data in core_stats['workers'].items():
         # Obtener worker data para acceder a _raw_target y _mandatory_count
@@ -621,6 +630,15 @@ def get_worker_statistics():
         weekend_target = round(target * weekend_ratio)
         weekend_deviation = weekend_shifts - weekend_target
         weekend_deviation_pct = (weekend_deviation / weekend_target * 100) if weekend_target > 0 else 0
+
+        # Rosell (último puesto)
+        rosell_count = sum(
+            1 for date, shifts in scheduler.schedule.items()
+            if len(shifts) > last_post_idx and shifts[last_post_idx] == worker_id
+        )
+        rosell_target = round(target * rosell_ratio)
+        rosell_deviation = rosell_count - rosell_target
+        rosell_deviation_pct = (rosell_deviation / rosell_target * 100) if rosell_target > 0 else 0
         
         stats.append({
             'Médico': worker_id,
@@ -631,7 +649,11 @@ def get_worker_statistics():
             'Obj. Weekend': weekend_target,
             'Weekend': weekend_shifts,
             'Desv. Wknd': weekend_deviation,
-            'Desv. Wknd %': f"{weekend_deviation_pct:+.1f}%"
+            'Desv. Wknd %': f"{weekend_deviation_pct:+.1f}%",
+            'Obj. Rosell': rosell_target,
+            'Rosell': rosell_count,
+            'Desv. Rosell': rosell_deviation,
+            'Desv. Rosell %': f"{rosell_deviation_pct:+.1f}%"
         })
     
     return pd.DataFrame(stats)
@@ -952,7 +974,7 @@ def show_license_info():
                     max_chars=25
                 )
                 
-                submit = st.form_submit_button("Activar", width='stretch')
+                submit = st.form_submit_button("Activar", use_container_width=True)
                 
                 if submit and license_key:
                     success, message = license_manager.activate_license(license_key)
@@ -1028,7 +1050,7 @@ if not st.session_state.can_use:
                 help="Ejemplo: GP-AB12-CD34-5678"
             )
             
-            submit = st.form_submit_button("🚀 Activar Licencia", width='stretch')
+            submit = st.form_submit_button("🚀 Activar Licencia", use_container_width=True)
             
             if submit and license_key: 
                 success, message = license_manager. activate_license(license_key)
@@ -1900,7 +1922,7 @@ with tab2:
             st.subheader("📋 Calendario Detallado")
             st.dataframe(
                 df,
-                width='stretch',
+                use_container_width=True,
                 height=600,
                 hide_index=True
             )
@@ -2142,7 +2164,7 @@ with tab3:
                         return 'background-color: #f8d7da'
                 return ''
             
-            styled_df = stats_df.style.map(color_deviation, subset=['Desv. %', 'Desv. Wknd %'])
+            styled_df = stats_df.style.map(color_deviation, subset=['Desv. %', 'Desv. Wknd %', 'Desv. Rosell %'])
             
             # Configurar ancho de columnas (9 caracteres ≈ 72px)
             column_config_stats = {}
@@ -2152,7 +2174,7 @@ with tab3:
                     width=72
                 )
             
-            st.dataframe(styled_df, width='stretch', hide_index=True, column_config=column_config_stats)
+            st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config=column_config_stats)
             
             # Gráfico de barras
             st.markdown("---")
@@ -2179,7 +2201,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
             
             # Gráfico de desviación
             st.markdown("---")
@@ -2195,7 +2217,7 @@ with tab3:
             )
             
             fig2.update_layout(height=400)
-            st.plotly_chart(fig2, width='stretch')
+            st.plotly_chart(fig2, use_container_width=True)
             
             # Gráfico de Weekend (Vie/Sab/Dom + Festivos + Pre-festivos)
             st.markdown("---")
@@ -2223,7 +2245,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig3, width='stretch')
+            st.plotly_chart(fig3, use_container_width=True)
             
             # Gráfico de desviación de weekend
             st.markdown("---")
@@ -2242,7 +2264,7 @@ with tab3:
                 height=400,
                 yaxis_title="Desviación (turnos)"
             )
-            st.plotly_chart(fig4, width='stretch')
+            st.plotly_chart(fig4, use_container_width=True)
             
             # Gráficos de Puentes (Bridge)
             st.markdown("---")
@@ -2298,7 +2320,7 @@ with tab3:
                     height=400
                 )
                 
-                st.plotly_chart(fig5, width='stretch')
+                st.plotly_chart(fig5, use_container_width=True)
                 
                 # Gráfico de desviación de puentes
                 st.markdown("---")
@@ -2334,7 +2356,7 @@ with tab3:
                     xaxis_title="Médico",
                     showlegend=False
                 )
-                st.plotly_chart(fig6, width='stretch')
+                st.plotly_chart(fig6, use_container_width=True)
                 
                 # Tabla resumen de puentes
                 st.markdown("---")
@@ -2357,7 +2379,12 @@ with tab3:
                         return ['background-color: #d4edda'] * len(row)
                 
                 styled_bridge_df = bridge_display_df.style.apply(color_bridge_status, axis=1)
-                st.dataframe(styled_bridge_df, width='stretch', hide_index=True)
+                # Configurar ancho de columnas (9 caracteres ≈ 72px)
+                column_config_bridge = {
+                    col: st.column_config.Column(col, width=72)
+                    for col in bridge_display_df.columns
+                }
+                st.dataframe(styled_bridge_df, use_container_width=True, hide_index=True, column_config=column_config_bridge)
 
 # ==================== TAB 4: VERIFICACIÓN ====================
 with tab4:
@@ -2496,7 +2523,7 @@ with tab5:
                     markers=True
                 )
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
                 
                 # Statistics
                 col_avg, col_max, col_min = st.columns(3)
@@ -3017,7 +3044,7 @@ with tab6:
             
             st.dataframe(
                 st.session_state.revision_stats[cols_a_mostrar],
-                width='stretch',
+                use_container_width=True,
                 hide_index=True,
                 column_config=column_config
             )

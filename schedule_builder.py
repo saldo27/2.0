@@ -4421,11 +4421,11 @@ class ScheduleBuilder:
         """
         logging.info("Starting proportional distribution of bridge shifts...")
         
-        if not self.bridge_periods:
+        if not self.scheduler.bridge_periods:
             logging.info("No bridge periods identified for this scheduling period")
             return False
         
-        num_bridge_periods = len(self.bridge_periods)
+        num_bridge_periods = len(self.scheduler.bridge_periods)
         logging.info(f"Identified {num_bridge_periods} bridge periods in schedule")
         
         # Calculate current bridge assignments per worker
@@ -4471,22 +4471,23 @@ class ScheduleBuilder:
         
         # Perform redistribution
         changes_made = 0
-        max_iterations = 100
+        max_iterations = 500
         iteration = 0
+        stall_count = 0
+        max_stalls = 5
         
         while iteration < max_iterations and overloaded_workers and underloaded_workers:
             iteration += 1
-            progress_made = False
+            progress_made_this_pass = False
             
-            # Try to move shifts from overloaded to underloaded workers
+            # Try all overloaded/underloaded combinations
             for over_worker_id, over_deviation in overloaded_workers[:]:
                 for under_worker_id, under_deficit in underloaded_workers[:]:
-                    # Try to find a swap within a bridge period
                     swap_made = self._attempt_bridge_swap(over_worker_id, under_worker_id)
                     
                     if swap_made:
                         changes_made += 1
-                        progress_made = True
+                        progress_made_this_pass = True
                         
                         # Update current assignments
                         current_bridge_assignments[over_worker_id] = self.scheduler.count_bridges_for_worker(over_worker_id)
@@ -4496,28 +4497,30 @@ class ScheduleBuilder:
                         over_deviation_new = current_bridge_assignments[over_worker_id] - bridge_targets[over_worker_id]
                         under_deficit_new = bridge_targets[under_worker_id] - current_bridge_assignments[under_worker_id]
                         
-                        # Update or remove from lists
-                        if over_deviation_new <= tolerance:
-                            overloaded_workers.remove((over_worker_id, over_deviation))
-                        else:
-                            idx = overloaded_workers.index((over_worker_id, over_deviation))
-                            overloaded_workers[idx] = (over_worker_id, over_deviation_new)
+                        # Rebuild lists safely (avoids index/remove errors)
+                        overloaded_workers = [(w, over_deviation_new if w == over_worker_id else d)
+                                              for w, d in overloaded_workers
+                                              if not (w == over_worker_id and over_deviation_new <= tolerance)]
+                        underloaded_workers = [(w, under_deficit_new if w == under_worker_id else d)
+                                               for w, d in underloaded_workers
+                                               if not (w == under_worker_id and under_deficit_new <= tolerance)]
                         
-                        if under_deficit_new <= tolerance:
-                            underloaded_workers.remove((under_worker_id, under_deficit))
-                        else:
-                            idx = underloaded_workers.index((under_worker_id, under_deficit))
-                            underloaded_workers[idx] = (under_worker_id, under_deficit_new)
+                        overloaded_workers.sort(key=lambda x: x[1], reverse=True)
+                        underloaded_workers.sort(key=lambda x: x[1], reverse=True)
                         
-                        logging.info(f"Bridge swap: {over_worker_id} -> {under_worker_id} "
+                        logging.info(f"Bridge swap: {over_worker_id} \u2192 {under_worker_id} "
                                    f"(over: {over_deviation_new:+.2f}, under: {-under_deficit_new:+.2f})")
-                        break
+                        break  # restart outer loop with updated lists
                 
-                if progress_made:
+                if progress_made_this_pass:
                     break
             
-            if not progress_made:
-                break
+            if not progress_made_this_pass:
+                stall_count += 1
+                if stall_count >= max_stalls:
+                    break
+            else:
+                stall_count = 0
         
         logging.info(f"Bridge distribution completed: {changes_made} changes in {iteration} iterations")
         
@@ -4537,78 +4540,383 @@ class ScheduleBuilder:
 
     def _attempt_bridge_swap(self, over_worker_id: str, under_worker_id: str) -> bool:
         """
-        Attempt to swap a shift in a bridge period from over_worker to under_worker.
-        
+        Perform a TRUE two-way swap to improve bridge balance while preserving
+        total assignment counts for both workers.
+
+        Algorithm:
+          1. Find a bridge date where over_worker is assigned (non-mandatory).
+          2. Find a non-bridge date where under_worker is assigned (non-mandatory).
+          3. Verify both workers can take each other's date (all hard constraints).
+          4. Swap: over_worker gets the non-bridge date, under_worker gets the bridge date.
+
         CRITICAL: Never swaps mandatory assignments.
-        Updates both bridge counts AND weekend/holiday counts (parallel tracking).
-        
+        Total shift counts for both workers remain unchanged.
+
         Args:
-            over_worker_id: Worker with too many bridge periods
-            under_worker_id: Worker with too few bridge periods
-            
+            over_worker_id: Worker with too many bridge shifts
+            under_worker_id: Worker with too few bridge shifts
+
         Returns:
             bool: True if swap was successful
         """
-        # Find bridge periods where over_worker has assignments
-        over_worker_bridges = self.scheduler.worker_bridge_counts.get(over_worker_id, set())
-        
-        for bridge_id in over_worker_bridges:
-            # Find the bridge period details
-            bridge = next((b for b in self.bridge_periods if b['id'] == bridge_id), None)
-            if not bridge:
+        # Build set of all bridge days for fast lookup
+        bridge_days_set: set = set()
+        for bp in self.scheduler.bridge_periods:
+            bridge_days_set.update(self.scheduler._get_dates_in_bridge(bp))
+
+        # --- Step 1: candidate bridge dates for over_worker ---
+        bridge_dates_of_over = []
+        for date in self.worker_assignments.get(over_worker_id, set()):
+            if date not in bridge_days_set:
                 continue
-            
-            # Get all dates in this bridge period
-            bridge_dates = self.scheduler._get_dates_in_bridge(bridge)
-            
-            # Find dates where over_worker is assigned
-            over_worker_dates = []
-            for date in bridge_dates:
-                # CRITICAL: Skip mandatory assignments
-                if self._is_mandatory(over_worker_id, date):
-                    continue
-                
-                if date in self.worker_assignments.get(over_worker_id, set()):
-                    over_worker_dates.append(date)
-            
-            if not over_worker_dates:
+            if self._is_mandatory(over_worker_id, date):
                 continue
-            
-            # Try to swap with under_worker's assignment on a different date
-            # or find an empty slot in the bridge period
-            for over_date in over_worker_dates:
-                # Check if under_worker can take this shift
-                if not self._can_assign_worker(under_worker_id, over_date, 0):
-                    continue
-                
-                # Find the post of over_worker on this date
-                over_post = None
-                for post_idx, assigned_worker in enumerate(self.schedule.get(over_date, [])):
-                    if assigned_worker == over_worker_id:
-                        over_post = post_idx
+            bridge_dates_of_over.append(date)
+
+        if not bridge_dates_of_over:
+            return False
+
+        # --- Step 2: candidate non-bridge dates for under_worker ---
+        non_bridge_dates_of_under = []
+        for date in self.worker_assignments.get(under_worker_id, set()):
+            if date in bridge_days_set:
+                continue
+            if self._is_mandatory(under_worker_id, date):
+                continue
+            non_bridge_dates_of_under.append(date)
+
+        if not non_bridge_dates_of_under:
+            return False
+
+        # --- Step 3: try all combinations and perform the first valid swap ---
+        for bridge_date in bridge_dates_of_over:
+            # Locate over_worker's post on bridge_date
+            over_post = None
+            for post_idx, w in enumerate(self.schedule.get(bridge_date, [])):
+                if w == over_worker_id:
+                    over_post = post_idx
+                    break
+            if over_post is None:
+                continue
+
+            for non_bridge_date in non_bridge_dates_of_under:
+                # Locate under_worker's post on non_bridge_date
+                under_post = None
+                for post_idx, w in enumerate(self.schedule.get(non_bridge_date, [])):
+                    if w == under_worker_id:
+                        under_post = post_idx
                         break
-                
-                if over_post is None:
+                if under_post is None:
                     continue
-                
-                # Try direct swap (simple replacement)
-                # Remove over_worker from this date
-                self.schedule[over_date][over_post] = under_worker_id
-                
-                # Update tracking - CRITICAL: This updates BOTH bridge AND weekend counts
-                self.scheduler._update_tracking_data(over_worker_id, over_date, over_post, removing=True)
-                self.scheduler._update_tracking_data(under_worker_id, over_date, over_post, removing=False)
-                
+
+                # Check BOTH directions atomically (excluding the date each gives up)
+                if not self._can_swap_worker_to_date(
+                        under_worker_id, bridge_date, over_post,
+                        swapping_out_worker=over_worker_id,
+                        giving_up_date=non_bridge_date):
+                    continue
+
+                if not self._can_swap_worker_to_date(
+                        over_worker_id, non_bridge_date, under_post,
+                        swapping_out_worker=under_worker_id,
+                        giving_up_date=bridge_date):
+                    continue
+
+                # --- Perform the two-way swap ---
+                self.schedule[bridge_date][over_post] = under_worker_id
+                self.schedule[non_bridge_date][under_post] = over_worker_id
+
+                # Update tracking (bridge + weekend counts)
+                self.scheduler._update_tracking_data(
+                    over_worker_id, bridge_date, over_post, removing=True)
+                self.scheduler._update_tracking_data(
+                    under_worker_id, bridge_date, over_post, removing=False)
+                self.scheduler._update_tracking_data(
+                    under_worker_id, non_bridge_date, under_post, removing=True)
+                self.scheduler._update_tracking_data(
+                    over_worker_id, non_bridge_date, under_post, removing=False)
+
                 # Update worker_assignments
-                if over_worker_id in self.worker_assignments:
-                    self.worker_assignments[over_worker_id].discard(over_date)
-                if under_worker_id not in self.worker_assignments:
-                    self.worker_assignments[under_worker_id] = set()
-                self.worker_assignments[under_worker_id].add(over_date)
-                
+                self.worker_assignments.setdefault(over_worker_id, set())
+                self.worker_assignments.setdefault(under_worker_id, set())
+                self.worker_assignments[over_worker_id].discard(bridge_date)
+                self.worker_assignments[over_worker_id].add(non_bridge_date)
+                self.worker_assignments[under_worker_id].discard(non_bridge_date)
+                self.worker_assignments[under_worker_id].add(bridge_date)
+
                 return True
-        
+
+        # --- Fallback: 3-way swap via intermediary ---
+        # Find a third worker (mid) on a bridge date who can swap with over,
+        # and whose vacated non-bridge slot can be filled by under.
+        return self._attempt_bridge_3way_swap(over_worker_id, under_worker_id, bridge_days_set)
+
+    def _attempt_bridge_3way_swap(self, over_worker_id: str, under_worker_id: str,
+                                   bridge_days_set: set) -> bool:
+        """
+        3-way swap to reduce bridge imbalance when direct swap is blocked.
+
+        Chain: over_worker gives bridge_date to mid_worker,
+               mid_worker gives non_bridge_date to over_worker,
+               under_worker gives non_bridge_date2 to mid_worker,
+               mid_worker gives bridge_date2 to under_worker.
+
+        Simplified version: find ANY worker (mid) on a bridge date that over_worker
+        can swap with, and then mid swaps a non-bridge date with under_worker's
+        bridge date.  Net effect: over loses 1 bridge, under gains 1 bridge,
+        mid stays the same.
+
+        Actually the simplest 3-way: swap over's bridge slot with mid (non-bridge worker
+        on same day/different post? No...).
+
+        Simplest effective 3-way:
+          over_bridge_date: over → mid  (mid gets bridge, over loses bridge)
+          mid_nonbridge_date: mid → over  (over gets non-bridge, mid loses non-bridge)
+          under_nonbridge_date: under → mid  (mid gets non-bridge back)
+          mid has a bridge date we give to under... too complex.
+
+        Simpler approach: swap over(bridge_date) with mid(non_bridge_date),
+        then swap mid(bridge_date) with under(non_bridge_date2).
+        Net: over -1 bridge, under +1 bridge, mid ±0.
+        """
+        # Get over's bridge dates
+        over_bridge_dates = []
+        for d in self.worker_assignments.get(over_worker_id, set()):
+            if d in bridge_days_set and not self._is_mandatory(over_worker_id, d):
+                over_bridge_dates.append(d)
+        if not over_bridge_dates:
+            return False
+
+        # Get all worker IDs except over and under
+        all_workers = [w['id'] for w in self.workers_data
+                       if w['id'] != over_worker_id and w['id'] != under_worker_id]
+
+        for bridge_date in over_bridge_dates:
+            over_post = None
+            for pi, w in enumerate(self.schedule.get(bridge_date, [])):
+                if w == over_worker_id:
+                    over_post = pi
+                    break
+            if over_post is None:
+                continue
+
+            for mid_id in all_workers:
+                # mid needs a non-bridge date to give to over
+                mid_non_bridge_dates = [
+                    d for d in self.worker_assignments.get(mid_id, set())
+                    if d not in bridge_days_set and not self._is_mandatory(mid_id, d)
+                ]
+                if not mid_non_bridge_dates:
+                    continue
+
+                for mid_nb_date in mid_non_bridge_dates:
+                    mid_nb_post = None
+                    for pi, w in enumerate(self.schedule.get(mid_nb_date, [])):
+                        if w == mid_id:
+                            mid_nb_post = pi
+                            break
+                    if mid_nb_post is None:
+                        continue
+
+                    # Check swap1: over(bridge_date) ↔ mid(mid_nb_date)
+                    if not self._can_swap_worker_to_date(
+                            mid_id, bridge_date, over_post,
+                            swapping_out_worker=over_worker_id,
+                            giving_up_date=mid_nb_date):
+                        continue
+                    if not self._can_swap_worker_to_date(
+                            over_worker_id, mid_nb_date, mid_nb_post,
+                            swapping_out_worker=mid_id,
+                            giving_up_date=bridge_date):
+                        continue
+
+                    # After swap1, mid now has bridge_date.
+                    # Now mid needs to swap bridge_date with under (who gives a non-bridge).
+                    under_nb_dates = [
+                        d for d in self.worker_assignments.get(under_worker_id, set())
+                        if d not in bridge_days_set and not self._is_mandatory(under_worker_id, d)
+                    ]
+                    if not under_nb_dates:
+                        continue
+
+                    for under_nb_date in under_nb_dates:
+                        under_nb_post = None
+                        for pi, w in enumerate(self.schedule.get(under_nb_date, [])):
+                            if w == under_worker_id:
+                                under_nb_post = pi
+                                break
+                        if under_nb_post is None:
+                            continue
+
+                        # Check swap2: mid(bridge_date) ↔ under(under_nb_date)
+                        # After swap1, mid is on bridge_date at over_post.
+                        # We need to simulate mid's assignments after swap1.
+                        mid_assignments_after_swap1 = set(self.worker_assignments.get(mid_id, set()))
+                        mid_assignments_after_swap1.discard(mid_nb_date)
+                        mid_assignments_after_swap1.add(bridge_date)
+
+                        # Validate under → bridge_date (post = over_post, occupant = mid after swap1)
+                        if not self._can_swap_worker_to_date(
+                                under_worker_id, bridge_date, over_post,
+                                swapping_out_worker=mid_id,
+                                giving_up_date=under_nb_date):
+                            continue
+
+                        # Validate mid → under_nb_date (occupant = under)
+                        # mid's assignments after swap1 but before swap2
+                        # We need custom check since mid's assignments changed
+                        if not self._can_swap_worker_to_date_custom_assignments(
+                                mid_id, under_nb_date, under_nb_post,
+                                swapping_out_worker=under_worker_id,
+                                giving_up_date=bridge_date,
+                                custom_assignments=mid_assignments_after_swap1):
+                            continue
+
+                        # === Execute both swaps ===
+                        # Swap 1: over(bridge_date) ↔ mid(mid_nb_date)
+                        self.schedule[bridge_date][over_post] = mid_id
+                        self.schedule[mid_nb_date][mid_nb_post] = over_worker_id
+                        self.scheduler._update_tracking_data(over_worker_id, bridge_date, over_post, removing=True)
+                        self.scheduler._update_tracking_data(mid_id, bridge_date, over_post, removing=False)
+                        self.scheduler._update_tracking_data(mid_id, mid_nb_date, mid_nb_post, removing=True)
+                        self.scheduler._update_tracking_data(over_worker_id, mid_nb_date, mid_nb_post, removing=False)
+                        self.worker_assignments.setdefault(over_worker_id, set())
+                        self.worker_assignments.setdefault(mid_id, set())
+                        self.worker_assignments[over_worker_id].discard(bridge_date)
+                        self.worker_assignments[over_worker_id].add(mid_nb_date)
+                        self.worker_assignments[mid_id].discard(mid_nb_date)
+                        self.worker_assignments[mid_id].add(bridge_date)
+
+                        # Swap 2: mid(bridge_date) ↔ under(under_nb_date)
+                        self.schedule[bridge_date][over_post] = under_worker_id
+                        self.schedule[under_nb_date][under_nb_post] = mid_id
+                        self.scheduler._update_tracking_data(mid_id, bridge_date, over_post, removing=True)
+                        self.scheduler._update_tracking_data(under_worker_id, bridge_date, over_post, removing=False)
+                        self.scheduler._update_tracking_data(under_worker_id, under_nb_date, under_nb_post, removing=True)
+                        self.scheduler._update_tracking_data(mid_id, under_nb_date, under_nb_post, removing=False)
+                        self.worker_assignments.setdefault(under_worker_id, set())
+                        self.worker_assignments[mid_id].discard(bridge_date)
+                        self.worker_assignments[mid_id].add(under_nb_date)
+                        self.worker_assignments[under_worker_id].discard(under_nb_date)
+                        self.worker_assignments[under_worker_id].add(bridge_date)
+
+                        logging.info(f"3-way bridge swap: {over_worker_id} → {mid_id} → {under_worker_id}")
+                        return True
+
         return False
+
+    def _can_swap_worker_to_date_custom_assignments(
+            self, worker_id: str, date, post: int,
+            swapping_out_worker: str, giving_up_date=None,
+            custom_assignments: set = None) -> bool:
+        """Like _can_swap_worker_to_date but uses a custom set of assignments
+        instead of the live worker_assignments (for simulating chained swaps)."""
+        if self._is_mandatory(swapping_out_worker, date):
+            return False
+        for p_idx, w in enumerate(self.schedule.get(date, [])):
+            if w == worker_id and p_idx != post:
+                return False
+        if self._is_worker_unavailable(worker_id, date):
+            return False
+        if not self._check_incompatibility(worker_id, date):
+            return False
+
+        assignments = set(custom_assignments) if custom_assignments else set()
+        if giving_up_date is not None:
+            assignments.discard(giving_up_date)
+
+        worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        if not worker:
+            return False
+        work_percentage = worker.get('work_percentage', 100)
+        min_gap = self.gap_between_shifts
+        if work_percentage < 70:
+            min_gap = max(3, min_gap + 2)
+
+        for prev_date in assignments:
+            days_between = abs((date - prev_date).days)
+            if days_between == 0:
+                continue
+            if days_between < min_gap + 1:
+                return False
+            if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
+                return False
+            if min_gap == 1 and days_between == 3:
+                if ((prev_date.weekday() == 4 and date.weekday() == 0) or
+                        (date.weekday() == 4 and prev_date.weekday() == 0)):
+                    return False
+        return True
+    def _can_swap_worker_to_date(self, worker_id: str, date, post: int,
+                                  swapping_out_worker: str,
+                                  giving_up_date=None) -> bool:
+        """
+        Check whether worker_id can be placed on (date, post) assuming
+        swapping_out_worker will be removed from that slot first.
+        Enforces only hard constraints (availability, gap, 7/14-day pattern,
+        incompatibilities, part-time gap).  Ignores target-count soft limits
+        because this is always a balanced two-way swap.
+
+        Args:
+            worker_id: Candidate worker to place
+            date: Date of the target slot
+            post: Post index of the target slot
+            swapping_out_worker: Worker currently occupying the slot (will be removed)
+            giving_up_date: Date worker_id is giving up in this swap (excluded from
+                            constraint checks so the swap is evaluated atomically)
+
+        Returns:
+            bool: True if the placement is valid
+        """
+        # Mandatory protection: don't displace a mandatory assignment
+        if self._is_mandatory(swapping_out_worker, date):
+            return False
+
+        # Worker must not already be working on that date (other post)
+        for p_idx, w in enumerate(self.schedule.get(date, [])):
+            if w == worker_id and p_idx != post:
+                return False
+
+        # Availability (days_off / work_periods)
+        if self._is_worker_unavailable(worker_id, date):
+            return False
+
+        # Incompatibility with other workers already on that date
+        if not self._check_incompatibility(worker_id, date):
+            return False
+
+        # Build the worker's assignment set as it will look after the swap
+        # Exclude the date they are giving up so constraints are evaluated atomically
+        current_assignments = set(self.worker_assignments.get(worker_id, set()))
+        if giving_up_date is not None:
+            current_assignments.discard(giving_up_date)
+
+        worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
+        if not worker:
+            return False
+
+        work_percentage = worker.get('work_percentage', 100)
+        min_gap = self.gap_between_shifts
+        if work_percentage < 70:
+            min_gap = max(3, min_gap + 2)
+
+        for prev_date in current_assignments:
+            days_between = abs((date - prev_date).days)
+            if days_between == 0:
+                continue  # Same date handled above
+            # Minimum gap (hard)
+            if days_between < min_gap + 1:
+                return False
+            # 7/14-day same-weekday pattern (hard)
+            if (days_between == 7 or days_between == 14) and \
+               date.weekday() == prev_date.weekday():
+                return False
+            # Friday-Monday 3-day special case
+            if min_gap == 1 and days_between == 3:
+                if ((prev_date.weekday() == 4 and date.weekday() == 0) or
+                        (date.weekday() == 4 and prev_date.weekday() == 0)):
+                    return False
+
+        return True
 
     def _get_work_percentage(self, worker_id):
         """Get work percentage for a worker"""
@@ -5619,11 +5927,20 @@ class ScheduleBuilder:
         num_posts = self.num_shifts
         if num_posts == 0: return [] # Avoid division by zero
 
+        # Build post counts directly from the schedule (avoids relying on worker_posts type)
+        post_counts_by_worker = {}
+        for shifts in self.schedule.values():
+            for post_idx, wid in enumerate(shifts):
+                if wid:
+                    if wid not in post_counts_by_worker:
+                        post_counts_by_worker[wid] = {}
+                    post_counts_by_worker[wid][post_idx] = post_counts_by_worker[wid].get(post_idx, 0) + 1
+
         # Use scheduler's worker data and post tracking
         for worker_val in self.scheduler.workers_data: # Renamed worker
             worker_id_val = worker_val['id'] # Renamed worker_id
             # Get post counts, defaulting to an empty dict if worker has no assignments yet
-            actual_post_counts = self.scheduler.worker_posts.get(worker_id_val, {})
+            actual_post_counts = post_counts_by_worker.get(worker_id_val, {})
             total_assigned = sum(actual_post_counts.values())
 
             # If worker has no shifts or only one type of post, they can't be imbalanced yet
@@ -6194,11 +6511,10 @@ class ScheduleBuilder:
             
             for post_idx, worker_id in enumerate(shifts):
                 if worker_id:
-                    # Calculate worker_posts
+                    # Calculate worker_posts as dict-of-sets (post indices per worker)
                     if worker_id not in worker_posts:
-                        worker_posts[worker_id] = {}
-                    # Use post_idx directly as integer key (not "P{post_idx}" string)
-                    worker_posts[worker_id][post_idx] = worker_posts[worker_id].get(post_idx, 0) + 1
+                        worker_posts[worker_id] = set()
+                    worker_posts[worker_id].add(post_idx)
                     
                     # Calculate worker_weekend_counts
                     if is_weekend_or_holiday:
