@@ -845,7 +845,7 @@ class SchedulerCore:
                 try:
                     # Ejecutar balance estricto final con más iteraciones
                     final_balance = self.balance_optimizer.optimize_balance(
-                        max_iterations=300,
+                        max_iterations=180,
                         target_tolerance=1
                     )
                     if final_balance:
@@ -854,7 +854,7 @@ class SchedulerCore:
                         # Intentar con tolerancia más flexible
                         logging.info("🔄 Retrying with tolerance ±2...")
                         self.balance_optimizer.optimize_balance(
-                            max_iterations=200,
+                            max_iterations=120,
                             target_tolerance=2
                         )
                 except Exception as e:
