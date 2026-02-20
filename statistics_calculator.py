@@ -6,7 +6,7 @@ from collections import defaultdict, Counter
 from exceptions import SchedulerError
 from performance_cache import cached, memoize, time_function, monitor_performance
 if TYPE_CHECKING:
-    from scheduler import Schedulerr
+    from scheduler import Scheduler
 
 class StatisticsCalculator:
     """Calculates statistics and metrics for schedules"""
@@ -31,6 +31,7 @@ class StatisticsCalculator:
         self.holidays = scheduler.holidays  # Add this line to reference holidays
         self.start_date = scheduler.start_date  # Add start_date reference
         self.end_date = scheduler.end_date      # Add end_date reference
+        self.current_user = getattr(scheduler, 'current_user', 'unknown')
         
         # Add constraint_skips reference
         self.constraint_skips = scheduler.constraint_skips
@@ -48,18 +49,28 @@ class StatisticsCalculator:
     @memoize(maxsize=256)
     def get_post_counts(self, worker_id):
         """
-        Get the counts of different posts for a worker (cached for performance)
+        Get the counts of different posts for a worker (cached for performance).
+        
+        Computes how many times the worker was assigned to each post
+        by scanning the schedule directly (worker_posts is a set of
+        post indices and cannot be used with Counter).
         
         Args:
             worker_id: The worker ID to check
         Returns:
             dict: Dictionary mapping post numbers to counts
         """
-        if worker_id not in self.worker_posts:
-            return {}
-        
-        # Use Counter for efficient counting
-        return dict(Counter(self.worker_posts[worker_id]))
+        # Use scheduler.worker_post_counts if available (maintained in real-time)
+        if hasattr(self.scheduler, 'worker_post_counts') and worker_id in self.scheduler.worker_post_counts:
+            return dict(self.scheduler.worker_post_counts[worker_id])
+
+        # Fallback: rebuild from the schedule
+        counts = {p: 0 for p in range(self.num_shifts)}
+        for date, shifts in self.schedule.items():
+            for post_idx, assigned_id in enumerate(shifts):
+                if assigned_id == worker_id:
+                    counts[post_idx] = counts.get(post_idx, 0) + 1
+        return counts
     
     @cached(ttl=1800)  # Cache for 30 minutes
     def _get_monthly_distribution(self, worker_id):
@@ -526,9 +537,9 @@ class StatisticsCalculator:
         for date in sorted(self.schedule.keys()):
             # Date header
             output += f"\n{date.strftime('%Y-%m-%d')} ({date.strftime('%A')})"
-            if self._is_holiday(date):
+            if date in self.holidays:
                 output += " [HOLIDAY]"
-            elif self._is_pre_holiday(date):
+            elif (date + timedelta(days=1)) in self.holidays:
                 output += " [PRE-HOLIDAY]"
             output += "\n"
             

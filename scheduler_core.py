@@ -121,8 +121,8 @@ class SchedulerCore:
                 self.scheduler.worker_shift_counts = copy.deepcopy(mandatory_counts)
                 self.scheduler.worker_weekend_counts = copy.deepcopy(mandatory_weekend_counts)
                 self.scheduler.worker_posts = copy.deepcopy(mandatory_posts)
-                self.scheduler.schedule_builder.schedule = self.scheduler.schedule
-                self.scheduler.schedule_builder.worker_assignments = self.scheduler.worker_assignments
+                # CRITICAL: Sync ALL schedule_builder references to the new deep-copied objects
+                self._sync_builder_references()
                 self.scheduler.schedule_builder._locked_mandatory = copy.deepcopy(mandatory_locked)
                 
                 # Phase 3.1: Multiple initial distribution attempts
@@ -188,6 +188,8 @@ class SchedulerCore:
             self.scheduler.worker_shift_counts = best_attempt['counts']
             self.scheduler.worker_weekend_counts = best_attempt['weekend_counts']
             self.scheduler.worker_posts = best_attempt['posts']
+            # Sync ALL schedule_builder references + restore locked mandatory
+            self._sync_builder_references()
             self.scheduler.schedule_builder._locked_mandatory = best_attempt['locked_mandatory']
             
             # Phase 5: Finalization
@@ -205,7 +207,30 @@ class SchedulerCore:
                 raise e
             else:
                 raise SchedulerError(f"Orchestration failed: {str(e)}")
-    
+
+    def _sync_builder_references(self):
+        """
+        Synchronize all schedule_builder attribute references with the
+        current scheduler objects.  Must be called after any deepcopy
+        that replaces scheduler-level dicts/sets so that the builder
+        does not keep stale pointers to the old objects.
+        """
+        sb = self.scheduler.schedule_builder
+        sb.schedule = self.scheduler.schedule
+        sb.worker_assignments = self.scheduler.worker_assignments
+        sb.worker_posts = self.scheduler.worker_posts
+        sb.worker_weekdays = self.scheduler.worker_weekdays
+        sb.worker_weekends = self.scheduler.worker_weekends
+        sb.constraint_skips = self.scheduler.constraint_skips
+        sb.last_assigned_date = self.scheduler.last_assignment_date
+        sb.consecutive_shifts = self.scheduler.consecutive_shifts
+
+        # Also sync constraint_checker references so it doesn't hold stale dicts
+        if hasattr(sb, 'constraint_checker') and sb.constraint_checker:
+            cc = sb.constraint_checker
+            cc.schedule = self.scheduler.schedule
+            cc.worker_assignments = self.scheduler.worker_assignments
+
     def _initialize_schedule_phase(self) -> bool:
         """
         Phase 1: Initialize schedule structure and data.
@@ -359,10 +384,9 @@ class SchedulerCore:
                 self.scheduler.worker_weekend_counts = copy.deepcopy(mandatory_weekend_counts)
                 self.scheduler.worker_posts = copy.deepcopy(mandatory_posts)
                 
-                # CRITICAL: Update schedule_builder reference to new schedule
+                # CRITICAL: Sync ALL schedule_builder references to the new deep-copied objects
                 if hasattr(self.scheduler, 'schedule_builder'):
-                    self.scheduler.schedule_builder.schedule = self.scheduler.schedule
-                    self.scheduler.schedule_builder.worker_assignments = self.scheduler.worker_assignments
+                    self._sync_builder_references()
                     # CRITICAL: Restore locked mandatory shifts
                     self.scheduler.schedule_builder._locked_mandatory = copy.deepcopy(mandatory_locked)
                     # CRITICAL: Rebuild caches to reflect new state (prevents cache staling between attempts)
@@ -478,7 +502,8 @@ class SchedulerCore:
             self.scheduler.worker_shift_counts = best_counts
             self.scheduler.worker_weekend_counts = best_weekend_counts
             self.scheduler.worker_posts = best_posts
-            # CRITICAL: Restore locked mandatory from best attempt
+            # CRITICAL: Sync ALL schedule_builder references + restore locked mandatory
+            self._sync_builder_references()
             self.scheduler.schedule_builder._locked_mandatory = best_locked_mandatory
             
             logging.info(f"Restored {len(best_locked_mandatory)} locked mandatory shifts from best attempt")
@@ -536,8 +561,8 @@ class SchedulerCore:
             if self.config.get('is_simulation', False):
                  max_improvement_loops = min(max_improvement_loops, 50)
                  logging.info(f"🧪 Simulation Mode: Capped improvement loops to {max_improvement_loops}")
-            elif max_improvement_loops < 120:
-                max_improvement_loops = 120
+            elif max_improvement_loops < 60:
+                max_improvement_loops = 60
                 
             # Calculate initial score for comparison
             current_overall_score = self.metrics.calculate_overall_schedule_score()
@@ -691,7 +716,7 @@ class SchedulerCore:
                     # Aplicar optimización de balance estricto
                     # Primero intentamos con tolerancia ±1
                     balance_achieved = self.balance_optimizer.optimize_balance(
-                        max_iterations=500,
+                        max_iterations=200,
                         target_tolerance=1  # ±1 turno máximo
                     )
                     
@@ -699,13 +724,13 @@ class SchedulerCore:
                     if not balance_achieved:
                         logging.info("🔄 Running second balance pass with relaxed constraints...")
                         balance_achieved = self.balance_optimizer.optimize_balance(
-                            max_iterations=300,
+                            max_iterations=150,
                             target_tolerance=2  # Aceptar ±2 temporalmente
                         )
                         # Luego intentar ajustar a ±1 de nuevo
                         if balance_achieved:
                             self.balance_optimizer.optimize_balance(
-                                max_iterations=200,
+                                max_iterations=110,
                                 target_tolerance=1
                             )
                     
@@ -805,7 +830,8 @@ class SchedulerCore:
                 changed1 = self.scheduler.schedule_builder._balance_workloads()
                 changed2 = self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=5)
                 changed3 = self.scheduler.schedule_builder._balance_weekday_distribution()
-                if not changed1 and not changed2 and not changed3:
+                changed4 = self.scheduler.schedule_builder._balance_monthly_distribution()
+                if not changed1 and not changed2 and not changed3 and not changed4:
                     logging.info(f"Balance achieved after {i+1} iterations")
                     break
             else:
@@ -842,6 +868,14 @@ class SchedulerCore:
                     max_iterations=10
                 )
 
+            # FINAL MONTHLY BALANCE PASS — run after all other optimizers
+            # to improve per-worker monthly distribution via cross-month swaps
+            logging.info("Running final monthly distribution balance pass...")
+            for _pass in range(3):
+                if not self.scheduler.schedule_builder._balance_monthly_distribution():
+                    logging.info(f"Monthly distribution converged after {_pass + 1} pass(es)")
+                    break
+
             # ================================================================
             # CRITICAL: Compare post-finalization with pre-finalization
             # If finalization degraded the schedule, RESTORE pre-finalization state
@@ -874,8 +908,8 @@ class SchedulerCore:
                 self.scheduler.worker_weekend_counts = pre_finalization_state['weekend_counts']
                 self.scheduler.worker_posts = pre_finalization_state['posts']
                 self.scheduler.schedule_builder._locked_mandatory = pre_finalization_state['locked_mandatory']
-                self.scheduler.schedule_builder.schedule = self.scheduler.schedule
-                self.scheduler.schedule_builder.worker_assignments = self.scheduler.worker_assignments
+                # Sync ALL schedule_builder AND constraint_checker references
+                self._sync_builder_references()
                 
                 logging.info("✅ Pre-finalization state restored successfully")
             else:
@@ -963,8 +997,7 @@ class SchedulerCore:
             self.scheduler.worker_assignments = final_schedule_data['worker_assignments']
             self.scheduler.worker_shift_counts = final_schedule_data['worker_shift_counts']
             self.scheduler.worker_weekend_counts = final_schedule_data.get(
-                'worker_weekend_shifts', 
-                final_schedule_data.get('worker_weekend_counts', {})
+                'worker_weekend_counts', {}
             )
             self.scheduler.worker_posts = final_schedule_data['worker_posts']
             self.scheduler.last_assignment_date = final_schedule_data['last_assignment_date']
@@ -972,6 +1005,10 @@ class SchedulerCore:
             
             final_score = final_schedule_data.get('score', float('-inf'))
             logging.info(f"Final schedule applied with score: {final_score:.2f}")
+            
+            # CRITICAL: Sync builder references so schedule_builder and
+            # constraint_checker point to the new objects (not stale pre-apply ones)
+            self._sync_builder_references()
             
             return True
             

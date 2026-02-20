@@ -18,9 +18,8 @@ from worker_eligibility import WorkerEligibilityTracker
 # Initialize logging using the configuration module
 setup_logging()
 
-class SchedulerError(Exception):
-    """Custom exception for Scheduler errors"""
-    pass
+# NOTE: SchedulerError is imported from exceptions.py — do NOT redefine it here
+# to avoid class identity mismatches with other modules that import from exceptions.py.
 
 class Scheduler:
     """Main Scheduler class that coordinates all scheduling operations"""
@@ -672,6 +671,10 @@ class Scheduler:
                 if date in self.worker_assignments.get(worker_id, set()):
                     self.worker_assignments[worker_id].remove(date)
                 
+                # Update shift count
+                if self.worker_shift_counts.get(worker_id, 0) > 0:
+                    self.worker_shift_counts[worker_id] -= 1
+                
                 # Note: Removing from self.worker_posts for a specific post is not done here
                 # as self.worker_posts[worker_id] is a set of all posts worked.
                 # If a worker no longer works ANY instance of a post, that post would remain
@@ -696,7 +699,9 @@ class Scheduler:
                     current_weekends = self.worker_weekends.get(worker_id) # Use .get for safety
                     if current_weekends is not None and date in current_weekends:
                         current_weekends.remove(date)
-                        # current_weekends.sort() # Re-sort if removal changes order and order matters
+                    # Update weekend count
+                    if self.worker_weekend_counts.get(worker_id, 0) > 0:
+                        self.worker_weekend_counts[worker_id] -= 1
 
                 # Update bridge tracking
                 bridge_period = self.date_utils.get_bridge_period_for_date(date, self.bridge_periods)
@@ -716,6 +721,8 @@ class Scheduler:
             else: # Adding assignment
                 self.worker_assignments[worker_id].add(date)
                 self.worker_posts[worker_id].add(post) # This should now work
+                # Update shift count
+                self.worker_shift_counts[worker_id] = self.worker_shift_counts.get(worker_id, 0) + 1
                 # Update bridge tracking
                 bridge_period = self.date_utils.get_bridge_period_for_date(date, self.bridge_periods)
                 if bridge_period:
@@ -737,6 +744,8 @@ class Scheduler:
                     if date not in current_weekends:
                         current_weekends.append(date)
                         current_weekends.sort()
+                    # Update weekend count
+                    self.worker_weekend_counts[worker_id] = self.worker_weekend_counts.get(worker_id, 0) + 1
 
             # Update eligibility tracker if it exists and is configured
             if hasattr(self, 'eligibility_tracker') and self.eligibility_tracker:
@@ -907,7 +916,12 @@ class Scheduler:
                 
                 for w in manual_workers:
                     wid = w['id']
-                    guardias_per_mes = w.get('target_shifts', 0)
+                    # CRITICAL: Use _original_target_shifts if available (re-call safety)
+                    # On first call, store the original guardias/mes value so re-calls
+                    # don't read the already-overwritten target_shifts.
+                    if '_original_target_shifts' not in w:
+                        w['_original_target_shifts'] = w.get('target_shifts', 0)
+                    guardias_per_mes = w['_original_target_shifts']
                     raw_target = guardias_per_mes * months_in_period
                     
                     mand_count = 0
@@ -1549,6 +1563,7 @@ class Scheduler:
                         # Unassign this worker
                         self.schedule[date_to_unassign][shift_num] = None
                         self.worker_assignments[worker_id].remove(date_to_unassign)
+                        self._update_tracking_data(worker_id, date_to_unassign, shift_num, removing=True)
                         violation_type = "rest period" if violation['type'] == 'min_rest_days' else "weekly pattern"
                         logging.info(f"Fixed {violation_type} violation: Unassigned worker {worker_id} from {date_to_unassign}")
                         fixes_made += 1
@@ -1597,6 +1612,7 @@ class Scheduler:
                         # Unassign this worker
                         self.schedule[date][shift_num] = None
                         self.worker_assignments[worker_to_unassign].remove(date)
+                        self._update_tracking_data(worker_to_unassign, date, shift_num, removing=True)
                         logging.info(f"Fixed incompatibility violation: Unassigned worker {worker_to_unassign} from {date}")
                         fixes_made += 1
         

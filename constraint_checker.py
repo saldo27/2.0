@@ -374,7 +374,9 @@ class ConstraintChecker:
                     return True
 
             # Check if worker is already assigned for this date
-            if date in self.worker_assignments.get(worker_id, []):
+            # CRITICAL: Use self.scheduler.worker_assignments to avoid stale references
+            # after deepcopy restore or _apply_final_schedule replaces the dict
+            if date in self.scheduler.worker_assignments.get(worker_id, []):
                 logging.debug(f"Worker {worker_id} is already assigned on {date}")
                 return True
 

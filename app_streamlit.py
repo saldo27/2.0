@@ -581,12 +581,12 @@ def get_worker_statistics():
     
     # Calcular el ratio de días de weekend (Vie/Sab/Dom + festivos + pre-festivos) sobre total
     from datetime import timedelta
-    total_days = (scheduler.end_date - scheduler.start_date).days
+    total_days = (scheduler.end_date - scheduler.start_date).days + 1  # Inclusive
     holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
     
     weekend_days = 0
     current_date = scheduler.start_date
-    while current_date < scheduler.end_date:
+    while current_date <= scheduler.end_date:  # Inclusive end_date
         is_weekend = (
             current_date.weekday() >= 4 or  # Vie/Sab/Dom
             current_date in holidays_set or  # Festivo
@@ -2175,6 +2175,65 @@ with tab3:
                 )
             
             st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config=column_config_stats)
+            
+            # ---- Tabla de turnos por médico y mes ----
+            st.markdown("---")
+            st.subheader("📅 Turnos Asignados por Mes")
+            
+            from collections import OrderedDict
+            import calendar
+            import locale
+            
+            scheduler = st.session_state.scheduler
+            month_names_es = {
+                1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun',
+                7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic'
+            }
+            
+            # Determine which (year, month) combos exist in the schedule
+            months_in_schedule = OrderedDict()
+            for date in sorted(scheduler.schedule.keys()):
+                key = (date.year, date.month)
+                if key not in months_in_schedule:
+                    months_in_schedule[key] = f"{month_names_es[date.month]} {date.year}"
+            
+            # Build per-worker, per-month counts
+            monthly_rows = []
+            for worker in scheduler.workers_data:
+                wid = worker['id']
+                row = {'Médico': wid}
+                worker_dates = scheduler.worker_assignments.get(wid, [])
+                month_counts = {}
+                for d in worker_dates:
+                    key = (d.year, d.month)
+                    month_counts[key] = month_counts.get(key, 0) + 1
+                total = 0
+                for mkey, mname in months_in_schedule.items():
+                    cnt = month_counts.get(mkey, 0)
+                    row[mname] = cnt
+                    total += cnt
+                row['Total'] = total
+                monthly_rows.append(row)
+            
+            # Totals row
+            totals_row = {'Médico': 'TOTAL'}
+            grand_total = 0
+            for mkey, mname in months_in_schedule.items():
+                col_sum = sum(r[mname] for r in monthly_rows)
+                totals_row[mname] = col_sum
+                grand_total += col_sum
+            totals_row['Total'] = grand_total
+            monthly_rows.append(totals_row)
+            
+            monthly_df = pd.DataFrame(monthly_rows)
+            
+            # Configure column widths (8 chars ≈ 64px)
+            column_config_monthly = {
+                col: st.column_config.Column(col, width=64)
+                for col in monthly_df.columns
+            }
+            
+            st.dataframe(monthly_df, use_container_width=True, hide_index=True, column_config=column_config_monthly)
             
             # Gráfico de barras
             st.markdown("---")

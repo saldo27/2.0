@@ -922,9 +922,16 @@ class IterativeOptimizer:
             # Use _raw_target if available, otherwise use target_shifts
             raw_target = worker_data.get('_raw_target', target_shifts)
             if raw_target > 0:
-                # Simple monthly distribution: divide total by months (rough estimate)
-                # For 4-month period: target / 4
-                expected_monthly_rough = raw_target / 4.0  # Assuming ~4 months, adjust if needed
+                # Calculate actual months in period from scheduler dates
+                months_in_period = 4.0  # default fallback
+                if hasattr(self, 'scheduler') and self.scheduler:
+                    try:
+                        sd = self.scheduler.start_date
+                        ed = self.scheduler.end_date
+                        months_in_period = (ed.year - sd.year) * 12 + ed.month - sd.month + 1
+                    except Exception:
+                        pass
+                expected_monthly_rough = raw_target / months_in_period
                 
                 # Add tolerance for monthly (part-time: 0%, full-time: 10%)
                 monthly_tolerance = 0.10 if work_percentage >= 1.0 else 0.0
