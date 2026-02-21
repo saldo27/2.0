@@ -52,7 +52,7 @@ class RealTimeEngine:
         # Initialize real-time components
         self.incremental_updater = IncrementalUpdater(scheduler)
         self.live_validator = LiveValidator(scheduler)
-        self.change_tracker = ChangeTracker(scheduler)
+        self.change_tracker = ChangeTracker()  # max_history defaults to 1000
         
         # Real-time state management
         self._active_operations: Dict[str, Any] = {}

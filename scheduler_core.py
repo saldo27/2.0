@@ -1520,8 +1520,10 @@ class SchedulerCore:
             workers.sort(key=lambda w: (self.scheduler.worker_shift_counts.get(w['id'], 0), w['id']))
             
         elif order_type == 'reverse':
-            # Secondary sort by ID reversed, but keeping shift count priority
-            workers.sort(key=lambda w: (self.scheduler.worker_shift_counts.get(w['id'], 0), -w['id']))
+            # Ascending shift count, descending ID (Z→A) as tiebreaker.
+            # Use two stable sorts: first by ID desc, then by shift count asc.
+            workers.sort(key=lambda w: w['id'], reverse=True)
+            workers.sort(key=lambda w: self.scheduler.worker_shift_counts.get(w['id'], 0))
             
         elif order_type == 'balanced':
             # Already sorted by shift count, keep as is

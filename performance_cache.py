@@ -8,7 +8,6 @@ and reduce redundant computations throughout the application.
 import logging
 import time
 import hashlib
-import pickle
 from functools import wraps, lru_cache
 from typing import Any, Dict, Optional, Callable, Tuple
 from datetime import datetime, timedelta
@@ -49,16 +48,15 @@ class PerformanceCache:
                 'kwargs': hashable_kwargs
             }
             
-            # Use pickle to serialize complex objects consistently
-            serialized = pickle.dumps(key_data, protocol=pickle.HIGHEST_PROTOCOL)
-            
-            # Generate SHA256 hash for consistent key generation
-            return hashlib.sha256(serialized).hexdigest()
+            # Use repr-based hashing — avoids pickle failures with
+            # unpicklable objects (RLock, threading primitives, etc.)
+            fallback_key = f"{func_name}_{repr(hashable_args)}_{repr(hashable_kwargs)}"
+            return hashlib.sha256(fallback_key.encode()).hexdigest()
             
         except Exception as e:
-            # Fallback to string representation if pickle fails
-            logging.warning(f"Failed to pickle cache key data: {e}")
-            fallback_key = f"{func_name}_{hash(str(args))}_{hash(str(kwargs))}"
+            # Last-resort fallback
+            logging.debug(f"Cache key generation issue: {e}")
+            fallback_key = f"{func_name}_{id(args)}_{id(kwargs)}"
             return hashlib.sha256(fallback_key.encode()).hexdigest()
     
     def _make_hashable(self, obj):
