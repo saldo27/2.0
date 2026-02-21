@@ -203,7 +203,7 @@ class StrictBalanceOptimizer:
             logging.warning("⚠️ Workers still outside tolerance:")
             for worker_id, info in final_analysis['worker_details'].items():
                 if abs(info['deviation']) > target_tolerance:
-                    worker_name = next((w['name'] for w in self.workers_data if w['id'] == worker_id), worker_id)
+                    worker_name = next((w.get('name', w['id']) for w in self.workers_data if w['id'] == worker_id), worker_id)
                     logging.warning(f"  - {worker_name}: {info['assigned']}/{info['target']} (deviation: {info['deviation']:+d})")
         
         return final_analysis['workers_outside_tolerance'] == 0
