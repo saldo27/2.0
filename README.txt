@@ -142,6 +142,19 @@ COPYRIGHT:
 
 HISTORIAL DE VERSIONES:
 ------------------------
+v2.5 (Febrero 2026):
+- Estadísticas completas de turnos en días puente (gráficos y tablas)
+- Integración de datos de puente en pestaña Revisión
+- Corrección de fórmula de objetivo de puentes (basada en shifts individuales)
+- Detección automática de períodos puente (Thu/Fri/Mon/Tue + festivos)
+- Tolerancia estricta para puentes: ±0.5 shifts
+- Ancho de columna fijo (72px) en tablas de Estadísticas y Revisión
+- Indicadores (L-D) en todos los selectores de fecha
+- Configuración de locale español (es_ES.utf8) para calendarios
+- Tooltips de ayuda en calendarios explicando formato Lunes-Domingo
+- Limpieza de interfaz: eliminada información redundante de puentes
+- Mejoras de usabilidad y consistencia visual en toda la aplicación
+
 v2.2 (Enero 2026):
 - NUEVO: Tab "Revisión" para análisis de calendarios de guardias
 - Integración de funcionalidad sched-anal
@@ -157,19 +170,6 @@ v2.2 (Enero 2026):
 - Exportación de análisis a PDF y Excel
 - Mapeo automático de nombres compuestos (ej: "LUIS H")
 - Configuración flexible de guardias por día (shifts_per_day)
-
-v2.5 (Febrero 2026):
-- Estadísticas completas de turnos en días puente (gráficos y tablas)
-- Integración de datos de puente en pestaña Revisión
-- Corrección de fórmula de objetivo de puentes (basada en shifts individuales)
-- Detección automática de períodos puente (Thu/Fri/Mon/Tue + festivos)
-- Tolerancia estricta para puentes: ±0.5 shifts
-- Ancho de columna fijo (72px) en tablas de Estadísticas y Revisión
-- Indicadores (L-D) en todos los selectores de fecha
-- Configuración de locale español (es_ES.utf8) para calendarios
-- Tooltips de ayuda en calendarios explicando formato Lunes-Domingo
-- Limpieza de interfaz: eliminada información redundante de puentes
-- Mejoras de usabilidad y consistencia visual en toda la aplicación
 
 v2.1 (Enero 2026):
 - Interfaz mejorada de Gestión de Médicos
