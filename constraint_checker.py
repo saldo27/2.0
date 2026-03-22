@@ -158,7 +158,11 @@ class ConstraintChecker:
         if work_percentage < 70: # Using a common threshold from ScheduleBuilder
             min_required_days_between = max(min_required_days_between, self.scheduler.gap_between_shifts + 2) # e.g. at least +1 more day
 
-        assignments = sorted(list(self.scheduler.worker_assignments.get(worker_id, []))) # Use scheduler's live assignments
+        assignments = sorted(list(
+            self.scheduler._get_effective_assignments(worker_id)
+            if hasattr(self.scheduler, '_get_effective_assignments')
+            else self.scheduler.worker_assignments.get(worker_id, [])
+        ))  # Includes prior-period dates for cross-period gap/pattern checks
 
         for prev_date in assignments:
             if prev_date == date: continue # Should not happen if checking before assignment
@@ -229,8 +233,14 @@ class ConstraintChecker:
             # Their total weekend count is already proportionally reduced via target_shifts
             adjusted_max_consecutive = base_max_consecutive
     
-            # Get all weekend/holiday assignments including the prospective date
-            current_assignments = self.scheduler.worker_assignments.get(worker_id, set())
+            # Get all weekend/holiday assignments including the prospective date.
+            # Use _get_effective_assignments so prior-period dates near the boundary
+            # are included when checking consecutive-weekend groupings.
+            current_assignments = (
+                self.scheduler._get_effective_assignments(worker_id)
+                if hasattr(self.scheduler, '_get_effective_assignments')
+                else self.scheduler.worker_assignments.get(worker_id, set())
+            )
             weekend_dates = []
             for d in current_assignments:
                 if (d.weekday() >= 4 or 
@@ -333,19 +343,33 @@ class ConstraintChecker:
             # This replaces the old percentage-based tolerance
             weekend_tolerance_shifts = getattr(self.scheduler, 'weekend_tolerance', 1)
             max_target = int(raw_target) + weekend_tolerance_shifts
-        
-            # Count current weekend assignments (including the prospective one)
-            current_weekend_count = len(weekend_dates)
-        
+
+            # Count current-period weekend assignments (including the prospective one).
+            # Also add prior-period weekend count so the proportional cap is honoured
+            # across the period boundary (a worker who worked many weekends last month
+            # should not receive as many in the new month).
+            prior_weekend = (
+                self.scheduler._get_prior_weekend_count(worker_id)
+                if hasattr(self.scheduler, '_get_prior_weekend_count')
+                else 0
+            )
+            current_weekend_count = len(weekend_dates) + prior_weekend
+
+            # Adjust the cap by the same prior amount so the tolerance window still
+            # applies correctly: effective_cap = base_cap + prior_weekends
+            # (we want current_period_weekends ≤ max_target - prior_weekends ± tolerance)
+            adjusted_max_target = max_target + prior_weekend
+
             # Check if assignment would exceed the tolerance limit
-            if current_weekend_count > max_target:
+            if current_weekend_count > adjusted_max_target:
                 logging.debug(f"Worker {worker_id}: weekend assignment would exceed proportional limit "
-                             f"({current_weekend_count} > {max_target}). Target: {raw_target:.1f}, "
+                             f"(current+prior={current_weekend_count} > {adjusted_max_target}). "
+                             f"Target: {raw_target:.1f}, prior: {prior_weekend}, "
                              f"tolerance: ±{weekend_tolerance_shifts} shifts, actual ratio: {actual_weekend_ratio:.3f}")
                 return True
-        
+
             logging.debug(f"Worker {worker_id}: weekend assignment within limits "
-                         f"({current_weekend_count} <= {max_target}). Target: {raw_target:.1f}")
+                         f"({current_weekend_count} <= {adjusted_max_target}). Target: {raw_target:.1f}")
             return False
         
         except Exception as e:

@@ -1194,7 +1194,8 @@ class IterativeOptimizer:
         for excess in have_excess_weekends:
             logging.info(f"      🔵 {excess['worker']} has {excess['excess']} excess weekends (deviation: {excess['deviation']:.1f}%)")
         
-        # Get all weekend dates
+        # Get all weekend/holiday/puente dates (consistent with _is_weekend_or_holiday)
+        _holidays_rw = set(getattr(self.scheduler, 'holidays', [])) if hasattr(self, 'scheduler') and self.scheduler else set()
         weekend_dates = []
         for date_key in optimized_schedule.keys():
             try:
@@ -1205,13 +1206,15 @@ class IterativeOptimizer:
                 else:
                     date_obj = datetime.strptime(date_key, "%Y-%m-%d")
                     date_str = date_key
-                
-                if date_obj.weekday() in [5, 6]:  # Saturday or Sunday
+
+                if (date_obj.weekday() >= 4 or                          # Fri/Sat/Sun
+                        date_obj in _holidays_rw or                     # holiday
+                        (date_obj + timedelta(days=1)) in _holidays_rw):# puente
                     weekend_dates.append(date_key)  # Use original key format
             except (ValueError, AttributeError):
                 continue  # Skip invalid date format
         
-        logging.info(f"   📅 Processing {len(weekend_dates)} weekend dates")
+        logging.info(f"   📅 Processing {len(weekend_dates)} weekend dates (incl. Fri/holidays/puente)")
         
         redistributions_made = 0
         # Enhanced weekend redistribution limits
@@ -1386,7 +1389,8 @@ class IterativeOptimizer:
         for under in under_assigned:
             logging.info(f"      🔴 {under['worker']}: {under['deviation']:.1f}% ({under['shortage']} shortage)")
         
-        # Get all weekend dates
+        # Get all weekend/holiday/puente dates (consistent with _is_weekend_or_holiday)
+        _holidays_ws = set(getattr(self.scheduler, 'holidays', [])) if hasattr(self, 'scheduler') and self.scheduler else set()
         weekend_dates = []
         for date_key in optimized_schedule.keys():
             try:
@@ -1394,13 +1398,15 @@ class IterativeOptimizer:
                     date_obj = date_key
                 else:
                     date_obj = datetime.strptime(date_key, "%Y-%m-%d")
-                
-                if date_obj.weekday() in [5, 6]:  # Saturday or Sunday
+
+                if (date_obj.weekday() >= 4 or                          # Fri/Sat/Sun
+                        date_obj in _holidays_ws or                     # holiday
+                        (date_obj + timedelta(days=1)) in _holidays_ws):# puente
                     weekend_dates.append(date_key)
             except (ValueError, AttributeError):
                 continue  # Skip invalid date format
         
-        logging.info(f"   📅 Processing {len(weekend_dates)} weekend dates for swaps")
+        logging.info(f"   📅 Processing {len(weekend_dates)} weekend dates for swaps (incl. Fri/holidays/puente)")
         
         swaps_made = 0
         max_swaps = min(20, len(weekend_violations) * 2)  # Allow multiple swaps per worker
@@ -1520,115 +1526,278 @@ class IterativeOptimizer:
         logging.info(f"   ✅ Made {swaps_made} weekend shift swaps (attempts: {attempts})")
         return optimized_schedule
     
-    def _apply_random_perturbations(self, schedule: Dict, workers_data: List[Dict], 
+    def _apply_random_perturbations(self, schedule: Dict, workers_data: List[Dict],
                                   schedule_config: Dict, intensity: float = 0.1) -> Dict:
-        """Apply random perturbations to escape local optima."""
-        logging.info(f"   🎲 Applying random perturbations (intensity: {intensity:.2f})")
+        """Apply SA-guided perturbations to escape local optima.
+
+        Hard constraints (gap, 7/14 pattern, tolerance, availability, mandatory)
+        are ALWAYS respected – checked via _can_worker_take_shift() BEFORE any
+        change.  Simulated Annealing controls only whether a balance-worsening
+        move is accepted, allowing the optimizer to escape shallow local optima
+        while still converging thanks to the cooling schedule.
+
+        SA scoring: sum of squared deviations from target for the two workers
+        involved in each swap (cheap O(1) proxy, no full re-validation needed).
+        Temperature is calibrated so that at T_initial a move that worsens the
+        balance by ≈1 shift unit has ≈60% acceptance probability, decaying to
+        near-zero by the last swap attempt.
+        """
+        logging.info(f"   🎲 Applying SA perturbations (intensity: {intensity:.2f})")
         
         optimized_schedule = copy.deepcopy(schedule)
-        
-        # Extract worker names safely
+
+        # ── Build worker name list + target lookup ────────────────────────────
         worker_names = []
+        worker_targets: Dict[str, float] = {}
         for i, w in enumerate(workers_data):
             if isinstance(w, dict):
                 if 'id' in w:
-                    # Handle both string and numeric IDs
                     worker_id = w['id']
                     if isinstance(worker_id, str) and worker_id.startswith('Worker'):
-                        worker_names.append(worker_id)  # Already has "Worker" prefix
+                        wname = worker_id
                     else:
-                        worker_names.append(f"Worker {worker_id}")  # Add prefix for numeric
+                        wname = f"Worker {worker_id}"
                 elif 'name' in w:
-                    worker_names.append(w['name'])
+                    wname = w['name']
                 else:
-                    worker_names.append(f"Worker {i+1}")  # Fallback
+                    wname = f"Worker {i+1}"
                     logging.warning(f"Worker {i} missing id/name in random perturbations, using fallback")
             else:
-                worker_names.append(f"Worker {i+1}")  # Fallback for non-dict
+                wname = f"Worker {i+1}"
                 logging.warning(f"Worker {i} is not a dict in random perturbations: {type(w)}")
-        
-        logging.info(f"Debug: Extracted {len(worker_names)} worker names for random perturbations")
-        
-        # Calculate number of swaps based on intensity - handle different schedule formats
+            worker_names.append(wname)
+            if isinstance(w, dict):
+                worker_targets[wname] = float(w.get('target_shifts', 0))
+
+        logging.info(f"Debug: Extracted {len(worker_names)} worker names for SA perturbations")
+
+        # ── Count total assignments to scale number of swap attempts ──────────
         total_assignments = 0
         for assignments in schedule.values():
             if isinstance(assignments, dict):
-                # Format: {date: {'Morning': [workers], 'Afternoon': [workers]}}
                 for workers in assignments.values():
                     if isinstance(workers, list):
                         total_assignments += len(workers)
             elif isinstance(assignments, list):
-                # Format: {date: [worker1, worker2, worker3]} - positional
                 total_assignments += len(assignments)
-        
+
         num_swaps = int(total_assignments * intensity)
-        logging.info(f"   🎲 Total assignments: {total_assignments}, planned swaps: {num_swaps}")
-        
+        logging.info(f"   🎲 Total assignments: {total_assignments}, planned SA swaps: {num_swaps}")
+
+        # ── Pre-compute monthly counts for giver monthly-floor check (G7) ────
+        # Tracks how many shifts each worker has in each (year, month) bucket.
+        # Updated on every accepted swap so the floor guard stays accurate.
+        _sa_monthly: Dict[str, Dict] = {}  # worker → {(yr, mo): count}
+        _sa_all_months: set = set()
+        for _dk, _asgn in optimized_schedule.items():
+            try:
+                _dm = _dk if isinstance(_dk, datetime) else datetime.strptime(_dk, "%Y-%m-%d")
+                _ym = (_dm.year, _dm.month)
+                _sa_all_months.add(_ym)
+            except Exception:
+                continue
+            if isinstance(_asgn, dict):
+                for _v in _asgn.values():
+                    if isinstance(_v, list):
+                        for _wn in _v:
+                            if _wn:
+                                _sa_monthly.setdefault(_wn, {})[_ym] = \
+                                    _sa_monthly.setdefault(_wn, {}).get(_ym, 0) + 1
+            elif isinstance(_asgn, list):
+                for _wn in _asgn:
+                    if _wn:
+                        _sa_monthly.setdefault(_wn, {})[_ym] = \
+                            _sa_monthly.setdefault(_wn, {}).get(_ym, 0) + 1
+        _sa_num_months = max(1, len(_sa_all_months))
+
+        # ── SA parameters ─────────────────────────────────────────────────────
+        # T_initial: at this temperature a Δ=1 shift² worsening has ~60% acceptance.
+        T_initial = 1.0
+        T_final   = 0.02
+        # Geometric cooling factor so T reaches T_final after num_swaps steps.
+        cooling_rate = (T_final / T_initial) ** (1.0 / max(num_swaps, 1))
+        T = T_initial
+
+        accepted_improving  = 0
+        accepted_worsening  = 0
+        rejected_constraint = 0
+        rejected_sa         = 0
+
         for swap_attempt in range(num_swaps):
-            # Pick random date and shift
+            # ── Pick a random occupied slot ───────────────────────────────────
             dates = list(optimized_schedule.keys())
             random_date = random.choice(dates)
-            
+
             if not optimized_schedule[random_date]:
+                T *= cooling_rate
                 continue
-            
+
             assignments = optimized_schedule[random_date]
-            
-            # Handle different schedule formats
+
             if isinstance(assignments, dict):
-                # Dictionary format: {'Morning': [workers], 'Afternoon': [workers]}
                 shift_types = list(assignments.keys())
                 if not shift_types:
+                    T *= cooling_rate
                     continue
-                random_shift = random.choice(shift_types)
+                random_shift   = random.choice(shift_types)
                 current_workers = assignments[random_shift]
             elif isinstance(assignments, list):
-                # List format: [worker1, worker2, worker3] - positional
                 if not assignments:
+                    T *= cooling_rate
                     continue
-                random_shift = f"Post_{random.randint(0, len(assignments)-1)}"
+                random_shift    = f"Post_{random.randint(0, len(assignments)-1)}"
                 current_workers = assignments
             else:
                 logging.warning(f"Unknown schedule format for {random_date}: {type(assignments)}")
+                T *= cooling_rate
                 continue
-            
-            # Perform the swap if there are workers available
-            if isinstance(current_workers, list) and len(current_workers) > 0:
-                # Replace random worker with another random worker
-                old_worker = random.choice(current_workers)
-                
-                # CRITICAL: Skip mandatory shifts - they cannot be perturbed
-                if self._is_mandatory_shift(old_worker, random_date, workers_data):
-                    logging.debug(f"      🔒 SKIPPING mandatory shift for {old_worker} on {random_date} - cannot perturb")
-                    continue
-                
-                new_worker = random.choice(worker_names)
-                
-                if new_worker not in current_workers:
-                    # CRITICAL: Validate that swap doesn't violate tolerance BEFORE making it
-                    # Check if new_worker can take this shift (includes tolerance validation)
-                    if not self._can_worker_take_shift(
-                        new_worker, random_date, random_shift, optimized_schedule, workers_data
-                    ):
-                        logging.debug(f"   ❌ Random swap blocked: {new_worker} cannot take shift on {random_date} (tolerance/constraint violation)")
+
+            if not (isinstance(current_workers, list) and len(current_workers) > 0):
+                T *= cooling_rate
+                continue
+
+            old_worker = random.choice(current_workers)
+
+            # ── HARD CONSTRAINT: never perturb mandatory shifts ───────────────
+            if self._is_mandatory_shift(old_worker, random_date, workers_data):
+                logging.debug(f"      🔒 SKIPPING mandatory shift for {old_worker} on {random_date}")
+                T *= cooling_rate
+                continue
+
+            # ── G7: Monthly floor check for giver (old_worker) ───────────────
+            # Prevent repeated stripping of a worker from the same month.
+            _rd_obj = random_date if isinstance(random_date, datetime) else None
+            if _rd_obj is None:
+                try:
+                    _rd_obj = datetime.strptime(random_date, "%Y-%m-%d")
+                except Exception:
+                    pass
+            if _rd_obj is not None:
+                _giver_data = next(
+                    (w for w in workers_data
+                     if w.get('id') == old_worker or
+                     f"Worker {w.get('id')}" == old_worker),
+                    None
+                )
+                if _giver_data is not None:
+                    _giver_monthly_target = float(_giver_data.get('target_shifts', 0)) / _sa_num_months
+                    _giver_ym = (_rd_obj.year, _rd_obj.month)
+                    _giver_curr = _sa_monthly.get(old_worker, {}).get(_giver_ym, 0)
+                    # Mirror _giver_month_ok: allow at most 1 below monthly target
+                    if (_giver_curr - 1) < (_giver_monthly_target - 1):
+                        T *= cooling_rate
                         continue
-                    
-                    # Handle different assignment formats
-                    if isinstance(assignments, dict):
-                        # Dictionary format: modify the specific shift list
-                        current_workers.remove(old_worker)
-                        current_workers.append(new_worker)
-                    elif isinstance(assignments, list):
-                        # List format: modify the main assignments list
-                        try:
-                            idx = assignments.index(old_worker)
-                            assignments[idx] = new_worker
-                        except ValueError:
-                            # Worker not found, skip this swap
+
+            new_worker = random.choice(worker_names)
+
+            if new_worker in current_workers:
+                T *= cooling_rate
+                continue
+
+            # ── HARD CONSTRAINT: validate all scheduling rules ────────────────
+            if not self._can_worker_take_shift(
+                new_worker, random_date, random_shift, optimized_schedule, workers_data
+            ):
+                logging.debug(f"   ❌ SA swap blocked by constraint: {new_worker} on {random_date}")
+                rejected_constraint += 1
+                T *= cooling_rate
+                continue
+
+            # ── SA acceptance: compute balance delta for the two workers ──────
+            old_count = self._count_worker_shifts(old_worker, optimized_schedule)
+            new_count = self._count_worker_shifts(new_worker, optimized_schedule)
+            t_old = worker_targets.get(old_worker, 0.0)
+            t_new = worker_targets.get(new_worker, 0.0)
+
+            # Sum of squared deviations before the swap
+            sq_before = (old_count - t_old) ** 2 + (new_count - t_new) ** 2
+            # Sum of squared deviations after the swap (old_worker loses 1, new gains 1)
+            sq_after  = ((old_count - 1) - t_old) ** 2 + ((new_count + 1) - t_new) ** 2
+            delta = sq_after - sq_before  # negative = improvement
+
+            if delta <= 0:
+                accept = True
+                accepted_improving += 1
+            else:
+                import math
+                prob  = math.exp(-delta / T)
+                accept = random.random() < prob
+                if accept:
+                    accepted_worsening += 1
+                else:
+                    rejected_sa += 1
+
+            if accept:
+                if isinstance(assignments, dict):
+                    # ── Pre-slot accounting: verify old_worker is actually in slot ──────
+                    pre_old_in_slot = current_workers.count(old_worker)
+                    if pre_old_in_slot == 0:
+                        logging.warning(
+                            f"SA dict: {old_worker} missing from slot on {random_date} - cancelling swap"
+                        )
+                        T *= cooling_rate
+                        continue
+                    pre_new_in_slot = current_workers.count(new_worker)
+
+                    current_workers.remove(old_worker)
+                    current_workers.append(new_worker)
+
+                    # ── Post-slot accounting: verify counts changed as expected ─────────
+                    post_old_in_slot = current_workers.count(old_worker)
+                    post_new_in_slot = current_workers.count(new_worker)
+                    if (post_old_in_slot != pre_old_in_slot - 1 or
+                            post_new_in_slot != pre_new_in_slot + 1):
+                        logging.error(
+                            f"SA dict accounting error on {random_date}: "
+                            f"{old_worker} {pre_old_in_slot}→{post_old_in_slot} "
+                            f"(expected {pre_old_in_slot - 1}), "
+                            f"{new_worker} {pre_new_in_slot}→{post_new_in_slot} "
+                            f"(expected {pre_new_in_slot + 1}) — rolling back"
+                        )
+                        current_workers.remove(new_worker)
+                        current_workers.append(old_worker)
+                        T *= cooling_rate
+                        continue
+
+                elif isinstance(assignments, list):
+                    try:
+                        idx = assignments.index(old_worker)
+                        pre_at_post = assignments[idx]   # guaranteed == old_worker
+                        assignments[idx] = new_worker
+                        # Post-slot verification: position must hold new_worker
+                        if assignments[idx] != new_worker:
+                            logging.error(
+                                f"SA list accounting error: post {idx} on {random_date} "
+                                f"expected {new_worker}, got {assignments[idx]} — rolling back"
+                            )
+                            assignments[idx] = pre_at_post
+                            T *= cooling_rate
                             continue
-                    
-                    logging.debug(f"   🔄 Random swap: {old_worker} → {new_worker} on {random_date}")
-        
+                    except ValueError:
+                        T *= cooling_rate
+                        continue
+
+                logging.debug(
+                    f"   🔄 SA ({'↑' if delta <= 0 else '↓'} Δ={delta:.2f} T={T:.4f}): "
+                    f"{old_worker}[{old_count}→{old_count - 1}] ↔ "
+                    f"{new_worker}[{new_count}→{new_count + 1}] on {random_date}"
+                )
+
+                # ── Update monthly-counts cache for next giver-floor check ───
+                if _rd_obj is not None:
+                    _ym_swap = (_rd_obj.year, _rd_obj.month)
+                    _sa_monthly.setdefault(old_worker, {})[_ym_swap] = \
+                        _sa_monthly.setdefault(old_worker, {}).get(_ym_swap, 0) - 1
+                    _sa_monthly.setdefault(new_worker, {})[_ym_swap] = \
+                        _sa_monthly.setdefault(new_worker, {}).get(_ym_swap, 0) + 1
+
+            T *= cooling_rate
+
+        logging.info(
+            f"   ✅ SA perturbations done: improving={accepted_improving}, "
+            f"worsening_accepted={accepted_worsening}, sa_rejected={rejected_sa}, "
+            f"constraint_rejected={rejected_constraint}, T_final={T:.4f}"
+        )
         return optimized_schedule
     
     def _apply_forced_redistribution(self, schedule: Dict, violations: List[Dict], 
@@ -1706,6 +1875,33 @@ class IterativeOptimizer:
                 # Shuffle to avoid always trying the same dates
                 import random
                 random.shuffle(shifts_to_try)
+
+                # G9: Pre-compute giver's monthly counts for monthly-floor guard.
+                # Over-assigned workers must not be stripped below their monthly floor.
+                _g9_worker_data = next(
+                    (w for w in workers_data
+                     if w.get('id') == worker or f"Worker {w.get('id')}" == worker),
+                    None
+                )
+                _g9_monthly_counts: Dict = {}
+                _g9_monthly_target = 0.0
+                if _g9_worker_data:
+                    _g9_all_months: set = set()
+                    for _dk_g9, _asgn_g9 in optimized_schedule.items():
+                        try:
+                            _dm_g9 = _dk_g9 if isinstance(_dk_g9, datetime) else datetime.strptime(_dk_g9, "%Y-%m-%d")
+                            _ym_g9 = (_dm_g9.year, _dm_g9.month)
+                            _g9_all_months.add(_ym_g9)
+                        except Exception:
+                            continue
+                        if isinstance(_asgn_g9, dict):
+                            for _v_g9 in _asgn_g9.values():
+                                if isinstance(_v_g9, list) and worker in _v_g9:
+                                    _g9_monthly_counts[_ym_g9] = _g9_monthly_counts.get(_ym_g9, 0) + 1
+                        elif isinstance(_asgn_g9, list):
+                            _g9_monthly_counts[_ym_g9] = _g9_monthly_counts.get(_ym_g9, 0) + _asgn_g9.count(worker)
+                    _g9_num_months = max(1, len(_g9_all_months))
+                    _g9_monthly_target = float(_g9_worker_data.get('target_shifts', 0)) / _g9_num_months
                 
                 # Try to redistribute ANY of the shifts
                 redistributed_count = 0
@@ -1716,6 +1912,20 @@ class IterativeOptimizer:
                         break
                     
                     date_key_try, shift_type_try, format_type = shift_info
+
+                    # G9: Monthly floor check — don't strip giver below monthly floor
+                    if _g9_worker_data:
+                        _g9_dtobj = date_key_try if isinstance(date_key_try, datetime) else None
+                        if _g9_dtobj is None:
+                            try:
+                                _g9_dtobj = datetime.strptime(date_key_try, "%Y-%m-%d")
+                            except Exception:
+                                pass
+                        if _g9_dtobj is not None:
+                            _g9_ym = (_g9_dtobj.year, _g9_dtobj.month)
+                            _g9_curr = _g9_monthly_counts.get(_g9_ym, 0)
+                            if (_g9_curr - 1) < (_g9_monthly_target - 1):
+                                continue  # Giver would drop below monthly floor
                     
                     if format_type == 'dict':
                         assignments = optimized_schedule[date_key_try]
@@ -1741,12 +1951,50 @@ class IterativeOptimizer:
                             valid_alternatives_with_priority.sort(key=lambda x: x[1], reverse=True)
                             alternative_worker = valid_alternatives_with_priority[0][0]
                             deficit_amount = valid_alternatives_with_priority[0][1]
-                            
+
+                            # ── Pre-swap accounting ──────────────────────────────────────────
+                            pre_worker_in_slot = workers.count(worker)
+                            pre_alt_in_slot    = workers.count(alternative_worker)
+                            if pre_worker_in_slot == 0:
+                                logging.warning(
+                                    f"FORCED dict: {worker} not in slot {shift_type_try} "
+                                    f"on {date_key_try} — skipping"
+                                )
+                                continue
+
                             workers.remove(worker)
                             workers.append(alternative_worker)
+
+                            # ── Post-swap accounting verification ────────────────────────────
+                            post_worker_in_slot = workers.count(worker)
+                            post_alt_in_slot    = workers.count(alternative_worker)
+                            if (post_worker_in_slot != pre_worker_in_slot - 1 or
+                                    post_alt_in_slot != pre_alt_in_slot + 1):
+                                logging.error(
+                                    f"FORCED dict accounting error on {date_key_try} "
+                                    f"{shift_type_try}: "
+                                    f"{worker} {pre_worker_in_slot}→{post_worker_in_slot} "
+                                    f"(expected {pre_worker_in_slot - 1}), "
+                                    f"{alternative_worker} {pre_alt_in_slot}→{post_alt_in_slot} "
+                                    f"(expected {pre_alt_in_slot + 1}) — rolling back"
+                                )
+                                workers.remove(alternative_worker)
+                                workers.append(worker)
+                                continue
+
                             forced_changes += 1
                             redistributed_count += 1
-                            logging.info(f"      ✅ FORCED: {shift_type_try} from {worker} to {alternative_worker} (deficit: {deficit_amount}) on {date_key_try}")
+                            # G9: Decrement giver's monthly count so next shift from same
+                            # month uses the up-to-date floor guard.
+                            if _g9_worker_data and _g9_dtobj is not None:
+                                _g9_ym2 = (_g9_dtobj.year, _g9_dtobj.month)
+                                _g9_monthly_counts[_g9_ym2] = _g9_monthly_counts.get(_g9_ym2, 1) - 1
+                            logging.info(
+                                f"      ✅ FORCED: {shift_type_try} "
+                                f"{worker}[{pre_worker_in_slot}→{post_worker_in_slot}] → "
+                                f"{alternative_worker}[{pre_alt_in_slot}→{post_alt_in_slot}] "
+                                f"(deficit: {deficit_amount}) on {date_key_try}"
+                            )
                     
                     elif format_type == 'list':
                         assignments = optimized_schedule[date_key_try]
@@ -1770,12 +2018,38 @@ class IterativeOptimizer:
                             valid_alternatives_with_priority.sort(key=lambda x: x[1], reverse=True)
                             alternative_worker = valid_alternatives_with_priority[0][0]
                             deficit_amount = valid_alternatives_with_priority[0][1]
-                            
-                            idx = assignments.index(worker)
+
+                            # ── Pre-swap accounting: locate post index ───────────────────────
+                            try:
+                                idx = assignments.index(worker)
+                            except ValueError:
+                                logging.warning(
+                                    f"FORCED list: {worker} not found on {date_key_try} — skipping"
+                                )
+                                continue
+                            pre_at_post = assignments[idx]   # == worker guaranteed
+
                             assignments[idx] = alternative_worker
+
+                            # ── Post-swap accounting verification ────────────────────────────
+                            if assignments[idx] != alternative_worker:
+                                logging.error(
+                                    f"FORCED list: post {idx} on {date_key_try} not updated "
+                                    f"(got {assignments[idx]}) — rolling back"
+                                )
+                                assignments[idx] = pre_at_post
+                                continue
+
                             forced_changes += 1
                             redistributed_count += 1
-                            logging.info(f"      ✅ FORCED: Position {idx} from {worker} to {alternative_worker} (deficit: {deficit_amount}) on {date_key_try}")
+                            # G9: Update monthly counts cache for this giver
+                            if _g9_worker_data and _g9_dtobj is not None:
+                                _g9_ym2 = (_g9_dtobj.year, _g9_dtobj.month)
+                                _g9_monthly_counts[_g9_ym2] = _g9_monthly_counts.get(_g9_ym2, 1) - 1
+                            logging.info(
+                                f"      ✅ FORCED: Post {idx} [{pre_at_post}→{alternative_worker}] "
+                                f"(deficit: {deficit_amount}) on {date_key_try}"
+                            )
                 
                 if redistributed_count > 0:
                     logging.info(f"      ✅ Successfully redistributed {redistributed_count} shifts from {worker}")

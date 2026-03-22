@@ -2859,6 +2859,36 @@ class ScheduleBuilder:
                             if not self._can_modify_assignment(worker_W_id, date_conflict, "pass2_swap_remove"):
                                 logging.error(f"🔒 CRITICAL: Attempted to remove MANDATORY {worker_W_id} in Pass2 swap! Aborting swap.")
                                 continue
+
+                            # G10: Monthly floor check — W must not drop below their monthly floor
+                            # when losing date_conflict (they gain date_empty in the same step, but
+                            # these may be in different months so we check the conflict month alone).
+                            if hasattr(self, '_get_expected_monthly_target'):
+                                _g10_w_data = next(
+                                    (wd for wd in self.workers_data if wd.get('id') == worker_W_id), None
+                                )
+                                if _g10_w_data is not None:
+                                    _g10_exp_m = self._get_expected_monthly_target(
+                                        _g10_w_data, date_conflict.year, date_conflict.month
+                                    )
+                                    _g10_w_month = sum(
+                                        1 for d in self.worker_assignments.get(worker_W_id, set())
+                                        if d.year == date_conflict.year and d.month == date_conflict.month
+                                    )
+                                    if (_g10_w_month - 1) < (_g10_exp_m - 1):
+                                        logging.debug(
+                                            f"Pass 2 swap rejected: {worker_W_id} monthly floor in "
+                                            f"{date_conflict.strftime('%Y-%m')} ({_g10_w_month}→{_g10_w_month - 1} vs floor {_g10_exp_m - 1:.1f})"
+                                        )
+                                        continue
+
+                            # G10: Snapshot for rollback if count accounting fails after 3-step mutation
+                            _p2_pre_W = len(self.worker_assignments.get(worker_W_id, set()))
+                            _p2_pre_X = len(self.worker_assignments.get(worker_X_id, set()))
+                            _p2_snap_conf  = self.schedule[date_conflict][:]
+                            _p2_snap_empty = self.schedule[date_empty][:]
+                            _p2_snap_W_asgn = set(self.worker_assignments.get(worker_W_id, set()))
+                            _p2_snap_X_asgn = set(self.worker_assignments.get(worker_X_id, set()))
                             
                             # 1. Remove W from original spot
                             self.schedule[date_conflict][post_conflict] = None
@@ -2873,8 +2903,23 @@ class ScheduleBuilder:
                             
                             # 3. Assign W to the empty spot
                             self.schedule[date_empty][post_empty] = worker_W_id
-                            self.worker_assignments.setdefault(worker_W_id, set()).add(date_empty) # Ensure setdefault here too
+                            self.worker_assignments.setdefault(worker_W_id, set()).add(date_empty)
                             self.scheduler._update_tracking_data(worker_W_id, date_empty, post_empty, removing=False)
+
+                            # G10: Verify count accounting: W stays same, X gains 1
+                            _p2_post_W = len(self.worker_assignments.get(worker_W_id, set()))
+                            _p2_post_X = len(self.worker_assignments.get(worker_X_id, set()))
+                            if _p2_post_W != _p2_pre_W or _p2_post_X != _p2_pre_X + 1:
+                                logging.warning(
+                                    f"[Pass 2] Count mismatch after 3-step swap — rolling back. "
+                                    f"W:{_p2_pre_W}→{_p2_post_W} (exp {_p2_pre_W}), "
+                                    f"X:{_p2_pre_X}→{_p2_post_X} (exp {_p2_pre_X + 1})"
+                                )
+                                self.schedule[date_conflict][:] = _p2_snap_conf
+                                self.schedule[date_empty][:] = _p2_snap_empty
+                                self.worker_assignments[worker_W_id] = _p2_snap_W_asgn
+                                self.worker_assignments[worker_X_id] = _p2_snap_X_asgn
+                                continue
                             
                             shifts_filled_this_pass_total += 1
                             made_change_overall = True
@@ -2913,6 +2958,11 @@ class ScheduleBuilder:
         
         shifts_filled = 0
         made_change = False
+        
+        # Build a stable position map so that 'list_position' tiebreaker can sort
+        # tied candidates by their order in workers_list rather than alphabetically.
+        # This map is computed once here and captured by the inner closure below.
+        worker_positions = {w['id']: i for i, w in enumerate(workers_list)}
         
         for attempt in range(max_attempts):
             # Get current empty shifts
@@ -3018,41 +3068,60 @@ class ScheduleBuilder:
                 # Select best worker using score + tiebreaker strategy
                 best_worker = None
                 if valid_candidates:
-                    # Find maximum score
-                    max_score = max(candidate[1] for candidate in valid_candidates)
-                    
-                    # Use a more generous tolerance to allow tiebreaker to work
-                    # Allow ties when scores are within 5% or 500 points of maximum
-                    # This ensures tiebreaker is used when deficit differs by ≤1 shift
-                    tolerance = max(500, abs(max_score) * 0.05)
-                    tied_candidates = [c for c in valid_candidates if abs(c[1] - max_score) <= tolerance]
-                    
-                    if len(tied_candidates) == 1:
-                        # Only one candidate with max score
-                        best_worker = tied_candidates[0][0]
+                    if self.tiebreaker_strategy == 'random':
+                        # ── GRASP: Restricted Candidate List ─────────────────────────────
+                        # Select randomly from candidates whose score is within alpha% of
+                        # the best score.  alpha=0 → pure greedy; alpha=1 → pure random.
+                        # alpha=0.20 keeps the top ~20% of the score range, balancing
+                        # quality and diversity without narrowing to a single winner.
+                        GRASP_ALPHA = 0.20
+                        best_score  = max(c[1] for c in valid_candidates)
+                        worst_score = min(c[1] for c in valid_candidates)
+                        score_range = best_score - worst_score
+                        if score_range > 0:
+                            threshold = best_score - GRASP_ALPHA * score_range
+                            rcl = [c for c in valid_candidates if c[1] >= threshold]
+                        else:
+                            rcl = valid_candidates  # All tied – pure random
+                        selected    = random.choice(rcl)
+                        best_worker = selected[0]
                         if attempt == 1 and filled_this_attempt == 0:
-                            logging.debug(f"  {best_worker}: CLEAR WINNER (score={max_score:.0f})")
+                            logging.debug(
+                                f"  {best_worker}: GRASP-RCL (alpha={GRASP_ALPHA}, "
+                                f"rcl_size={len(rcl)}/{len(valid_candidates)})"
+                            )
                     else:
-                        # Multiple candidates tied - use tiebreaker strategy
-                        if self.tiebreaker_strategy == 'alphabetical_asc':
-                            # Sort A-Z
+                        # Deterministic strategies: find the strict top-score "tie" band
+                        max_score = max(c[1] for c in valid_candidates)
+                        tolerance = max(500, abs(max_score) * 0.05)
+                        tied_candidates = [c for c in valid_candidates if abs(c[1] - max_score) <= tolerance]
+
+                        if len(tied_candidates) == 1:
+                            best_worker = tied_candidates[0][0]
+                            if attempt == 1 and filled_this_attempt == 0:
+                                logging.debug(f"  {best_worker}: CLEAR WINNER (score={max_score:.0f})")
+                        elif self.tiebreaker_strategy == 'alphabetical_asc':
                             tied_candidates.sort(key=lambda c: c[0])
                             best_worker = tied_candidates[0][0]
                             if attempt == 1 and filled_this_attempt == 0:
                                 logging.debug(f"  {best_worker}: TIEBREAKER A-Z among {len(tied_candidates)} candidates")
                         elif self.tiebreaker_strategy == 'alphabetical_desc':
-                            # Sort Z-A
                             tied_candidates.sort(key=lambda c: c[0], reverse=True)
                             best_worker = tied_candidates[0][0]
                             if attempt == 1 and filled_this_attempt == 0:
                                 logging.debug(f"  {best_worker}: TIEBREAKER Z-A among {len(tied_candidates)} candidates")
-                        elif self.tiebreaker_strategy == 'random':
-                            # Random selection (uses current random state)
-                            import random
-                            selected = random.choice(tied_candidates)
-                            best_worker = selected[0]
+                        elif self.tiebreaker_strategy == 'list_position':
+                            # Sort tied candidates by their position in the pre-ordered
+                            # workers_list.  This makes the worker_order (sequential,
+                            # alternating, random, quasi_random, etc.) actually influence
+                            # which worker wins equal-score slots, producing distinct
+                            # schedules across different ordering strategies.
+                            tied_candidates.sort(
+                                key=lambda c: worker_positions.get(c[0], len(worker_positions))
+                            )
+                            best_worker = tied_candidates[0][0]
                             if attempt == 1 and filled_this_attempt == 0:
-                                logging.debug(f"  {best_worker}: TIEBREAKER RANDOM among {len(tied_candidates)} candidates")
+                                logging.debug(f"  {best_worker}: TIEBREAKER LIST-POSITION among {len(tied_candidates)} candidates")
                         else:
                             # Fallback: first in list
                             best_worker = tied_candidates[0][0]
@@ -4035,7 +4104,12 @@ class ScheduleBuilder:
                 # Calculate proportional target: worker_shifts_in_month * weekend_ratio
                 # This is the fair share of weekend/holiday shifts for this worker this month
                 raw_target = worker_shifts_in_month * month_weekend_ratio
-                target_special_days = int(raw_target)  # Use int() to truncate
+                # Use int() (floor) to match the assignment guards _would_violate_tolerance
+                # and _would_exceed_weekend_limit_simulated which both use int(). Using
+                # round() here would create a 1-shift blind spot for targets with .5+
+                # fractional parts: a worker at int(target)+tolerance+1 would not be
+                # flagged as overloaded because round(target) > int(target).
+                target_special_days = int(raw_target)
                 
                 # Use weekend_tolerance from config (default ±1)
                 tolerance_shifts = getattr(self.scheduler, 'weekend_tolerance', 1)
@@ -4104,6 +4178,12 @@ class ScheduleBuilder:
 
                         # _can_assign_worker MUST use the same consistent definition of special day for its internal checks
                         # (especially its call to _would_exceed_weekend_limit)
+                        # Also block if under_worker already has a weekend shift in the same
+                        # calendar week — prevents bunched weekends that _can_assign_worker
+                        # does not catch (it only checks total count, not per-week).
+                        if self._has_weekend_in_same_week(under_worker_id, special_day_to_reassign):
+                            continue
+
                         if self._can_assign_worker(under_worker_id, special_day_to_reassign, post_val, replacing_worker=over_worker_id):
                             # Perform the assignment change
                             self.scheduler.schedule[special_day_to_reassign][post_val] = under_worker_id
@@ -4124,22 +4204,27 @@ class ScheduleBuilder:
                             # --- Re-evaluate overloaded/underloaded lists locally ---
                             # Recalculate targets based on updated shift counts
                             
-                            # Check if 'over_worker_id' is still overloaded
+                            # Check if 'over_worker_id' is still overloaded.
+                            # Use int() floor consistent with assignment guards.
                             over_worker_new_count = current_month_counts[over_worker_id]
                             over_worker_shifts = sum(1 for d in month_dates_list 
                                 if d in self.scheduler.worker_assignments.get(over_worker_id, set()))
-                            over_worker_target = int(over_worker_shifts * month_weekend_ratio) + 1
+                            _tol = getattr(self.scheduler, 'weekend_tolerance', 1)
+                            over_worker_target = int(over_worker_shifts * month_weekend_ratio) + _tol
                             
                             if over_worker_new_count <= over_worker_target:
                                 overloaded_workers = [(w, c, l) for w, c, l in overloaded_workers if w != over_worker_id]
 
-                            # Check if 'under_worker_id' is still underloaded or became full
+                            # Check if 'under_worker_id' is still underloaded.
+                            # Remove when count reaches (int(target) - tol + 1), i.e., no longer
+                            # below floor.  This prevents an extra shift being given after the
+                            # worker is already within tolerance.
                             under_worker_new_count = current_month_counts[under_worker_id]
                             under_worker_shifts = sum(1 for d in month_dates_list 
                                 if d in self.scheduler.worker_assignments.get(under_worker_id, set()))
-                            under_worker_target = int(under_worker_shifts * month_weekend_ratio)
+                            under_worker_floor = max(0, int(under_worker_shifts * month_weekend_ratio) - _tol)
 
-                            if under_worker_new_count >= under_worker_target:
+                            if under_worker_new_count > under_worker_floor:
                                 underloaded_workers = [(w, c, s) for w, c, s in underloaded_workers if w != under_worker_id]
                             # --- End re-evaluation ---
                             
@@ -4686,7 +4771,7 @@ class ScheduleBuilder:
         max_iterations = 400
         iteration = 0
         stall_count = 0
-        max_stalls = 5
+        max_stalls = 15  # increased from 5 — constrained schedules need more attempts before giving up
         
         while iteration < max_iterations and overloaded_workers and underloaded_workers:
             iteration += 1
@@ -6269,15 +6354,16 @@ class ScheduleBuilder:
         Returns:
             bool: True if any swap was made across all iterations, False otherwise.
         """
-        # First run the improved version
-        result = self._adjust_last_post_distribution_improved(balance_tolerance, max_iterations)
-        
-        # Then run an additional aggressive pass with tighter tolerance
-        if not result:
-            logging.info("Running additional STRICT last post balancing pass...")
-            result = self._adjust_last_post_distribution_strict(max_iterations)
-        
-        return result
+        # Run the improved version (formula-based, tolerance ±balance_tolerance)
+        result1 = self._adjust_last_post_distribution_improved(balance_tolerance, max_iterations)
+
+        # ALWAYS also run the strict pass (tighter tolerance ±0.75) — it catches
+        # residual imbalance that the improved pass may have left and handles cases
+        # where the improved pass made progress but did not fully converge.
+        logging.info("Running additional STRICT last post balancing pass...")
+        result2 = self._adjust_last_post_distribution_strict(max_iterations)
+
+        return result1 or result2
     
     def _adjust_last_post_distribution_strict(self, max_iterations=20):
         """
@@ -6339,7 +6425,9 @@ class ScheduleBuilder:
                 stats['expected'] = expected
                 stats['deviation'] = deviation
                 
-                # Use TIGHT tolerance of ±0.75 (stricter than ±1)
+                # Use a TIGHTER tolerance than the improved pass so the strict pass
+                # catches residual workers deviating between 0.75 and 1.0 that the
+                # improved pass left untouched.
                 if deviation > 0.75:
                     overloaded.append((worker_id, deviation, stats))
                 elif deviation < -0.75:
@@ -6455,12 +6543,15 @@ class ScheduleBuilder:
         logging.info("Using formula: last_posts_per_worker = (total_shifts_per_worker / shifts_per_day) ± 1")
         logging.info("This will only apply to days NOT within a variable shift period.")
 
-        # Calculate shifts per day (this should be consistent)
-        shifts_per_day = len(self.workers_data) if hasattr(self, 'num_shifts') else self.num_shifts if hasattr(self, 'num_shifts') else 2
-        
-        # If we can get it from the scheduler
+        # Calculate shifts per day: prefer scheduler.num_shifts, fall back to 2.
+        # The old ternary was broken: `len(self.workers_data) if hasattr(self, 'num_shifts')`
+        # returned worker count (e.g. 20) instead of num_shifts when the attribute existed.
         if hasattr(self, 'scheduler') and hasattr(self.scheduler, 'num_shifts'):
             shifts_per_day = self.scheduler.num_shifts
+        elif hasattr(self, 'num_shifts'):
+            shifts_per_day = self.num_shifts
+        else:
+            shifts_per_day = 2
         
         logging.info(f"Using shifts_per_day = {shifts_per_day} for calculations")
 

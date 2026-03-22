@@ -1,0 +1,1181 @@
+{
+  "gap_between_shifts": 3,
+  "max_consecutive_weekends": 3,
+  "num_shifts": 4,
+  "max_improvement_loops": 70,
+  "last_post_adjustment_max_iterations": 5,
+  "cache_enabled": true,
+  "lazy_evaluation": true,
+  "batch_size": 100,
+  "variable_shifts": [
+    {
+      "start_date": "2026-12-25T00:00:00",
+      "end_date": "2026-12-25T00:00:00",
+      "shifts": 2
+    },
+    {
+      "start_date": "2026-12-26T00:00:00",
+      "end_date": "2026-12-26T00:00:00",
+      "shifts": 2
+    }
+  ],
+  "enable_proportional_weekends": true,
+  "weekend_tolerance": 1,
+  "enable_dual_mode": true,
+  "num_initial_attempts": 30,
+  "enable_real_time": false,
+  "enable_predictive_analytics": false,
+  "workers_data": [
+    {
+      "id": "ANGEL",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "08-03-2026",
+      "work_periods": "04-03-2026 - 30-06-2026",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "ANGELA",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "ROBER",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "08-03-2026",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "LUIS H",
+      "target_shifts": 12,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "05-03-2026;09-03-2026;22-03-2026;25-03-2026;30-03-2026;04-04-2026;28-05-2026",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 7
+    },
+    {
+      "id": "LUIS R",
+      "target_shifts": 12,
+      "work_percentage": 60.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": false,
+      "_original_target_shifts": 3,
+      "_raw_target": 12,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "SALVA",
+      "target_shifts": 16,
+      "work_percentage": 80.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "08-03-2026",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 16,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "LAURA",
+      "target_shifts": 15,
+      "work_percentage": 80.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "07-03-2026",
+      "work_periods": "05-03-2026 - 30-06-2026",
+      "auto_calculate_shifts": true,
+      "_raw_target": 15,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "AGUEDA",
+      "target_shifts": 12,
+      "work_percentage": 66.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "08-03-2026",
+      "work_periods": "05-03-2026 - 30-06-2026",
+      "auto_calculate_shifts": true,
+      "_raw_target": 12,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "MARINA",
+      "target_shifts": 9,
+      "work_percentage": 50.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "09-03-2026 - 30-06-2026",
+      "auto_calculate_shifts": true,
+      "_raw_target": 9,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "CAROL",
+      "target_shifts": 16,
+      "work_percentage": 80.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 16,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "MARIA",
+      "target_shifts": 8,
+      "work_percentage": 50.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "09-03-2026 - 30-06-2026",
+      "auto_calculate_shifts": false,
+      "_original_target_shifts": 2,
+      "_raw_target": 8,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "MANUEL",
+      "target_shifts": 18,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "09-03-2026 - 30-06-2026",
+      "auto_calculate_shifts": true,
+      "_raw_target": 18,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "GONZALO",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "SANTI",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "CHEMA",
+        "RICARDO",
+        "KIKO",
+        "DAVID"
+      ],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "LOLA",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "JOSE",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "JULIA",
+      "target_shifts": 18,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "05-03-2026",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 1
+    },
+    {
+      "id": "KIKO",
+      "target_shifts": 18,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "CHEMA",
+        "SANTI",
+        "RICARDO",
+        "DAVID"
+      ],
+      "mandatory_days": "04-03-2026",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 1
+    },
+    {
+      "id": "BEA",
+      "target_shifts": 18,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "05-03-2026",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 1
+    },
+    {
+      "id": "VALLE",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "06-03-2026",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "ELENA",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "03-03-2026",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "RICARDO",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "CHEMA",
+        "SANTI",
+        "KIKO",
+        "DAVID"
+      ],
+      "mandatory_days": "",
+      "days_off": "07-03-2026",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "M.JOSE",
+      "target_shifts": 9,
+      "work_percentage": 50.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "09-03-2026 - 30-06-2026",
+      "auto_calculate_shifts": true,
+      "_raw_target": 9,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "M.CARMEN",
+      "target_shifts": 13,
+      "work_percentage": 66.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 13,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "PABLO",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "07-03-2026",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "PAULA",
+      "target_shifts": 18,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "05-03-2026",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 1
+    },
+    {
+      "id": "SARA",
+      "target_shifts": 18,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "03-03-2026",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 1
+    },
+    {
+      "id": "MAR",
+      "target_shifts": 18,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "04-03-2026",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 1
+    },
+    {
+      "id": "DAVID",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "CHEMA",
+        "SANTI",
+        "RICARDO",
+        "KIKO"
+      ],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    },
+    {
+      "id": "CHEMA",
+      "target_shifts": 19,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "SANTI",
+        "RICARDO",
+        "KIKO",
+        "DAVID"
+      ],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "",
+      "auto_calculate_shifts": true,
+      "_raw_target": 19,
+      "_mandatory_count": 0
+    }
+  ],
+  "schedule": {
+    "2026-03-01T00:00:00": [
+      "JOSE",
+      "LUIS R",
+      "SALVA",
+      "VALLE"
+    ],
+    "2026-03-02T00:00:00": [
+      "GONZALO",
+      "SANTI",
+      "ROBER",
+      "ANGELA"
+    ],
+    "2026-03-03T00:00:00": [
+      "SARA",
+      "LOLA",
+      "PABLO",
+      "RICARDO"
+    ],
+    "2026-03-04T00:00:00": [
+      "KIKO",
+      "MAR",
+      "ANGEL",
+      "ELENA"
+    ],
+    "2026-03-05T00:00:00": [
+      "LUIS H",
+      "JULIA",
+      "BEA",
+      "PAULA"
+    ],
+    "2026-03-06T00:00:00": [
+      "LAURA",
+      "M.CARMEN",
+      "CHEMA",
+      "AGUEDA"
+    ],
+    "2026-03-07T00:00:00": [
+      "CAROL",
+      "VALLE",
+      "ANGELA",
+      "ROBER"
+    ],
+    "2026-03-08T00:00:00": [
+      "MAR",
+      "SARA",
+      "KIKO",
+      "PABLO"
+    ],
+    "2026-03-09T00:00:00": [
+      "LUIS H",
+      "M.JOSE",
+      "MARINA",
+      "MARIA"
+    ],
+    "2026-03-10T00:00:00": [
+      "MANUEL",
+      "BEA",
+      "PAULA",
+      "JULIA"
+    ],
+    "2026-03-11T00:00:00": [
+      "CHEMA",
+      "VALLE",
+      "LOLA",
+      "JOSE"
+    ],
+    "2026-03-12T00:00:00": [
+      "DAVID",
+      "ANGEL",
+      "GONZALO",
+      "SALVA"
+    ],
+    "2026-03-13T00:00:00": [
+      "SANTI",
+      "ELENA",
+      "CAROL",
+      "LUIS R"
+    ],
+    "2026-03-14T00:00:00": [
+      "MANUEL",
+      "RICARDO",
+      "LAURA",
+      "BEA"
+    ],
+    "2026-03-15T00:00:00": [
+      "PAULA",
+      "JULIA",
+      "CHEMA",
+      "LOLA"
+    ],
+    "2026-03-16T00:00:00": [
+      "AGUEDA",
+      "SARA",
+      "MAR",
+      "KIKO"
+    ],
+    "2026-03-17T00:00:00": [
+      "DAVID",
+      "GONZALO",
+      "ELENA",
+      "M.CARMEN"
+    ],
+    "2026-03-18T00:00:00": [
+      "LAURA",
+      "PABLO",
+      "M.JOSE",
+      "SANTI"
+    ],
+    "2026-03-19T00:00:00": [
+      "VALLE",
+      "ANGELA",
+      "JOSE",
+      "ROBER"
+    ],
+    "2026-03-20T00:00:00": [
+      "ANGEL",
+      "RICARDO",
+      "SALVA",
+      "MANUEL"
+    ],
+    "2026-03-21T00:00:00": [
+      "GONZALO",
+      "MAR",
+      "SARA",
+      "KIKO"
+    ],
+    "2026-03-22T00:00:00": [
+      "LUIS H",
+      "MARIA",
+      "BEA",
+      "DAVID"
+    ],
+    "2026-03-23T00:00:00": [
+      "LAURA",
+      "CAROL",
+      "PAULA",
+      "CHEMA"
+    ],
+    "2026-03-24T00:00:00": [
+      "SANTI",
+      "ROBER",
+      "LOLA",
+      "ANGEL"
+    ],
+    "2026-03-25T00:00:00": [
+      "LUIS H",
+      "ANGELA",
+      "RICARDO",
+      "JULIA"
+    ],
+    "2026-03-26T00:00:00": [
+      "PABLO",
+      "ELENA",
+      "MAR",
+      "AGUEDA"
+    ],
+    "2026-03-27T00:00:00": [
+      "VALLE",
+      "M.CARMEN",
+      "PAULA",
+      "MARINA"
+    ],
+    "2026-03-28T00:00:00": [
+      "LUIS R",
+      "SALVA",
+      "LOLA",
+      "JOSE"
+    ],
+    "2026-03-29T00:00:00": [
+      "ROBER",
+      "LAURA",
+      "GONZALO",
+      "SARA"
+    ],
+    "2026-03-30T00:00:00": [
+      "LUIS H",
+      "MANUEL",
+      "JULIA",
+      "BEA"
+    ],
+    "2026-03-31T00:00:00": [
+      "CHEMA",
+      "ANGELA",
+      "PABLO",
+      "CAROL"
+    ],
+    "2026-04-01T00:00:00": [
+      "ANGEL",
+      "MARINA",
+      "DAVID",
+      "VALLE"
+    ],
+    "2026-04-02T00:00:00": [
+      "RICARDO",
+      "PAULA",
+      "M.JOSE",
+      "LOLA"
+    ],
+    "2026-04-03T00:00:00": [
+      "JULIA",
+      "SANTI",
+      "BEA",
+      "ROBER"
+    ],
+    "2026-04-04T00:00:00": [
+      "LUIS H",
+      "ANGELA",
+      "CHEMA",
+      "MANUEL"
+    ],
+    "2026-04-05T00:00:00": [
+      "ELENA",
+      "AGUEDA",
+      "CAROL",
+      "M.CARMEN"
+    ],
+    "2026-04-06T00:00:00": [
+      "SARA",
+      "KIKO",
+      "MAR",
+      "GONZALO"
+    ],
+    "2026-04-07T00:00:00": [
+      "MARIA",
+      "LAURA",
+      "SALVA",
+      "LUIS R"
+    ],
+    "2026-04-08T00:00:00": [
+      "PABLO",
+      "JOSE",
+      "SANTI",
+      "PAULA"
+    ],
+    "2026-04-09T00:00:00": [
+      "VALLE",
+      "DAVID",
+      "MANUEL",
+      "ANGELA"
+    ],
+    "2026-04-10T00:00:00": [
+      "KIKO",
+      "ANGEL",
+      "SARA",
+      "GONZALO"
+    ],
+    "2026-04-11T00:00:00": [
+      "MAR",
+      "ROBER",
+      "BEA",
+      "JULIA"
+    ],
+    "2026-04-12T00:00:00": [
+      "PABLO",
+      "CHEMA",
+      "JOSE",
+      "SALVA"
+    ],
+    "2026-04-13T00:00:00": [
+      "RICARDO",
+      "LOLA",
+      "ELENA",
+      "CAROL"
+    ],
+    "2026-04-14T00:00:00": [
+      "KIKO",
+      "LUIS H",
+      "AGUEDA",
+      "ANGEL"
+    ],
+    "2026-04-15T00:00:00": [
+      "M.CARMEN",
+      "LAURA",
+      "MANUEL",
+      "MAR"
+    ],
+    "2026-04-16T00:00:00": [
+      "SANTI",
+      "BEA",
+      "ROBER",
+      "PABLO"
+    ],
+    "2026-04-17T00:00:00": [
+      "PAULA",
+      "ANGELA",
+      "DAVID",
+      "ELENA"
+    ],
+    "2026-04-18T00:00:00": [
+      "LOLA",
+      "VALLE",
+      "RICARDO",
+      "SARA"
+    ],
+    "2026-04-19T00:00:00": [
+      "LUIS H",
+      "KIKO",
+      "MARIA",
+      "LAURA"
+    ],
+    "2026-04-20T00:00:00": [
+      "JOSE",
+      "JULIA",
+      "MARINA",
+      "CHEMA"
+    ],
+    "2026-04-21T00:00:00": [
+      "GONZALO",
+      "MANUEL",
+      "M.JOSE",
+      "SANTI"
+    ],
+    "2026-04-22T00:00:00": [
+      "ROBER",
+      "SALVA",
+      "ELENA",
+      "RICARDO"
+    ],
+    "2026-04-23T00:00:00": [
+      "PAULA",
+      "SARA",
+      "MAR",
+      "ANGEL"
+    ],
+    "2026-04-24T00:00:00": [
+      "VALLE",
+      "BEA",
+      "JULIA",
+      "LUIS H"
+    ],
+    "2026-04-25T00:00:00": [
+      "DAVID",
+      "JOSE",
+      "PABLO",
+      "GONZALO"
+    ],
+    "2026-04-26T00:00:00": [
+      "RICARDO",
+      "LOLA",
+      "MANUEL",
+      "ANGELA"
+    ],
+    "2026-04-27T00:00:00": [
+      "KIKO",
+      "AGUEDA",
+      "LUIS R",
+      "M.CARMEN"
+    ],
+    "2026-04-28T00:00:00": [
+      "CHEMA",
+      "CAROL",
+      "SALVA",
+      "PAULA"
+    ],
+    "2026-04-29T00:00:00": [
+      "MARIA",
+      "DAVID",
+      "VALLE",
+      "BEA"
+    ],
+    "2026-04-30T00:00:00": [
+      "RICARDO",
+      "LAURA",
+      "M.JOSE",
+      "JOSE"
+    ],
+    "2026-05-01T00:00:00": [
+      "MAR",
+      "SANTI",
+      "SARA",
+      "MANUEL"
+    ],
+    "2026-05-02T00:00:00": [
+      "KIKO",
+      "ELENA",
+      "ANGEL",
+      "PAULA"
+    ],
+    "2026-05-03T00:00:00": [
+      "JULIA",
+      "CAROL",
+      "CHEMA",
+      "PABLO"
+    ],
+    "2026-05-04T00:00:00": [
+      "ROBER",
+      "RICARDO",
+      "GONZALO",
+      "LUIS H"
+    ],
+    "2026-05-05T00:00:00": [
+      "BEA",
+      "LOLA",
+      "MARINA",
+      "VALLE"
+    ],
+    "2026-05-06T00:00:00": [
+      "M.CARMEN",
+      "LUIS R",
+      "ANGELA",
+      "AGUEDA"
+    ],
+    "2026-05-07T00:00:00": [
+      "MANUEL",
+      "PABLO",
+      "DAVID",
+      "JULIA"
+    ],
+    "2026-05-08T00:00:00": [
+      "ELENA",
+      "LAURA",
+      "ANGEL",
+      "ROBER"
+    ],
+    "2026-05-09T00:00:00": [
+      "VALLE",
+      "LOLA",
+      "SANTI",
+      "MAR"
+    ],
+    "2026-05-10T00:00:00": [
+      "LUIS H",
+      "JOSE",
+      "SARA",
+      "GONZALO"
+    ],
+    "2026-05-11T00:00:00": [
+      "BEA",
+      "MANUEL",
+      "DAVID",
+      "SALVA"
+    ],
+    "2026-05-12T00:00:00": [
+      "PABLO",
+      "RICARDO",
+      "ANGELA",
+      "ELENA"
+    ],
+    "2026-05-13T00:00:00": [
+      "PAULA",
+      "CHEMA",
+      "MARINA",
+      "CAROL"
+    ],
+    "2026-05-14T00:00:00": [
+      "KIKO",
+      "AGUEDA",
+      "ROBER",
+      "LOLA"
+    ],
+    "2026-05-15T00:00:00": [
+      "LUIS R",
+      "JULIA",
+      "M.CARMEN",
+      "DAVID"
+    ],
+    "2026-05-16T00:00:00": [
+      "RICARDO",
+      "BEA",
+      "LUIS H",
+      "ANGELA"
+    ],
+    "2026-05-17T00:00:00": [
+      "VALLE",
+      "PAULA",
+      "SALVA",
+      "MANUEL"
+    ],
+    "2026-05-18T00:00:00": [
+      "JOSE",
+      "KIKO",
+      "ANGEL",
+      "SARA"
+    ],
+    "2026-05-19T00:00:00": [
+      "GONZALO",
+      "MAR",
+      "SANTI",
+      "M.JOSE"
+    ],
+    "2026-05-20T00:00:00": [
+      "ELENA",
+      "LUIS H",
+      "MARIA",
+      "RICARDO"
+    ],
+    "2026-05-21T00:00:00": [
+      "CHEMA",
+      "LAURA",
+      "ANGELA",
+      "BEA"
+    ],
+    "2026-05-22T00:00:00": [
+      "SALVA",
+      "JOSE",
+      "CAROL",
+      "KIKO"
+    ],
+    "2026-05-23T00:00:00": [
+      "GONZALO",
+      "ANGEL",
+      "ROBER",
+      "SARA"
+    ],
+    "2026-05-24T00:00:00": [
+      "SANTI",
+      "MAR",
+      "LOLA",
+      "ELENA"
+    ],
+    "2026-05-25T00:00:00": [
+      "CHEMA",
+      "MARINA",
+      "PABLO",
+      "JULIA"
+    ],
+    "2026-05-26T00:00:00": [
+      "M.CARMEN",
+      "PAULA",
+      "DAVID",
+      "LUIS R"
+    ],
+    "2026-05-27T00:00:00": [
+      "AGUEDA",
+      "JOSE",
+      "MANUEL",
+      "ANGEL"
+    ],
+    "2026-05-28T00:00:00": [
+      "LUIS H",
+      "SANTI",
+      "CAROL",
+      "MAR"
+    ],
+    "2026-05-29T00:00:00": [
+      "CHEMA",
+      "ANGELA",
+      "ROBER",
+      "PABLO"
+    ],
+    "2026-05-30T00:00:00": [
+      "JULIA",
+      "SALVA",
+      "DAVID",
+      "LAURA"
+    ],
+    "2026-05-31T00:00:00": [
+      "RICARDO",
+      "GONZALO",
+      "BEA",
+      "MARINA"
+    ],
+    "2026-06-01T00:00:00": [
+      "LUIS H",
+      "MANUEL",
+      "M.JOSE",
+      "SANTI"
+    ],
+    "2026-06-02T00:00:00": [
+      "CAROL",
+      "SARA",
+      "KIKO",
+      "ROBER"
+    ],
+    "2026-06-03T00:00:00": [
+      "VALLE",
+      "M.CARMEN",
+      "LOLA",
+      "CHEMA"
+    ],
+    "2026-06-04T00:00:00": [
+      "ELENA",
+      "PAULA",
+      "JULIA",
+      "RICARDO"
+    ],
+    "2026-06-05T00:00:00": [
+      "MAR",
+      "ANGEL",
+      "LUIS R",
+      "DAVID"
+    ],
+    "2026-06-06T00:00:00": [
+      "AGUEDA",
+      "PABLO",
+      "LUIS H",
+      "SANTI"
+    ],
+    "2026-06-07T00:00:00": [
+      "JOSE",
+      "ANGELA",
+      "CHEMA",
+      "LAURA"
+    ],
+    "2026-06-08T00:00:00": [
+      "VALLE",
+      "BEA",
+      "GONZALO",
+      "KIKO"
+    ],
+    "2026-06-09T00:00:00": [
+      "LOLA",
+      "ELENA",
+      "JULIA",
+      "RICARDO"
+    ],
+    "2026-06-10T00:00:00": [
+      "PAULA",
+      "MARINA",
+      "ROBER",
+      "MAR"
+    ],
+    "2026-06-11T00:00:00": [
+      "JOSE",
+      "MANUEL",
+      "ANGELA",
+      "SARA"
+    ],
+    "2026-06-12T00:00:00": [
+      "VALLE",
+      "M.CARMEN",
+      "CAROL",
+      "LUIS H"
+    ],
+    "2026-06-13T00:00:00": [
+      "ANGEL",
+      "MARIA",
+      "LUIS R",
+      "M.JOSE"
+    ],
+    "2026-06-14T00:00:00": [
+      "PAULA",
+      "AGUEDA",
+      "ROBER",
+      "SANTI"
+    ],
+    "2026-06-15T00:00:00": [
+      "DAVID",
+      "PABLO",
+      "JOSE",
+      "LAURA"
+    ],
+    "2026-06-16T00:00:00": [
+      "SALVA",
+      "GONZALO",
+      "BEA",
+      "VALLE"
+    ],
+    "2026-06-17T00:00:00": [
+      "JULIA",
+      "KIKO",
+      "ELENA",
+      "ANGELA"
+    ],
+    "2026-06-18T00:00:00": [
+      "MAR",
+      "CHEMA",
+      "LOLA",
+      "ANGEL"
+    ],
+    "2026-06-19T00:00:00": [
+      "MANUEL",
+      "PAULA",
+      "RICARDO",
+      "MARIA"
+    ],
+    "2026-06-20T00:00:00": [
+      "DAVID",
+      "BEA",
+      "GONZALO",
+      "JOSE"
+    ],
+    "2026-06-21T00:00:00": [
+      "PABLO",
+      "SALVA",
+      "M.CARMEN",
+      "KIKO"
+    ],
+    "2026-06-22T00:00:00": [
+      "CAROL",
+      "LOLA",
+      "SANTI",
+      "LUIS H"
+    ],
+    "2026-06-23T00:00:00": [
+      "LAURA",
+      "ROBER",
+      "SARA",
+      "PAULA"
+    ],
+    "2026-06-24T00:00:00": [
+      "GONZALO",
+      "CHEMA",
+      "ANGEL",
+      "M.JOSE"
+    ],
+    "2026-06-25T00:00:00": [
+      "VALLE",
+      "ELENA",
+      "JULIA",
+      "PABLO"
+    ],
+    "2026-06-26T00:00:00": [
+      "MAR",
+      "ANGELA",
+      "DAVID",
+      "LOLA"
+    ],
+    "2026-06-27T00:00:00": [
+      "MANUEL",
+      "AGUEDA",
+      "LUIS H",
+      "CAROL"
+    ],
+    "2026-06-28T00:00:00": [
+      "ANGEL",
+      "CHEMA",
+      "SARA",
+      "BEA"
+    ],
+    "2026-06-29T00:00:00": [
+      "LUIS R",
+      "SALVA",
+      "KIKO",
+      "ELENA"
+    ],
+    "2026-06-30T00:00:00": [
+      "JOSE",
+      "SANTI",
+      "JULIA",
+      "MAR"
+    ]
+  }
+}

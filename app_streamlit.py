@@ -246,6 +246,12 @@ if 'file_upload_counter' not in st.session_state:
     st.session_state.file_upload_counter = 0
 if 'schedule_upload_counter' not in st.session_state:
     st.session_state.schedule_upload_counter = 0
+if 'prior_schedule_loaded' not in st.session_state:
+    st.session_state.prior_schedule_loaded = False
+if 'prior_schedule_data' not in st.session_state:
+    st.session_state.prior_schedule_data = None   # summary dict from load_prior_schedule_data()
+if 'prior_schedule_raw' not in st.session_state:
+    st.session_state.prior_schedule_raw = None    # raw bytes when scheduler not yet created
 
 # Funciones auxiliares
 def load_workers_from_file(uploaded_file):
@@ -491,6 +497,16 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
         # Crear scheduler
         scheduler = Scheduler(config)
         st.session_state.scheduler = scheduler
+
+        # Aplicar calendario anterior si fue cargado previamente
+        _prior_raw = st.session_state.get('prior_schedule_raw')
+        if _prior_raw:
+            from io import BytesIO
+            _result = scheduler.load_prior_schedule_data(BytesIO(_prior_raw))
+            if _result.get('error'):
+                st.warning(f"⚠️ Calendario anterior no pudo cargarse: {_result['error']}")
+            else:
+                st.session_state.prior_schedule_data = _result.get('summary', {})
         
         # UI progresiva
         progress_bar = st.progress(0)
@@ -974,7 +990,7 @@ def show_license_info():
                     max_chars=25
                 )
                 
-                submit = st.form_submit_button("Activar", use_container_width=True)
+                submit = st.form_submit_button("Activar", width='stretch')
                 
                 if submit and license_key:
                     success, message = license_manager.activate_license(license_key)
@@ -1050,7 +1066,7 @@ if not st.session_state.can_use:
                 help="Ejemplo: GP-AB12-CD34-5678"
             )
             
-            submit = st.form_submit_button("🚀 Activar Licencia", use_container_width=True)
+            submit = st.form_submit_button("🚀 Activar Licencia", width='stretch')
             
             if submit and license_key: 
                 success, message = license_manager. activate_license(license_key)
@@ -1136,6 +1152,64 @@ with st.sidebar:
                 mime="application/json"
             )
     
+    # ── Calendario anterior (cross-period constraints) ──────────────────────
+    with st.expander("📅 Calendario Anterior", expanded=False):
+        st.caption(
+            "Carga un calendario de meses anteriores para respetar constraints "
+            "cross-período: huecos mínimos entre turnos y fines de semana consecutivos."
+        )
+        prior_file = st.file_uploader(
+            "Cargar JSON de calendario anterior",
+            type="json",
+            key=f"prior_schedule_uploader_{st.session_state.schedule_upload_counter}"
+        )
+        col_load, col_clear = st.columns(2)
+        with col_load:
+            if prior_file is not None and st.button("📥 Cargar", key="btn_load_prior"):
+                # Always store raw bytes so future Scheduler instances can re-apply
+                raw_bytes = prior_file.read()
+                st.session_state.prior_schedule_raw = raw_bytes
+                if st.session_state.get('scheduler') is not None:
+                    from io import BytesIO
+                    result = st.session_state.scheduler.load_prior_schedule_data(BytesIO(raw_bytes))
+                    if result.get('error'):
+                        st.error(result['error'])
+                    else:
+                        st.session_state.prior_schedule_data = result.get('summary', {})
+                        st.session_state.prior_schedule_loaded = True
+                        st.success(f"✅ Cargado: {len(st.session_state.prior_schedule_data)} trabajadores")
+                else:
+                    st.session_state.prior_schedule_loaded = True
+                    st.info("El calendario anterior se aplicará al generar el nuevo reparto.")
+        with col_clear:
+            if st.session_state.prior_schedule_loaded and st.button("🗑️ Limpiar", key="btn_clear_prior"):
+                if st.session_state.get('scheduler') is not None:
+                    st.session_state.scheduler.clear_prior_schedule_data()
+                st.session_state.prior_schedule_data = None
+                st.session_state.prior_schedule_raw = None
+                st.session_state.prior_schedule_loaded = False
+                st.rerun()
+
+        if st.session_state.prior_schedule_loaded:
+            summary = st.session_state.prior_schedule_data
+            if summary:
+                import pandas as pd
+                df_prior = pd.DataFrame([
+                    {
+                        "Trabajador": wid,
+                        "Turnos": v.get("shifts", 0),
+                        "Weekends": v.get("weekends", 0),
+                        "Último turno": (
+                            v["last_date"].strftime('%d/%m/%Y')
+                            if v.get("last_date") else "—"
+                        )
+                    }
+                    for wid, v in summary.items()
+                ])
+                st.dataframe(df_prior, use_container_width=True)
+            else:
+                st.info("Calendario cargado (los datos se aplicarán al generar el reparto).")
+
     # Período de reparto (Fecha Inicial - Fecha Final)
     st.subheader("📅 Período de Reparto")
     
@@ -1922,7 +1996,7 @@ with tab2:
             st.subheader("📋 Calendario Detallado")
             st.dataframe(
                 df,
-                use_container_width=True,
+                width='stretch',
                 height=600,
                 hide_index=True
             )
@@ -2174,7 +2248,7 @@ with tab3:
                     width=72
                 )
             
-            st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config=column_config_stats)
+            st.dataframe(styled_df, width='stretch', hide_index=True, column_config=column_config_stats)
             
             # ---- Tabla de turnos por médico y mes ----
             st.markdown("---")
@@ -2233,7 +2307,7 @@ with tab3:
                 for col in monthly_df.columns
             }
             
-            st.dataframe(monthly_df, use_container_width=True, hide_index=True, column_config=column_config_monthly)
+            st.dataframe(monthly_df, width='stretch', hide_index=True, column_config=column_config_monthly)
             
             # Gráfico de barras
             st.markdown("---")
@@ -2260,7 +2334,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Gráfico de desviación
             st.markdown("---")
@@ -2276,7 +2350,7 @@ with tab3:
             )
             
             fig2.update_layout(height=400)
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
             
             # Gráfico de Weekend (Vie/Sab/Dom + Festivos + Pre-festivos)
             st.markdown("---")
@@ -2304,7 +2378,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, width='stretch')
             
             # Gráfico de desviación de weekend
             st.markdown("---")
@@ -2323,7 +2397,7 @@ with tab3:
                 height=400,
                 yaxis_title="Desviación (turnos)"
             )
-            st.plotly_chart(fig4, use_container_width=True)
+            st.plotly_chart(fig4, width='stretch')
             
             # Gráficos de Puentes (Bridge)
             st.markdown("---")
@@ -2379,7 +2453,7 @@ with tab3:
                     height=400
                 )
                 
-                st.plotly_chart(fig5, use_container_width=True)
+                st.plotly_chart(fig5, width='stretch')
                 
                 # Gráfico de desviación de puentes
                 st.markdown("---")
@@ -2415,7 +2489,7 @@ with tab3:
                     xaxis_title="Médico",
                     showlegend=False
                 )
-                st.plotly_chart(fig6, use_container_width=True)
+                st.plotly_chart(fig6, width='stretch')
                 
                 # Tabla resumen de puentes
                 st.markdown("---")
@@ -2443,7 +2517,7 @@ with tab3:
                     col: st.column_config.Column(col, width=72)
                     for col in bridge_display_df.columns
                 }
-                st.dataframe(styled_bridge_df, use_container_width=True, hide_index=True, column_config=column_config_bridge)
+                st.dataframe(styled_bridge_df, width='stretch', hide_index=True, column_config=column_config_bridge)
 
 # ==================== TAB 4: VERIFICACIÓN ====================
 with tab4:
@@ -2582,7 +2656,7 @@ with tab5:
                     markers=True
                 )
                 fig.update_layout(height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 
                 # Statistics
                 col_avg, col_max, col_min = st.columns(3)
@@ -3103,7 +3177,7 @@ with tab6:
             
             st.dataframe(
                 st.session_state.revision_stats[cols_a_mostrar],
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config=column_config
             )

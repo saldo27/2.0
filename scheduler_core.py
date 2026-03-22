@@ -5,6 +5,7 @@ This module contains the main orchestration logic for the scheduler system,
 extracted from the original Scheduler class to improve maintainability and separation of concerns.
 """
 
+import hashlib
 import logging
 import copy
 import random
@@ -827,10 +828,26 @@ class SchedulerCore:
             for i in range(max_final_balance_loops):
                 logging.info(f"Final strict balance loop {i+1}/{max_final_balance_loops}")
                 changed1 = self.scheduler.schedule_builder._balance_workloads()
-                changed2 = self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=7)
+                changed2 = self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=20)
                 changed3 = self.scheduler.schedule_builder._balance_weekday_distribution()
                 changed4 = self.scheduler.schedule_builder._balance_monthly_distribution()
-                if not changed1 and not changed2 and not changed3 and not changed4:
+                # Rebalance weekend distribution — corrects imbalances introduced by workload/monthly swaps.
+                changed5 = False
+                try:
+                    changed5 = self.scheduler.schedule_builder._improve_weekend_distribution()
+                except Exception as _we:
+                    logging.debug(f"Weekend balance in loop {i+1} skipped: {_we}")
+                # Also rebalance bridge distribution each loop iteration so that
+                # workload/monthly changes don't accumulate bridge imbalance.
+                changed6 = False
+                try:
+                    if (hasattr(self.scheduler, 'bridge_periods') and
+                            self.scheduler.bridge_periods and
+                            hasattr(self.scheduler, 'schedule_builder')):
+                        changed6 = self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally()
+                except Exception as _be:
+                    logging.debug(f"Bridge balance in loop {i+1} skipped: {_be}")
+                if not changed1 and not changed2 and not changed3 and not changed4 and not changed5 and not changed6:
                     logging.info(f"Balance achieved after {i+1} iterations")
                     break
             else:
@@ -864,7 +881,7 @@ class SchedulerCore:
                 logging.info("Rebalancing last post distribution after balance optimization...")
                 self.scheduler.schedule_builder._adjust_last_post_distribution(
                     balance_tolerance=1.0,
-                    max_iterations=20
+                    max_iterations=30
                 )
 
             # NOTE: Monthly balance pass removed here — it now runs as the
@@ -919,32 +936,44 @@ class SchedulerCore:
             # Update scheduler state with final schedule
             self._apply_final_schedule(final_schedule_data)
 
-            # --- Post-finalization bridge rebalancing ---
-            # Run bridge distribution as a FINAL dedicated pass after all
-            # other optimizations are done and the schedule is frozen.
+            # --- Post-finalization monthly distribution balance ---
+            # Must run BEFORE bridge so that the bridge rebalancing (below) can
+            # correct any disruption that the monthly pass introduces.
+            logging.info("Running FINAL monthly distribution balance pass...")
+            for _pass in range(5):
+                if not self.scheduler.schedule_builder._balance_monthly_distribution():
+                    logging.info(f"Monthly distribution converged after {_pass + 1} pass(es)")
+                    break
+
+            # --- Bridge rebalancing (after monthly) ---
             try:
                 if (hasattr(self.scheduler, 'bridge_periods') and
                         self.scheduler.bridge_periods and
                         hasattr(self.scheduler, 'schedule_builder')):
-                    logging.info("🌉 Running dedicated post-finalization bridge rebalancing...")
-                    for pass_num in range(3):
+                    logging.info("🌉 Running FINAL bridge rebalancing...")
+                    for pass_num in range(5):
                         changed = self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally()
                         if not changed:
                             logging.info(f"🌉 Bridge rebalancing converged after {pass_num + 1} pass(es)")
                             break
                     else:
-                        logging.info("🌉 Bridge rebalancing completed all 3 passes")
+                        logging.info("🌉 Bridge rebalancing completed all 5 passes")
             except Exception as e:
-                logging.warning(f"Bridge rebalancing post-finalization failed: {e}")
+                logging.warning(f"Bridge rebalancing (final) failed: {e}")
 
-            # --- ABSOLUTE LAST STEP: Monthly distribution balance ---
-            # Run AFTER bridges and everything else so no subsequent pass can
-            # break the monthly balance.
-            logging.info("Running FINAL monthly distribution balance pass (absolute last)...")
-            for _pass in range(5):
-                if not self.scheduler.schedule_builder._balance_monthly_distribution():
-                    logging.info(f"Monthly distribution converged after {_pass + 1} pass(es)")
-                    break
+            # --- ABSOLUTE LAST STEP: Weekend rebalancing ---
+            # Must run AFTER monthly and bridge — both can disrupt weekend balance
+            # with no subsequent correction otherwise.
+            logging.info("🏖️ Running FINAL weekend distribution balance (absolute last step)...")
+            try:
+                for _wpass in range(5):
+                    if not self.scheduler.schedule_builder._improve_weekend_distribution():
+                        logging.info(f"🏖️ Weekend distribution converged after {_wpass + 1} pass(es)")
+                        break
+                else:
+                    logging.info("🏖️ Weekend distribution completed all 5 passes")
+            except Exception as e:
+                logging.warning(f"Weekend rebalancing (final) failed: {e}")
 
             # Final validation y logging
             self._perform_final_validation()
@@ -1313,6 +1342,17 @@ class SchedulerCore:
         except Exception as e:
             logging.warning(f"⚠️  Could not export PDF for attempt {attempt_num}: {str(e)}")
     
+    @staticmethod
+    def _make_hash_seed(attempt_num: int, tag: str) -> int:
+        """Generate a well-distributed 32-bit seed using SHA-256.
+
+        Unlike linear arithmetic (1000+n, 2000+n*11 …), consecutive attempt
+        numbers produce seeds with no pairwise correlation, giving the
+        Mersenne Twister truly independent starting states per attempt.
+        """
+        key = f"{attempt_num}:{tag}".encode()
+        return int(hashlib.sha256(key).hexdigest()[:8], 16) % (2 ** 32)
+
     def _select_distribution_strategy(self, attempt_num: int, total_attempts: int) -> Dict[str, Any]:
         """
         Select a distribution strategy for this attempt with TRUE variance.
@@ -1330,15 +1370,25 @@ class SchedulerCore:
         Returns:
             Dict with strategy configuration
         """
+        # NOTE on list_position tiebreaker:
+        # At Phase 1 fill time all workers have 0 shifts, so they all land in the
+        # same shift-count tier and the primary sort leaves them in alphabetical order.
+        # Sequential/alternating lists therefore still start with worker A, making
+        # list_position collapse to the same result as alphabetical_asc.
+        # The only tiebreaker that produces genuine diversity is 'random' (GRASP-RCL),
+        # which picks randomly from the top-20% score band.
+        # Strategy design: keep exactly ONE pure A-Z and ONE pure Z-A as deterministic
+        # baselines; all other 10 slots use GRASP-RCL with differing worker orderings
+        # and distinct hash seeds so each attempt produces a unique schedule.
         strategies = [
-            # Different tiebreaker strategies - ensures variance when scores are equal
+            # ── Deterministic baselines ──────────────────────────────────────────
             {
                 'name': 'Alphabetical A-Z Tiebreaker',
                 'worker_order': 'balanced',
                 'randomize': False,
                 'seed': None,
                 'tiebreaker': 'alphabetical_asc',
-                'description': 'When scores tie, prefer A-Z order'
+                'description': 'Deterministic baseline: A-Z wins every tie'
             },
             {
                 'name': 'Alphabetical Z-A Tiebreaker',
@@ -1346,77 +1396,124 @@ class SchedulerCore:
                 'randomize': False,
                 'seed': None,
                 'tiebreaker': 'alphabetical_desc',
-                'description': 'When scores tie, prefer Z-A order'
+                'description': 'Deterministic baseline: Z-A wins every tie'
             },
+            # ── GRASP-RCL strategies (genuinely diverse) ─────────────────────────
             {
-                'name': f'Random Tiebreaker (Seed {1000 + attempt_num})',
+                'name': f'Balanced + GRASP (Seed {self._make_hash_seed(attempt_num, "rt")})',
                 'worker_order': 'balanced',
-                'randomize': False,
-                'seed': 1000 + attempt_num,
+                'randomize': True,
+                'seed': self._make_hash_seed(attempt_num, 'rt'),
                 'tiebreaker': 'random',
-                'description': 'When scores tie, choose randomly'
+                'description': 'Balanced order, GRASP-RCL selects randomly from top-20% score band'
             },
             {
-                'name': 'Sequential with A-Z Ties',
+                'name': f'Sequential + GRASP (Seed {self._make_hash_seed(attempt_num, "sg")})',
                 'worker_order': 'sequential',
-                'randomize': False,
-                'seed': None,
-                'tiebreaker': 'alphabetical_asc',
-                'description': 'Sequential order with A-Z tiebreaker'
+                'randomize': True,
+                'seed': self._make_hash_seed(attempt_num, 'sg'),
+                'tiebreaker': 'random',
+                'description': 'A-Z secondary order with GRASP-RCL tiebreaker for genuine diversity'
             },
             {
-                'name': 'Reverse with Z-A Ties',
+                'name': f'Reverse + GRASP (Seed {self._make_hash_seed(attempt_num, "rg")})',
                 'worker_order': 'reverse',
-                'randomize': False,
-                'seed': None,
-                'tiebreaker': 'alphabetical_desc',
-                'description': 'Reverse order with Z-A tiebreaker'
+                'randomize': True,
+                'seed': self._make_hash_seed(attempt_num, 'rg'),
+                'tiebreaker': 'random',
+                'description': 'Z-A secondary order with GRASP-RCL tiebreaker'
             },
             {
-                'name': f'Workload Priority + Random (Seed {2000 + attempt_num * 11})',
+                'name': f'Workload Priority + GRASP (Seed {self._make_hash_seed(attempt_num, "wp")})',
                 'worker_order': 'workload',
-                'randomize': False,
-                'seed': 2000 + attempt_num * 11,
+                'randomize': True,
+                'seed': self._make_hash_seed(attempt_num, 'wp'),
                 'tiebreaker': 'random',
-                'description': 'Workload priority with random tiebreaker'
+                'description': 'Workload-deficit ordering with GRASP-RCL tiebreaker'
             },
             {
-                'name': 'Alternating with A-Z Ties',
+                'name': f'Alternating + GRASP (Seed {self._make_hash_seed(attempt_num, "ag")})',
                 'worker_order': 'alternating',
-                'randomize': False,
-                'seed': None,
-                'tiebreaker': 'alphabetical_asc',
-                'description': 'Alternating pattern with A-Z tiebreaker'
-            },
-            {
-                'name': f'Random Order + Random Ties (Seed {3000 + attempt_num * 23})',
-                'worker_order': 'random',
                 'randomize': True,
-                'seed': 3000 + attempt_num * 23,
+                'seed': self._make_hash_seed(attempt_num, 'ag'),
                 'tiebreaker': 'random',
-                'description': 'Fully randomized worker order and tiebreaker'
+                'description': 'Low/high alternating order with GRASP-RCL tiebreaker'
             },
             {
-                'name': 'Balanced with Z-A Ties',
-                'worker_order': 'balanced',
-                'randomize': False,
-                'seed': None,
-                'tiebreaker': 'alphabetical_desc',
-                'description': 'Balanced workload with Z-A tiebreaker'
-            },
-            {
-                'name': f'Random Order + A-Z Ties (Seed {4000 + attempt_num * 37})',
+                'name': f'Random Order + GRASP (Seed {self._make_hash_seed(attempt_num, "rr")})',
                 'worker_order': 'random',
                 'randomize': True,
-                'seed': 4000 + attempt_num * 37,
-                'tiebreaker': 'alphabetical_asc',
-                'description': 'Random order but alphabetical tiebreaker'
+                'seed': self._make_hash_seed(attempt_num, 'rr'),
+                'tiebreaker': 'random',
+                'description': 'Fully randomized worker order with GRASP-RCL'
+            },
+            {
+                'name': f'Workload Deficit + GRASP (Seed {self._make_hash_seed(attempt_num, "dg")})',
+                'worker_order': 'workload',
+                'randomize': True,
+                'seed': self._make_hash_seed(attempt_num, 'dg'),
+                'tiebreaker': 'random',
+                'description': 'Workload-deficit priority with GRASP, distinct seed sequence'
+            },
+            {
+                'name': f'Random Order + GRASP Alt (Seed {self._make_hash_seed(attempt_num, "ra")})',
+                'worker_order': 'random',
+                'randomize': True,
+                'seed': self._make_hash_seed(attempt_num, 'ra'),
+                'tiebreaker': 'random',
+                'description': 'Random order with GRASP, alternate seed sequence'
+            },
+            {
+                'name': f'Quasi-Random PCG64 + GRASP (Seed {self._make_hash_seed(attempt_num, "qr")})',
+                'worker_order': 'quasi_random',
+                'randomize': True,
+                'seed': self._make_hash_seed(attempt_num, 'qr'),
+                'tiebreaker': 'random',
+                'description': 'NumPy PCG64 permutation within shift-count groups + GRASP-RCL'
+            },
+            {
+                'name': f'Quasi-Random PCG64 + GRASP Alt (Seed {self._make_hash_seed(attempt_num, "qa")})',
+                'worker_order': 'quasi_random',
+                'randomize': True,
+                'seed': self._make_hash_seed(attempt_num, 'qa'),
+                'tiebreaker': 'random',
+                'description': 'PCG64 permutation with alternate GRASP seed for maximum diversity'
             }
         ]
         
-        # Select strategy based on attempt number
-        strategy_index = (attempt_num - 1) % len(strategies)
-        return strategies[strategy_index]
+        # Select strategy based on attempt number.
+        # The two deterministic baselines (A-Z and Z-A, slots 0 and 1) always
+        # produce the same schedule regardless of attempt_num, so we only run
+        # them once — on the very first cycle (attempts 1 and 2).
+        # From the second cycle onward those slots are replaced by two extra
+        # GRASP-RCL variants with unique seeds so no attempt is wasted.
+        num_strategies = len(strategies)
+        strategy_index = (attempt_num - 1) % num_strategies
+        if strategy_index < 2 and attempt_num > num_strategies:
+            # Second cycle or later: replace deterministic baselines with GRASP variants
+            if strategy_index == 0:
+                chosen = {
+                    'name': f'Balanced + GRASP Cycle {(attempt_num - 1) // num_strategies + 1} (Seed {self._make_hash_seed(attempt_num, "bc")})',
+                    'worker_order': 'balanced',
+                    'randomize': True,
+                    'seed': self._make_hash_seed(attempt_num, 'bc'),
+                    'tiebreaker': 'random',
+                    'description': 'Extra GRASP cycle replacing A-Z deterministic baseline'
+                }
+            else:  # strategy_index == 1
+                chosen = {
+                    'name': f'Workload + GRASP Cycle {(attempt_num - 1) // num_strategies + 1} (Seed {self._make_hash_seed(attempt_num, "wc")})',
+                    'worker_order': 'workload',
+                    'randomize': True,
+                    'seed': self._make_hash_seed(attempt_num, 'wc'),
+                    'tiebreaker': 'random',
+                    'description': 'Extra GRASP cycle replacing Z-A deterministic baseline'
+                }
+        else:
+            chosen = strategies[strategy_index]
+        # Embed attempt_num so _perform_initial_fill_with_strategy can use it for hash seeds
+        chosen['attempt_num'] = attempt_num
+        return chosen
     
     def _perform_initial_fill_with_strategy(self, strategy: Dict[str, Any]) -> bool:
         """
@@ -1443,13 +1540,13 @@ class SchedulerCore:
                 random.seed(seed_value)
                 logging.info(f"🔢 Random Seed: {seed_value}")
             else:
-                # For non-random strategies, use a predictable but different seed each time
-                # to ensure varied behavior between attempts
-                import time
-                seed_value = int((time.time() * 1000000) % 10000)
+                # For deterministic strategies, derive a hash-based seed so that
+                # consecutive attempts have uncorrelated random state even when
+                # no explicit seed is configured in the strategy.
+                _attempt = strategy.get('attempt_num', 0)
+                seed_value = self._make_hash_seed(_attempt, strategy['name'])
                 random.seed(seed_value)
-                logging.info(f"Set deterministic seed to {seed_value} for strategy '{strategy['name']}'")
-            
+                logging.info(f"Hash-derived seed {seed_value} for strategy '{strategy['name']}'")            
             # Get worker list based on strategy
             workers_list = self._get_ordered_workers_list(strategy['worker_order'])
             
@@ -1491,8 +1588,8 @@ class SchedulerCore:
         then applies secondary ordering strategy. This ensures fair distribution.
         
         Args:
-            order_type: Type of ordering ('balanced', 'random', 'sequential', 'reverse', 
-                       'workload', 'alternating')
+            order_type: Type of ordering ('balanced', 'random', 'sequential', 'reverse',
+                       'workload', 'alternating', 'quasi_random')
             
         Returns:
             List of worker dictionaries in specified order, with workers having
@@ -1561,6 +1658,23 @@ class SchedulerCore:
                 low_idx += 1
                 high_idx -= 1
             workers = alternated
+
+        elif order_type == 'quasi_random':
+            # Use numpy's PCG64 generator (better statistical properties than MT19937)
+            # to produce permutations within each shift-count group.
+            # The seed is drawn from the already-seeded Python random state so results
+            # are fully reproducible given the same hash-based seed per attempt.
+            import numpy as np
+            from itertools import groupby as _groupby
+            _seed_val = random.getrandbits(64)
+            _rng = np.random.default_rng(_seed_val)
+            result = []
+            for _, _grp in _groupby(workers,
+                                    key=lambda w: self.scheduler.worker_shift_counts.get(w['id'], 0)):
+                _grp_list = list(_grp)
+                _perm = _rng.permutation(len(_grp_list))
+                result.extend(_grp_list[int(i)] for i in _perm)
+            workers = result
         
         # Log first few workers to verify ordering
         if len(workers) > 0:

@@ -181,6 +181,21 @@ class Scheduler:
             # Calculate targets before proceeding
             self._calculate_target_shifts()
 
+            # Snapshot of target_shifts per worker immediately after _calculate_target_shifts.
+            # Used as the stable baseline so that repeated calls to load_prior_schedule_data
+            # always adjust from the original targets (not from a previously-adjusted value).
+            self._base_target_shifts: Dict[str, float] = {
+                w['id']: float(w.get('target_shifts', 0)) for w in self.workers_data
+            }
+
+            # Initialize prior-schedule data containers (populated lazily via
+            # load_prior_schedule_data() before generate_schedule is called).
+            self.prior_assignments: Dict[str, set] = {}      # worker_id → set of datetime
+            self.prior_shift_counts: Dict[str, int] = {}     # worker_id → int
+            self.prior_weekend_counts: Dict[str, int] = {}   # worker_id → int
+            self.prior_target_shifts: Dict[str, float] = {}  # configured target in prior period
+            self.prior_last_date: Dict[str, Optional[Any]] = {}  # worker_id → datetime|None
+
             self._log_initialization()
 
             # The ScheduleBuilder is now initialized within the generate_schedule method
@@ -190,6 +205,136 @@ class Scheduler:
         except Exception as e:
             logging.error(f"Initialization error: {str(e)}", exc_info=True) # Added exc_info=True
             raise SchedulerError(f"Failed to initialize scheduler: {str(e)}")
+
+    # =========================================================================
+    # PRIOR SCHEDULE INTEGRATION
+    # =========================================================================
+
+    def load_prior_schedule_data(self, json_source) -> Dict[str, Any]:
+        """
+        Load a previously-exported schedule JSON and seed prior-period stats so
+        that cross-period constraints (gap, consecutive weekends, proportional
+        weekend count) are respected when generating the new schedule.
+
+        Parameters
+        ----------
+        json_source : file-like / str path / dict
+            The prior-period schedule JSON (exported via export_schedule_json).
+
+        Returns
+        -------
+        dict with keys "error" (str or None) and "summary" (per-worker stats).
+        """
+        from prior_schedule_handler import load_prior_schedule, summarize_prior_schedule
+
+        holidays_set = set(self.holidays)
+        prior_data = load_prior_schedule(
+            json_source,
+            new_period_start=self.start_date,
+            new_period_holidays=holidays_set,
+        )
+
+        if prior_data["error"]:
+            return {"error": prior_data["error"], "summary": {}}
+
+        self.prior_assignments = prior_data["prior_assignments"]
+        self.prior_shift_counts = prior_data["prior_shift_counts"]
+        self.prior_weekend_counts = prior_data["prior_weekends"]
+        self.prior_target_shifts = prior_data.get("prior_target_shifts", {})
+        self.prior_last_date = prior_data["prior_last_date"]
+
+        # Adjust new-period targets to compensate for prior-period over/under-delivery
+        self._apply_prior_period_balance()
+
+        logging.info(
+            f"Prior schedule loaded: {len(self.prior_assignments)} workers, "
+            f"period {prior_data['prior_period_start']} → {prior_data['prior_period_end']}"
+        )
+
+        return {"error": None, "summary": summarize_prior_schedule(prior_data)}
+
+    def clear_prior_schedule_data(self) -> None:
+        """Remove any loaded prior-schedule data (resets to zero-history mode)."""
+        self.prior_assignments = {}
+        self.prior_shift_counts = {}
+        self.prior_weekend_counts = {}
+        self.prior_target_shifts = {}
+        self.prior_last_date = {}
+        # Restore worker targets to the original pre-adjustment values
+        for worker in self.workers_data:
+            base = self._base_target_shifts.get(worker['id'])
+            if base is not None:
+                worker['target_shifts'] = base
+        logging.info("Prior schedule data cleared; target_shifts restored to base values.")
+
+    def _apply_prior_period_balance(self) -> None:
+        """
+        Adjust each worker's target_shifts for the new period so that
+        over/under-delivery in the prior period is compensated.
+
+        Logic:
+          delta = prior_actual_shifts - prior_target_shifts
+          new_target = base_target - delta
+
+        Workers who worked MORE than their prior target get a smaller new-period
+        target (and vice-versa).  The adjustment is always relative to the
+        original base target stored in self._base_target_shifts so that repeated
+        calls (e.g., user loads a different prior file) are idempotent.
+        """
+        if not self.prior_shift_counts or not self.prior_target_shifts:
+            return
+
+        for worker in self.workers_data:
+            wid = worker['id']
+            prior_actual = self.prior_shift_counts.get(wid)
+            prior_target = self.prior_target_shifts.get(wid)
+            if prior_actual is None or prior_target is None or prior_target == 0:
+                continue
+
+            delta = prior_actual - prior_target  # positive: worked extra; negative: worked less
+            if delta == 0:
+                continue
+
+            base_target = self._base_target_shifts.get(wid, worker.get('target_shifts', 1))
+            adjusted = max(1, round(base_target - delta))
+            worker['target_shifts'] = adjusted
+            logging.info(
+                f"[PriorBalance] {wid}: base_target={base_target} → adjusted={adjusted} "
+                f"(prior_actual={prior_actual}, prior_target={prior_target}, delta={delta:+.0f})"
+            )
+
+    def _get_effective_assignments(self, worker_id: str) -> set:
+        """
+        Return the merged set of prior-period dates AND current-period dates
+        for a worker.  Used by constraint checkers that need cross-period
+        visibility (gap constraint, consecutive-weekend constraint).
+        Only prior assignments within the lookback window (90 days before
+        the new period start) are included to avoid stale data from very
+        old periods disturbing constraints.
+        """
+        current = self.worker_assignments.get(worker_id, set())
+        prior = self.prior_assignments.get(worker_id, set())
+        if not prior:
+            return current
+        # Only include prior dates within 90 days of new period start to keep
+        # the constraint window relevant.
+        lookback_cutoff = self.start_date - timedelta(days=90)
+        relevant_prior = {d for d in prior if d >= lookback_cutoff}
+        return current | relevant_prior
+
+    def _get_effective_weekend_count(self, worker_id: str) -> int:
+        """
+        Return prior-period weekend count + current-period weekend count.
+        Used by the proportional weekend distribution constraint.
+        """
+        return (
+            self.prior_weekend_counts.get(worker_id, 0)
+            + self.worker_weekend_counts.get(worker_id, 0)
+        )
+
+    def _get_prior_weekend_count(self, worker_id: str) -> int:
+        """Return just the prior-period weekend count."""
+        return self.prior_weekend_counts.get(worker_id, 0)
 
     def _get_cache_key(self, method_name: str, *args) -> str:
         """Generate a cache key for method results"""
@@ -463,7 +608,15 @@ class Scheduler:
             for worker_id in self.worker_weekends:
                 if self.worker_weekends[worker_id]:  # Only sort if not empty
                     self.worker_weekends[worker_id].sort()
-        
+
+            # Seed worker_shift_counts with prior-period counts so that
+            # ordering strategies naturally de-prioritize workers who already
+            # accumulated many shifts in the previous schedule period.
+            if self.prior_shift_counts:
+                for wid, prior_count in self.prior_shift_counts.items():
+                    if wid in self.worker_shift_counts:
+                        self.worker_shift_counts[wid] += prior_count
+
             logging.info("Tracking data synchronization complete.")
             return True
         except Exception as e:
@@ -1124,7 +1277,8 @@ class Scheduler:
         
         for date in bridge_dates:
             if date in self.schedule:
-                total_bridge_shifts += len(self.schedule[date])
+                # Count only filled (non-None) slots to avoid inflating targets
+                total_bridge_shifts += sum(1 for w in self.schedule[date] if w is not None)
         
         # Calculate total FTE of all workers
         total_fte = sum(w.get('work_percentage', 100) / 100.0 for w in self.workers_data)

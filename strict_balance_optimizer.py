@@ -479,7 +479,7 @@ class StrictBalanceOptimizer:
                         max_monthly = expected_monthly + monthly_tolerance
                         
                         # C va a ganar un turno pero también perderá uno, así que solo bloqueamos si está muy alto
-                        if shifts_c_month_a + 1 > max_monthly + 1:
+                        if shifts_c_month_a + 1 > max_monthly:
                             skip_c_take = True
                     
                     # Validar fines de semana consecutivos para C (incluyendo holidays y pre-holidays)
@@ -678,7 +678,21 @@ class StrictBalanceOptimizer:
                         self.schedule[date][post] = under_id
                         self.worker_assignments.setdefault(under_id, set()).add(date)
                         self.scheduler._update_tracking_data(under_id, date, post, removing=False)
-                        
+
+                        # Post-check: verify counts match saved state (over -1, under +1)
+                        post_over_count  = len(self.worker_assignments.get(over_id, set()))
+                        post_under_count = len(self.worker_assignments.get(under_id, set()))
+                        orig_over_count  = len(state['assignments'].get(over_id, set()))
+                        orig_under_count = len(state['assignments'].get(under_id, set()))
+                        if post_over_count != orig_over_count - 1 or post_under_count != orig_under_count + 1:
+                            logging.warning(
+                                f"  ⚠️ Reassignment count error: "
+                                f"{over_id} {orig_over_count}→{post_over_count}, "
+                                f"{under_id} {orig_under_count}→{post_under_count} — rolling back"
+                            )
+                            self._restore_state(state)
+                            break  # Skip remaining underloaded for this date; outer loop restores state
+
                         logging.info(f"  ✅ Reassignment: {over_id} removed, {under_id} assigned on {date.strftime('%Y-%m-%d')}")
                         return True
                 
@@ -688,40 +702,91 @@ class StrictBalanceOptimizer:
         return False
     
     def _try_relaxed_swap(self, overloaded: List, underloaded: List, tolerance: int) -> bool:
-        """Intenta intercambio con constraints relajadas (nivel 1)"""
+        """Intenta intercambio con constraints relajadas (nivel 1).
+
+        Igual que _try_direct_swap pero con relaxation_level=1.  Se añade:
+        - _giver_month_ok: no ceder turnos de meses donde el cedente ya está al límite.
+        - Pre/post count accounting: registra nº de turnos antes y después y revierte
+          si los conteos no cambian como se espera o el balance no mejora.
+        """
         for over_id, over_dev in overloaded[:3]:
             for under_id, under_dev in underloaded[:3]:
                 over_assignments = list(self.worker_assignments.get(over_id, set()))
-                
+
                 for date in over_assignments:
                     if (over_id, date) in self.builder._locked_mandatory:
                         continue
-                    
+
+                    # Giver monthly check (same guard as _try_direct_swap)
+                    if not self._giver_month_ok(over_id, date):
+                        continue
+
                     try:
                         post = self.schedule[date].index(over_id)
                     except (ValueError, KeyError):
                         continue
-                    
+
                     worker_under = next((w for w in self.workers_data if w['id'] == under_id), None)
                     if not worker_under:
                         continue
-                    
+
                     # Usar relaxation_level=1
                     score = self.builder._calculate_worker_score(worker_under, date, post, relaxation_level=1)
-                    
+
                     if score > float('-inf'):
                         state = self._save_state()
-                        
+
+                        # ── Pre-swap counts ──────────────────────────────────────────
+                        pre_over_count  = len(self.worker_assignments.get(over_id,  set()))
+                        pre_under_count = len(self.worker_assignments.get(under_id, set()))
+
                         self.schedule[date][post] = under_id
                         self.worker_assignments[over_id].discard(date)
                         self.worker_assignments.setdefault(under_id, set()).add(date)
-                        
-                        self.scheduler._update_tracking_data(over_id, date, post, removing=True)
+
+                        self.scheduler._update_tracking_data(over_id,  date, post, removing=True)
                         self.scheduler._update_tracking_data(under_id, date, post, removing=False)
-                        
-                        logging.info(f"  ✅ Relaxed swap: {over_id} → {under_id} on {date.strftime('%Y-%m-%d')}")
-                        return True
-        
+
+                        # ── Post-swap counts ─────────────────────────────────────────
+                        post_over_count  = len(self.worker_assignments.get(over_id,  set()))
+                        post_under_count = len(self.worker_assignments.get(under_id, set()))
+
+                        # Verify counts changed as expected (+1 / -1)
+                        counts_ok = (post_over_count  == pre_over_count  - 1 and
+                                     post_under_count == pre_under_count + 1)
+                        if not counts_ok:
+                            logging.error(
+                                f"Relaxed swap accounting error: "
+                                f"{over_id} {pre_over_count}→{post_over_count} "
+                                f"(expected {pre_over_count - 1}), "
+                                f"{under_id} {pre_under_count}→{post_under_count} "
+                                f"(expected {pre_under_count + 1}) — rolling back"
+                            )
+                            self._restore_state(state)
+                            continue
+
+                        # Verify balance actually improved
+                        over_target  = next((w['target_shifts'] for w in self.workers_data if w['id'] == over_id),  0)
+                        under_target = next((w['target_shifts'] for w in self.workers_data if w['id'] == under_id), 0)
+                        new_over_dev  = abs(post_over_count  - over_target)
+                        new_under_dev = abs(post_under_count - under_target)
+
+                        if new_over_dev <= abs(over_dev) and new_under_dev <= abs(under_dev):
+                            logging.info(
+                                f"  ✅ Relaxed swap: "
+                                f"{over_id}({pre_over_count}→{post_over_count}) → "
+                                f"{under_id}({pre_under_count}→{post_under_count}) "
+                                f"on {date.strftime('%Y-%m-%d')}"
+                            )
+                            return True
+                        else:
+                            logging.debug(
+                                f"  ↩️ Relaxed swap reverted (no balance gain): "
+                                f"{over_id} dev {over_dev}→{post_over_count - over_target}, "
+                                f"{under_id} dev {under_dev}→{post_under_count - under_target}"
+                            )
+                            self._restore_state(state)
+
         return False
     
     def _try_aggressive_three_way_swap(self, overloaded: List, underloaded: List, tolerance: int) -> bool:
@@ -786,6 +851,23 @@ class StrictBalanceOptimizer:
                     
                     if c_id in self.schedule.get(date_a, []):
                         continue
+
+                    # G5: Explicit monthly cap for C taking date_a (mirrors normal three-way)
+                    skip_c_take = False
+                    if hasattr(self.builder, '_get_expected_monthly_target'):
+                        _c_exp_m = self.builder._get_expected_monthly_target(worker_c, date_a.year, date_a.month)
+                        _c_month_a = sum(1 for d in self.worker_assignments.get(c_id, set())
+                                         if d.year == date_a.year and d.month == date_a.month)
+                        _c_work_pct = worker_c.get('work_percentage', 100)
+                        _c_monthly_tol = 1 if _c_work_pct >= 100 else 0
+                        if _c_month_a + 1 > _c_exp_m + _c_monthly_tol:
+                            skip_c_take = True
+                    if not skip_c_take and hasattr(self.builder, '_is_weekend_or_holiday') and self.builder._is_weekend_or_holiday(date_a):
+                        if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
+                            if self.builder._would_exceed_weekend_limit_simulated(c_id, date_a, self.worker_assignments):
+                                skip_c_take = True
+                    if skip_c_take:
+                        continue
                     
                     # Buscar turnos de C que pueda ceder
                     c_dates = list(self.worker_assignments.get(c_id, set()))
@@ -825,6 +907,23 @@ class StrictBalanceOptimizer:
                             # Verificar con relajación nivel 1
                             score_b_take_c = self.builder._calculate_worker_score(worker_b, date_c, post_c, relaxation_level=1)
                             if score_b_take_c == float('-inf'):
+                                continue
+
+                            # G5: Explicit monthly cap and weekend check for B (mirrors normal three-way)
+                            skip_b_take = False
+                            if hasattr(self.builder, '_get_expected_monthly_target'):
+                                _b_exp_m = self.builder._get_expected_monthly_target(worker_b, date_c.year, date_c.month)
+                                _b_month_c = sum(1 for d in self.worker_assignments.get(under_id, set())
+                                                 if d.year == date_c.year and d.month == date_c.month)
+                                _b_work_pct = worker_b.get('work_percentage', 100)
+                                _b_monthly_tol = 1 if _b_work_pct >= 100 else 0
+                                if _b_month_c + 1 > _b_exp_m + _b_monthly_tol:
+                                    skip_b_take = True
+                            if not skip_b_take and hasattr(self.builder, '_is_weekend_or_holiday') and self.builder._is_weekend_or_holiday(date_c):
+                                if hasattr(self.builder, '_would_exceed_weekend_limit_simulated'):
+                                    if self.builder._would_exceed_weekend_limit_simulated(under_id, date_c, self.worker_assignments):
+                                        skip_b_take = True
+                            if skip_b_take:
                                 continue
                             
                             # Intentar el intercambio
@@ -1120,13 +1219,26 @@ class StrictBalanceOptimizer:
                         score = self.builder._calculate_worker_score(worker_under, date, post, relaxation_level=1)
                         if score > float('-inf'):
                             state = self._save_state()
-                            
+                            pre_mid_count  = len(self.worker_assignments.get(mid_id, set()))
+                            pre_under_count = len(self.worker_assignments.get(under_id, set()))
+
                             self.schedule[date][post] = under_id
                             self.worker_assignments[mid_id].discard(date)
                             self.worker_assignments.setdefault(under_id, set()).add(date)
                             
                             self.scheduler._update_tracking_data(mid_id, date, post, removing=True)
                             self.scheduler._update_tracking_data(under_id, date, post, removing=False)
+
+                            post_mid_count  = len(self.worker_assignments.get(mid_id, set()))
+                            post_under_count = len(self.worker_assignments.get(under_id, set()))
+                            if post_mid_count != pre_mid_count - 1 or post_under_count != pre_under_count + 1:
+                                logging.warning(
+                                    f"  ⚠️ Forced redistribution count error: "
+                                    f"{mid_id} {pre_mid_count}→{post_mid_count}, "
+                                    f"{under_id} {pre_under_count}→{post_under_count} — rolling back"
+                                )
+                                self._restore_state(state)
+                                continue
                             
                             logging.info(f"  ✅ Forced redistribution: {mid_id}(+{mid_dev}) → {under_id}({under_dev}) on {date.strftime('%Y-%m-%d')}")
                             return True

@@ -274,7 +274,8 @@ class ShiftToleranceValidator:
         
         while current_date <= self.scheduler.end_date:
             if (current_date.weekday() >= 4 or  # Friday, Saturday, Sunday
-                current_date in holidays_set):
+                current_date in holidays_set or
+                (current_date + timedelta(days=1)) in holidays_set):  # pre-holiday (day before holiday)
                 weekend_days += 1
             current_date += timedelta(days=1)
         
