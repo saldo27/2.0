@@ -155,7 +155,10 @@ class StatisticsCalculator:
         """
         # Pre-calculate general stats once
         total_days = (self.end_date - self.start_date).days + 1
-        total_shifts = sum(len(shifts) for shifts in self.schedule.values())
+        total_shifts = sum(
+            self.scheduler._get_shifts_for_date(d)
+            for d in self.scheduler._get_date_range(self.start_date, self.end_date)
+        )
         
         # Calculate constraint skips efficiently using generator expressions
         constraint_skips_summary = {
@@ -323,12 +326,18 @@ class StatisticsCalculator:
     
     def _calculate_coverage(self):
         """Calculate schedule coverage percentage"""
-        total_required_shifts = (
-            (self.end_date - self.start_date).days + 1
-        ) * self.num_shifts
+        # Use _get_shifts_for_date to respect variable_shifts configuration
+        total_required_shifts = sum(
+            self.scheduler._get_shifts_for_date(d)
+            for d in self.scheduler._get_date_range(self.start_date, self.end_date)
+        )
         
-        actual_shifts = sum(len(shifts) for shifts in self.schedule.values())
-        return (actual_shifts / total_required_shifts) * 100
+        # Count only actually assigned (non-None) workers, not slot placeholders
+        actual_shifts = sum(
+            sum(1 for w in shifts if w is not None)
+            for shifts in self.schedule.values()
+        )
+        return (actual_shifts / total_required_shifts) * 100 if total_required_shifts > 0 else 0.0
 
     def _calculate_balance_score(self):
         """Calculate overall balance score based on various factors"""
@@ -384,7 +393,9 @@ class StatisticsCalculator:
         worker_assignments = self.scheduler.worker_assignments
     
         # Calculate coverage efficiently
-        total_shifts = (self.scheduler.end_date - self.scheduler.start_date).days * self.scheduler.num_shifts
+        # CRITICAL: +1 on days to include the end_date itself (inclusive range)
+        total_shifts = (self.scheduler.end_date - self.scheduler.start_date).days + 1
+        total_shifts *= self.scheduler.num_shifts
         filled_shifts = sum(
             sum(1 for worker in shifts if worker is not None) 
             for shifts in schedule.values()

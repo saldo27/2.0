@@ -55,6 +55,7 @@ class IterativeOptimizer:
         self.weekend_only_mode = False  # Special mode when only weekend violations remain
         self.no_change_counter = 0  # Track iterations with zero changes
         self.max_no_change = 6  # Stop if no changes for 6 consecutive iterations (increased from 2)
+        self.relaxed_weekend_constraints = False  # Allow looser weekend constraints when stagnating
         
         # Constraint parameters - will be updated from scheduler config
         self.gap_between_shifts = 3  # Default minimum gap between shifts
@@ -88,8 +89,7 @@ class IterativeOptimizer:
         self.best_result = None
         self.optimization_history = []
         self.weekend_only_mode = False
-        logging.info("🔄 Optimizer state reset for new optimization run")
-        self.weekend_only_mode = False
+        self.relaxed_weekend_constraints = False
         logging.info("🔄 Optimizer state reset for new optimization run")
         
         # Store reference to scheduler for mandatory shift checks
@@ -179,7 +179,10 @@ class IterativeOptimizer:
                 self.stagnation_counter += 1
                 logging.warning(f"   ⚠️  No change this iteration (no-change: {self.no_change_counter}/{self.max_no_change}, stagnation: {self.stagnation_counter}/{self.convergence_threshold})")
                 
-                if self.no_change_counter >= self.max_no_change:
+                # In weekend-only mode, allow more patience for the cross-date
+                # strategies (5 & 6) to find solutions in subsequent iterations
+                effective_max_no_change = self.max_no_change + 4 if self.weekend_only_mode else self.max_no_change
+                if self.no_change_counter >= effective_max_no_change:
                     logging.warning(f"   🛑 Stopping: {self.no_change_counter} iterations with NO changes - system cannot improve further with current constraints")
                     break
             else:
@@ -208,13 +211,25 @@ class IterativeOptimizer:
                                 f"({weekend_violations} weekend, {general_violations} general, "
                                 f"{weekend_percentage:.1f}% are weekend violations)")
                     self.weekend_only_mode = True
-                    # Reset stagnation counter for weekend-specific optimization
+                    # Reset counters for weekend-specific optimization
                     if self.stagnation_counter > 2:
                         self.stagnation_counter = 2  # Give it more chances
+                    if self.no_change_counter > 0:
+                        self.no_change_counter = 0  # Reset no-change counter on mode switch
+                        logging.info(f"   🔄 Reset no_change_counter for WEEKEND-ONLY mode")
+                
+                # Activate relaxed weekend constraints when stagnating in weekend-only mode
+                if self.stagnation_counter >= 3 or self.no_change_counter >= 2:
+                    if not self.relaxed_weekend_constraints:
+                        self.relaxed_weekend_constraints = True
+                        self.no_change_counter = 0  # Give relaxed mode a fresh start
+                        logging.info(f"   🔓 RELAXED weekend constraints activated (stagnation: {self.stagnation_counter}, no_change: {self.no_change_counter})")
+                        logging.info(f"   🔓 Allowing 2 weekend shifts per calendar week to enable redistribution")
             else:
                 if self.weekend_only_mode:
                     logging.info(f"🔄 Deactivating WEEKEND-ONLY mode (general: {general_violations}, weekend: {weekend_violations})")
                     self.weekend_only_mode = False
+                    self.relaxed_weekend_constraints = False
                 # DEBUG: Log why weekend-only mode was NOT activated
                 if weekend_violations > 0 and not self.weekend_only_mode:
                     logging.debug(f"   ℹ️  Weekend-only NOT active: weekend={weekend_violations}, general={general_violations} "
@@ -246,7 +261,8 @@ class IterativeOptimizer:
                 
                 current_schedule = self._apply_optimization_strategies(
                     current_schedule, validation_report, scheduler_core, 
-                    workers_data, schedule_config, iteration, optimization_intensity
+                    workers_data, schedule_config, iteration, optimization_intensity,
+                    validator=validator
                 )
                 logging.info(f"   ✅ Optimization strategies applied, continuing to next iteration...")
             except Exception as e:
@@ -279,7 +295,7 @@ class IterativeOptimizer:
     def _apply_optimization_strategies(self, schedule: Dict, validation_report: Dict, 
                                      scheduler_core, workers_data: List[Dict], 
                                      schedule_config: Dict, iteration: int, 
-                                     intensity: float = 0.3) -> Dict:
+                                     intensity: float = 0.3, validator=None) -> Dict:
         """
         Apply various optimization strategies to improve the schedule.
         
@@ -324,6 +340,13 @@ class IterativeOptimizer:
                 optimized_schedule, weekend_violations, workers_data, schedule_config
             )
             
+            # Re-validate after redistribution to get fresh violation data
+            if validator:
+                validation_report = self._create_validation_report(validator, optimized_schedule)
+                weekend_violations = validation_report.get('weekend_shift_violations', [])
+                general_violations = validation_report.get('general_shift_violations', [])
+                logging.info(f"   📊 Re-validated after redistribution: {len(general_violations)} general, {len(weekend_violations)} weekend violations")
+            
             # Strategy 1B: Direct weekend swaps between over/under assigned workers
             optimized_schedule = self._apply_weekend_swaps(
                 optimized_schedule, validation_report, workers_data, schedule_config
@@ -332,14 +355,43 @@ class IterativeOptimizer:
             # Strategy 1C: Third aggressive pass for persistent violations (NEW)
             if len(weekend_violations) >= 4 and self.stagnation_counter >= 2:
                 logging.info(f"   🔥 AGGRESSIVE MODE: {len(weekend_violations)} persistent violations, stagnation: {self.stagnation_counter}")
-                # Try swaps again with relaxed constraints
+                # Re-validate for fresh data before aggressive pass
+                if validator:
+                    validation_report = self._create_validation_report(validator, optimized_schedule)
+                    weekend_violations = validation_report.get('weekend_shift_violations', [])
+                # Try swaps again with fresh violation data
                 optimized_schedule = self._apply_weekend_swaps(
                     optimized_schedule, validation_report, workers_data, schedule_config
                 )
-                # Try redistribution one more time
+                # Try redistribution one more time with fresh data
+                if validator:
+                    fresh_weekend = self._create_validation_report(validator, optimized_schedule).get('weekend_shift_violations', [])
+                else:
+                    fresh_weekend = weekend_violations
                 optimized_schedule = self._redistribute_weekend_shifts(
-                    optimized_schedule, weekend_violations, workers_data, schedule_config
+                    optimized_schedule, fresh_weekend, workers_data, schedule_config
                 )
+
+            # Strategy 5: Weekend↔Weekday cross-date rotation (NEW)
+            if validator:
+                validation_report = self._create_validation_report(validator, optimized_schedule)
+            optimized_schedule = self._apply_weekend_weekday_rotation(
+                optimized_schedule, validation_report, workers_data, schedule_config
+            )
+
+            # Strategy 6: 3-way chain rotation via mediator (NEW)
+            if validator:
+                validation_report = self._create_validation_report(validator, optimized_schedule)
+            optimized_schedule = self._apply_chain_weekend_rotation(
+                optimized_schedule, validation_report, workers_data, schedule_config
+            )
+
+            # Strategy 7: Ejection-chain swap (unblock gap-constrained workers)
+            if validator:
+                validation_report = self._create_validation_report(validator, optimized_schedule)
+            optimized_schedule = self._apply_ejection_chain(
+                optimized_schedule, validation_report, workers_data, schedule_config
+            )
         else:
             # NORMAL MODE: Standard redistribution with MULTIPLE PASSES for better coverage
             # Strategy 1: Redistribute weekend shifts FIRST (more specific constraints)
@@ -368,7 +420,31 @@ class IterativeOptimizer:
                 optimized_schedule = self._apply_weekend_swaps(
                     optimized_schedule, validation_report, workers_data, schedule_config
                 )
-        
+
+            # Strategy 5: Weekend↔Weekday cross-date rotation (normal mode)
+            if weekend_violations and len(weekend_violations) >= 2:
+                if validator:
+                    validation_report = self._create_validation_report(validator, optimized_schedule)
+                optimized_schedule = self._apply_weekend_weekday_rotation(
+                    optimized_schedule, validation_report, workers_data, schedule_config
+                )
+
+            # Strategy 6: 3-way chain rotation (normal mode)
+            if weekend_violations and len(weekend_violations) >= 2:
+                if validator:
+                    validation_report = self._create_validation_report(validator, optimized_schedule)
+                optimized_schedule = self._apply_chain_weekend_rotation(
+                    optimized_schedule, validation_report, workers_data, schedule_config
+                )
+
+            # Strategy 7: Ejection-chain swap (normal mode)
+            if weekend_violations and len(weekend_violations) >= 2:
+                if validator:
+                    validation_report = self._create_validation_report(validator, optimized_schedule)
+                optimized_schedule = self._apply_ejection_chain(
+                    optimized_schedule, validation_report, workers_data, schedule_config
+                )
+
         # CRITICAL: Validate balance after redistribution
         logging.info(f"   🔍 Validating balance after redistribution...")
         balance_result = self.balance_validator.validate_schedule_balance(optimized_schedule, workers_data)
@@ -414,7 +490,7 @@ class IterativeOptimizer:
         
         # Strategy 3: Apply random perturbations based on intensity - more aggressive for persistent violations
         total_violations = len(general_violations) + len(weekend_violations)
-        if iteration > 1 and (total_violations > 4 or self.stagnation_counter > 0):  # Even lower threshold for earlier activation
+        if total_violations > 4 or self.stagnation_counter > 0 or self.no_change_counter > 0:  # Active from iteration 1
             # Scale perturbation intensity based on violation count and stagnation
             base_intensity = intensity * 1.0  # Increased from 0.8
             violation_multiplier = min(3.0, 1.0 + (total_violations / 6.0))  # More aggressive scaling
@@ -430,9 +506,19 @@ class IterativeOptimizer:
         
         # Strategy 4: Forced redistribution for high stagnation - MORE AGGRESSIVE
         if self.stagnation_counter >= 1 and total_violations > 4:
-            logging.info(f"   🚨 Applying forced redistribution due to stagnation and violations")
+            # Re-validate to get fresh violation data for forced redistribution
+            if validator:
+                fresh_report = self._create_validation_report(validator, optimized_schedule)
+                fresh_general = fresh_report.get('general_shift_violations', [])
+                fresh_weekend = fresh_report.get('weekend_shift_violations', [])
+                all_violations = fresh_general + fresh_weekend
+                total_violations = len(all_violations)
+                logging.info(f"   🚨 Applying forced redistribution ({total_violations} current violations after strategies)")
+            else:
+                all_violations = general_violations + weekend_violations
+            
             optimized_schedule = self._apply_forced_redistribution(
-                optimized_schedule, general_violations + weekend_violations, workers_data, schedule_config
+                optimized_schedule, all_violations, workers_data, schedule_config
             )
             
             # Strategy 4B: Double-pass for persistent violations
@@ -664,14 +750,29 @@ class IterativeOptimizer:
                             # Find and replace in the list
                             try:
                                 idx = workers.index(excess_worker)
+                                pre_at_post = workers[idx]
                                 workers[idx] = best_recipient
+                                # Post-swap verification
+                                if workers[idx] != best_recipient:
+                                    logging.error(f"GENERAL list accounting error: post {idx} expected {best_recipient}, got {workers[idx]} — rolling back")
+                                    workers[idx] = pre_at_post
+                                    continue
                             except ValueError:
                                 logging.warning(f"Worker {excess_worker} not found in list {workers}")
                                 continue
                         else:
                             # Dictionary format (original logic)
+                            pre_old_count = workers.count(excess_worker)
+                            pre_new_count = workers.count(best_recipient)
                             workers.remove(excess_worker)
                             workers.append(best_recipient)
+                            # Post-swap verification
+                            if (workers.count(excess_worker) != pre_old_count - 1 or
+                                    workers.count(best_recipient) != pre_new_count + 1):
+                                logging.error(f"GENERAL dict accounting error — rolling back")
+                                workers.remove(best_recipient)
+                                workers.append(excess_worker)
+                                continue
                         
                         # Update tracking
                         for need_info in need_more_shifts:
@@ -933,16 +1034,29 @@ class IterativeOptimizer:
                         pass
                 expected_monthly_rough = raw_target / months_in_period
                 
-                # Add tolerance for monthly (part-time: 0%, full-time: 10%)
-                monthly_tolerance = 0.10 if work_percentage >= 1.0 else 0.0
-                max_monthly = expected_monthly_rough * (1 + monthly_tolerance)
+                # ZERO TOLERANCE for manual workers (guardias/mes = exact monthly count)
+                is_manual_worker = not worker_data.get('auto_calculate_shifts', True)
                 
-                # Check if adding this shift would exceed monthly limit
-                if shifts_this_month + 1 > max_monthly + 1:  # +1 for rounding tolerance
-                    logging.debug(f"❌ {worker_name} blocked: Monthly limit - "
-                                f"{shifts_this_month + 1} would exceed {max_monthly:.1f} "
-                                f"(month: {shift_date.strftime('%Y-%m')})")
-                    return False
+                if is_manual_worker:
+                    # Manual workers: exact guardias/mes, no tolerance
+                    guardias_mes = worker_data.get('_original_target_shifts', 0)
+                    if guardias_mes > 0:
+                        if shifts_this_month + 1 > guardias_mes:
+                            logging.debug(f"❌ {worker_name} blocked: MANUAL monthly limit - "
+                                        f"{shifts_this_month + 1} would exceed {guardias_mes} guardias/mes "
+                                        f"(month: {shift_date.strftime('%Y-%m')})")
+                            return False
+                else:
+                    # Add tolerance for monthly (part-time: 0%, full-time: 10%)
+                    monthly_tolerance = 0.10 if work_percentage >= 1.0 else 0.0
+                    max_monthly = expected_monthly_rough * (1 + monthly_tolerance)
+                    
+                    # Check if adding this shift would exceed monthly limit
+                    if shifts_this_month + 1 > max_monthly + 1:  # +1 for rounding tolerance
+                        logging.debug(f"❌ {worker_name} blocked: Monthly limit - "
+                                    f"{shifts_this_month + 1} would exceed {max_monthly:.1f} "
+                                    f"(month: {shift_date.strftime('%Y-%m')})")
+                        return False
             
             # NEW: Check weekend consecutive limits (if this is a weekend/holiday shift)
             # CRITICAL: Include holidays and pre-holidays for consistency with other parts of code
@@ -966,15 +1080,17 @@ class IterativeOptimizer:
                 ])
                 
                 # ========================================
-                # CHECK: Maximum 1 weekend shift per calendar week (Mon-Sun)
+                # CHECK: Maximum weekend shifts per calendar week (Mon-Sun)
+                # Normally 1, but 2 when relaxed constraints are active
                 # ========================================
+                max_weekend_per_week = 2 if getattr(self, 'relaxed_weekend_constraints', False) else 1
                 current_week_start = shift_date - timedelta(days=shift_date.weekday())  # Monday
                 weekend_shifts_this_week = sum(
                     1 for d in weekend_dates 
                     if d - timedelta(days=d.weekday()) == current_week_start
                 )
-                if weekend_shifts_this_week >= 1:
-                    logging.debug(f"❌ {worker_name} blocked: Already has {weekend_shifts_this_week} weekend shift(s) in week starting {current_week_start.strftime('%Y-%m-%d')}")
+                if weekend_shifts_this_week >= max_weekend_per_week:
+                    logging.debug(f"❌ {worker_name} blocked: Already has {weekend_shifts_this_week} weekend shift(s) in week starting {current_week_start.strftime('%Y-%m-%d')} (max: {max_weekend_per_week})")
                     return False
                 
                 # Group by calendar week (each worker has max 1 weekend day per week)
@@ -1025,30 +1141,42 @@ class IterativeOptimizer:
                 if total_schedule_days > 0 and total_weekend_days > 0 and total_target_for_weekend > 0:
                     weekend_ratio = total_weekend_days / total_schedule_days
                     raw_weekend_target = total_target_for_weekend * weekend_ratio
-                    max_weekend_allowed = int(raw_weekend_target) + weekend_tolerance_shifts
+                    # Allow extra tolerance when relaxed constraints are active
+                    effective_tolerance = weekend_tolerance_shifts
+                    if getattr(self, 'relaxed_weekend_constraints', False):
+                        effective_tolerance = weekend_tolerance_shifts + 1
+                    max_weekend_allowed = int(raw_weekend_target) + effective_tolerance
                     
                     if current_weekend_count > max_weekend_allowed:
                         logging.debug(f"❌ {worker_name} blocked: Weekend tolerance - "
                                     f"{current_weekend_count} exceeds max {max_weekend_allowed} "
-                                    f"(target: {raw_weekend_target:.1f}, tolerance: ±{weekend_tolerance_shifts})")
+                                    f"(target: {raw_weekend_target:.1f}, tolerance: ±{effective_tolerance})")
                         return False
             
             # Check overall tolerance
             # CRITICAL: Usar non_mandatory_shifts para comparar con target_shifts
             if target_shifts > 0:
-                # Use Phase 2 tolerance (12%) during optimization
-                # Part-time workers get adjusted tolerance (minimum 5%)
-                base_tolerance = 0.12  # ±12% absolute maximum
-                adjusted_tolerance = max(base_tolerance * work_percentage, 0.05)
+                # ZERO TOLERANCE for manual workers (guardias/mes defined by user)
+                is_manual_worker = not worker_data.get('auto_calculate_shifts', True)
                 
-                max_shifts = round(target_shifts * (1 + adjusted_tolerance))
+                if is_manual_worker:
+                    # Manual workers: exact target, no tolerance band
+                    max_shifts = target_shifts
+                    tolerance_label = "0% (MANUAL)"
+                else:
+                    # Use Phase 2 tolerance (12%) during optimization
+                    # Part-time workers get adjusted tolerance (minimum 5%)
+                    base_tolerance = 0.12  # ±12% absolute maximum
+                    adjusted_tolerance = max(base_tolerance * work_percentage, 0.05)
+                    max_shifts = round(target_shifts * (1 + adjusted_tolerance))
+                    tolerance_label = f"{adjusted_tolerance*100:.1f}%"
                 
                 # Check if adding this shift would exceed the limit
                 # Use non_mandatory_shifts, not current_shifts
                 if non_mandatory_shifts + 1 > max_shifts:
                     logging.debug(f"❌ {worker_name} blocked: Tolerance violation - "
                                 f"would have {non_mandatory_shifts + 1}/{target_shifts} shifts "
-                                f"(max: {max_shifts}, tolerance: {adjusted_tolerance*100:.1f}%)")
+                                f"(max: {max_shifts}, tolerance: {tolerance_label})")
                     return False
             
             # Check consecutive shift limits (basic check)
@@ -1183,9 +1311,12 @@ class IterativeOptimizer:
                     'abs_deviation': abs(deviation)  # For easier sorting
                 })
         
-        # Sort by priority
-        need_more_weekends.sort(key=lambda x: x['priority'], reverse=True)
-        have_excess_weekends.sort(key=lambda x: x['priority'], reverse=True)
+        # Shuffle with priority bias to break deterministic order across iterations
+        # Workers with higher priority still appear earlier on average
+        random.shuffle(need_more_weekends)
+        random.shuffle(have_excess_weekends)
+        need_more_weekends.sort(key=lambda x: x['priority'] * random.uniform(0.7, 1.3), reverse=True)
+        have_excess_weekends.sort(key=lambda x: x['priority'] * random.uniform(0.7, 1.3), reverse=True)
         
         # Debug: Log detailed weekend violation info
         logging.info(f"   📅 Weekend need more: {len(need_more_weekends)}, Have excess: {len(have_excess_weekends)}")
@@ -1215,6 +1346,9 @@ class IterativeOptimizer:
                 continue  # Skip invalid date format
         
         logging.info(f"   📅 Processing {len(weekend_dates)} weekend dates (incl. Fri/holidays/puente)")
+        
+        # Shuffle weekend dates to try different dates each iteration
+        random.shuffle(weekend_dates)
         
         redistributions_made = 0
         # Enhanced weekend redistribution limits
@@ -1253,6 +1387,9 @@ class IterativeOptimizer:
                     else:
                         logging.warning(f"Unknown weekend schedule format for {date_key}: {type(assignments)}")
                         continue
+            
+            # Shuffle weekend_shifts to try different dates each pass
+            random.shuffle(weekend_shifts)
             
             # Redistribute weekend shifts - more aggressive based on deviation
             if excess_info['deviation'] > 25:  # Very high weekend deviation
@@ -1312,14 +1449,29 @@ class IterativeOptimizer:
                         # Find and replace in the list
                         try:
                             idx = workers.index(excess_worker)
+                            pre_at_post = workers[idx]
                             workers[idx] = best_recipient
+                            # Post-swap verification
+                            if workers[idx] != best_recipient:
+                                logging.error(f"WEEKEND list accounting error: post {idx} expected {best_recipient}, got {workers[idx]} — rolling back")
+                                workers[idx] = pre_at_post
+                                continue
                         except ValueError:
                             logging.warning(f"Weekend worker {excess_worker} not found in list {workers}")
                             continue
                     else:
                         # Dictionary format (original logic)
+                        pre_old_count = workers.count(excess_worker)
+                        pre_new_count = workers.count(best_recipient)
                         workers.remove(excess_worker)
                         workers.append(best_recipient)
+                        # Post-swap verification
+                        if (workers.count(excess_worker) != pre_old_count - 1 or
+                                workers.count(best_recipient) != pre_new_count + 1):
+                            logging.error(f"WEEKEND dict accounting error — rolling back")
+                            workers.remove(best_recipient)
+                            workers.append(excess_worker)
+                            continue
                     
                     # Update tracking
                     for need_info in need_more_weekends:
@@ -1379,9 +1531,9 @@ class IterativeOptimizer:
                     'shortage': abs(violation.get('shortage', 0))
                 })
         
-        # Sort by severity (absolute deviation)
-        over_assigned.sort(key=lambda x: abs(x['deviation']), reverse=True)
-        under_assigned.sort(key=lambda x: abs(x['deviation']), reverse=True)
+        # Sort by severity with randomized tie-breaking to explore different pairs each iteration
+        over_assigned.sort(key=lambda x: abs(x['deviation']) * random.uniform(0.7, 1.3), reverse=True)
+        under_assigned.sort(key=lambda x: abs(x['deviation']) * random.uniform(0.7, 1.3), reverse=True)
         
         logging.info(f"   📊 Over-assigned: {len(over_assigned)}, Under-assigned: {len(under_assigned)}")
         for over in over_assigned:
@@ -1408,7 +1560,12 @@ class IterativeOptimizer:
         
         logging.info(f"   📅 Processing {len(weekend_dates)} weekend dates for swaps (incl. Fri/holidays/puente)")
         
+        # Shuffle weekend dates to explore different date orderings each iteration
+        random.shuffle(weekend_dates)
+        
         swaps_made = 0
+        attempts = 0
+        rejections = {'already_assigned': 0, 'constraint_failed': 0, 'no_shifts_found': 0}
         max_swaps = min(20, len(weekend_violations) * 2)  # Allow multiple swaps per worker
         
         # Perform direct swaps between over and under assigned pairs
@@ -1443,9 +1600,6 @@ class IterativeOptimizer:
                                 })
             
             # Try to swap with under-assigned workers
-            attempts = 0
-            rejections = {'already_assigned': 0, 'constraint_failed': 0, 'no_shifts_found': 0}
-            
             for under_info in under_assigned:
                 if under_info['shortage'] <= 0 or swaps_made >= max_swaps:
                     continue
@@ -1478,22 +1632,41 @@ class IterativeOptimizer:
                     if self._can_worker_take_shift(
                         under_worker, date_key, shift_type, optimized_schedule, workers_data
                     ):
-                        # Perform the swap
+                        # Perform the swap with post-verification
                         if isinstance(workers_list, list):
                             if 'post_idx' in over_shift:
-                                # Direct index replacement for list format
-                                workers_list[over_shift['post_idx']] = under_worker
+                                pi = over_shift['post_idx']
+                                pre_at_post = workers_list[pi]
+                                workers_list[pi] = under_worker
+                                # Post-swap verification
+                                if workers_list[pi] != under_worker:
+                                    logging.error(f"SWAP list accounting error at post {pi} — rolling back")
+                                    workers_list[pi] = pre_at_post
+                                    continue
                             else:
                                 # Find and replace
                                 try:
                                     idx = workers_list.index(over_worker)
+                                    pre_at_post = workers_list[idx]
                                     workers_list[idx] = under_worker
+                                    if workers_list[idx] != under_worker:
+                                        logging.error(f"SWAP list accounting error at idx {idx} — rolling back")
+                                        workers_list[idx] = pre_at_post
+                                        continue
                                 except ValueError:
                                     continue
                         else:
                             # Dict format
+                            pre_old_count = workers_list.count(over_worker)
+                            pre_new_count = workers_list.count(under_worker)
                             workers_list.remove(over_worker)
                             workers_list.append(under_worker)
+                            if (workers_list.count(over_worker) != pre_old_count - 1 or
+                                    workers_list.count(under_worker) != pre_new_count + 1):
+                                logging.error(f"SWAP dict accounting error — rolling back")
+                                workers_list.remove(under_worker)
+                                workers_list.append(over_worker)
+                                continue
                         
                         # Update shortage tracking
                         under_info['shortage'] -= 1
@@ -1525,7 +1698,482 @@ class IterativeOptimizer:
         
         logging.info(f"   ✅ Made {swaps_made} weekend shift swaps (attempts: {attempts})")
         return optimized_schedule
-    
+
+    # ------------------------------------------------------------------
+    # Strategy 5: Weekend ↔ Weekday Cross-Date Rotation
+    # ------------------------------------------------------------------
+    def _apply_weekend_weekday_rotation(self, schedule: Dict,
+                                        validation_report: Dict,
+                                        workers_data: List[Dict],
+                                        schedule_config: Dict) -> Dict:
+        """Swap a weekend shift of an over-assigned worker with a weekday shift
+        of an under-assigned worker.  Both workers keep the same total shift
+        count but their weekend ratio changes — exactly what is needed to fix
+        weekend tolerance violations without touching any other constraint.
+
+        Example:
+            Worker X has excess weekends, Worker Y has deficit weekends.
+            D1 (Saturday): X works   →  Y replaces X
+            D2 (Tuesday):  Y works   →  X replaces Y
+            Net: X −1 weekend, +1 weekday; Y +1 weekend, −1 weekday.
+        """
+        logging.info("   🔄 Strategy 5: Weekend↔Weekday cross-date rotation")
+
+        weekend_violations = validation_report.get('weekend_shift_violations', [])
+        over_assigned = sorted(
+            [v for v in weekend_violations if v.get('deviation_percentage', 0) > 0],
+            key=lambda v: abs(v.get('deviation_percentage', 0)) * random.uniform(0.7, 1.3), reverse=True
+        )
+        under_assigned = sorted(
+            [v for v in weekend_violations if v.get('deviation_percentage', 0) < 0],
+            key=lambda v: abs(v.get('deviation_percentage', 0)) * random.uniform(0.7, 1.3), reverse=True
+        )
+
+        if not over_assigned or not under_assigned:
+            logging.info("      ℹ️  No over/under pair available for rotation")
+            return schedule
+
+        optimized_schedule = copy.deepcopy(schedule)
+
+        # Classify dates into weekend vs weekday sets
+        _holidays = set(getattr(self.scheduler, 'holidays', [])) if hasattr(self, 'scheduler') and self.scheduler else set()
+        weekend_date_set = set()
+        weekday_date_set = set()
+        for date_key in optimized_schedule:
+            try:
+                date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
+                if (date_obj.weekday() >= 4 or date_obj in _holidays
+                        or (date_obj + timedelta(days=1)) in _holidays):
+                    weekend_date_set.add(date_key)
+                else:
+                    weekday_date_set.add(date_key)
+            except (ValueError, AttributeError):
+                continue
+
+        swaps_made = 0
+        max_swaps = min(30, len(weekend_violations) * 3)
+
+        for over_info in over_assigned:
+            if swaps_made >= max_swaps:
+                break
+            over_worker = over_info['worker']
+            over_excess = over_info.get('excess', 1)
+
+            # Collect non-mandatory weekend shifts of over_worker
+            over_we_shifts = []
+            for d in weekend_date_set:
+                if d not in optimized_schedule:
+                    continue
+                assignments = optimized_schedule[d]
+                if isinstance(assignments, list):
+                    for idx, w in enumerate(assignments):
+                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data):
+                            over_we_shifts.append((d, idx))
+
+            if not over_we_shifts:
+                continue
+            random.shuffle(over_we_shifts)
+
+            for under_info in under_assigned:
+                if under_info.get('shortage', 0) <= 0 or swaps_made >= max_swaps:
+                    continue
+                if over_excess <= 0:
+                    break
+                under_worker = under_info['worker']
+
+                # Collect non-mandatory weekday shifts of under_worker
+                under_wd_shifts = []
+                for d in weekday_date_set:
+                    if d not in optimized_schedule:
+                        continue
+                    assignments = optimized_schedule[d]
+                    if isinstance(assignments, list):
+                        for idx, w in enumerate(assignments):
+                            if w == under_worker and not self._is_mandatory_shift(under_worker, d, workers_data):
+                                under_wd_shifts.append((d, idx))
+
+                if not under_wd_shifts:
+                    continue
+                random.shuffle(under_wd_shifts)
+
+                # Try each combination (weekend slot of X, weekday slot of Y)
+                swapped = False
+                for (we_date, we_idx) in over_we_shifts:
+                    if swapped:
+                        break
+                    for (wd_date, wd_idx) in under_wd_shifts:
+                        # over_worker takes the weekday slot
+                        shift_type_wd = f"Post_{wd_idx}"
+                        if not self._can_worker_take_shift(over_worker, wd_date, shift_type_wd,
+                                                           optimized_schedule, workers_data):
+                            continue
+                        # under_worker takes the weekend slot
+                        shift_type_we = f"Post_{we_idx}"
+                        if not self._can_worker_take_shift(under_worker, we_date, shift_type_we,
+                                                           optimized_schedule, workers_data):
+                            continue
+
+                        # Execute both swaps atomically with verification
+                        pre_we = optimized_schedule[we_date][we_idx]
+                        pre_wd = optimized_schedule[wd_date][wd_idx]
+                        optimized_schedule[we_date][we_idx] = under_worker
+                        optimized_schedule[wd_date][wd_idx] = over_worker
+                        # Post-swap verification — rollback both if either failed
+                        if (optimized_schedule[we_date][we_idx] != under_worker or
+                                optimized_schedule[wd_date][wd_idx] != over_worker):
+                            logging.error(f"ROTATION accounting error — rolling back both slots")
+                            optimized_schedule[we_date][we_idx] = pre_we
+                            optimized_schedule[wd_date][wd_idx] = pre_wd
+                            continue
+                        swaps_made += 1
+                        over_excess -= 1
+                        under_info['shortage'] = under_info.get('shortage', 1) - 1
+
+                        we_disp = we_date.strftime('%Y-%m-%d') if isinstance(we_date, datetime) else we_date
+                        wd_disp = wd_date.strftime('%Y-%m-%d') if isinstance(wd_date, datetime) else wd_date
+                        logging.info(f"      🔄 ROTATION: {over_worker}(we {we_disp})↔{under_worker}(wd {wd_disp})")
+                        swapped = True
+                        break
+
+        logging.info(f"   ✅ Weekend↔Weekday rotation: {swaps_made} cross-date swaps")
+        return optimized_schedule
+
+    # ------------------------------------------------------------------
+    # Strategy 6: 3-Way Chain Weekend Rotation
+    # ------------------------------------------------------------------
+    def _apply_chain_weekend_rotation(self, schedule: Dict,
+                                      validation_report: Dict,
+                                      workers_data: List[Dict],
+                                      schedule_config: Dict) -> Dict:
+        """When direct 2-way rotation fails, use a mediator worker Z who is
+        within tolerance to bridge the gap.
+
+        For over-assigned X, under-assigned Y, mediator Z:
+          D1 (weekend): X → Z   (Z can take this weekend slot)
+          D2 (weekend): Z → Y   (Y can take Z's weekend slot on a different date)
+        Net: X −1 weekend, Y +1 weekend, Z changes dates (net 0 weekends).
+        """
+        logging.info("   🔗 Strategy 6: 3-way chain weekend rotation")
+
+        weekend_violations = validation_report.get('weekend_shift_violations', [])
+        over_assigned = sorted(
+            [v for v in weekend_violations if v.get('deviation_percentage', 0) > 0],
+            key=lambda v: abs(v.get('deviation_percentage', 0)) * random.uniform(0.7, 1.3), reverse=True
+        )
+        under_assigned = sorted(
+            [v for v in weekend_violations if v.get('deviation_percentage', 0) < 0],
+            key=lambda v: abs(v.get('deviation_percentage', 0)) * random.uniform(0.7, 1.3), reverse=True
+        )
+
+        if not over_assigned or not under_assigned:
+            return schedule
+
+        optimized_schedule = copy.deepcopy(schedule)
+
+        # Build set of violating worker names for exclusion from mediator pool
+        violating_workers = {v['worker'] for v in weekend_violations}
+
+        # Build mediator pool — all workers NOT in violation
+        worker_names = []
+        for wd in workers_data:
+            name = wd.get('name', wd.get('worker_name', wd.get('id', '')))
+            if name and name not in violating_workers:
+                worker_names.append(name)
+
+        if not worker_names:
+            logging.info("      ℹ️  No mediator workers available for chain rotation")
+            return optimized_schedule
+
+        # Weekend dates
+        _holidays = set(getattr(self.scheduler, 'holidays', [])) if hasattr(self, 'scheduler') and self.scheduler else set()
+        weekend_dates = []
+        for date_key in optimized_schedule:
+            try:
+                date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
+                if (date_obj.weekday() >= 4 or date_obj in _holidays
+                        or (date_obj + timedelta(days=1)) in _holidays):
+                    weekend_dates.append(date_key)
+            except (ValueError, AttributeError):
+                continue
+
+        swaps_made = 0
+        max_swaps = min(20, len(weekend_violations) * 2)
+
+        for over_info in over_assigned:
+            if swaps_made >= max_swaps:
+                break
+            over_worker = over_info['worker']
+
+            # Weekend shifts of over_worker (candidates for removal)
+            over_shifts = []
+            for d in weekend_dates:
+                if d not in optimized_schedule:
+                    continue
+                assignments = optimized_schedule[d]
+                if isinstance(assignments, list):
+                    for idx, w in enumerate(assignments):
+                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data):
+                            over_shifts.append((d, idx))
+            if not over_shifts:
+                continue
+            random.shuffle(over_shifts)
+
+            for under_info in under_assigned:
+                if under_info.get('shortage', 0) <= 0 or swaps_made >= max_swaps:
+                    continue
+                under_worker = under_info['worker']
+
+                # Try each over_shift and find a mediator chain
+                chain_done = False
+                for (d_over, idx_over) in over_shifts:
+                    if chain_done:
+                        break
+
+                    # Step A: Find a mediator Z who CAN replace X on d_over
+                    for mediator in worker_names:
+                        st_over = f"Post_{idx_over}"
+                        if not self._can_worker_take_shift(mediator, d_over, st_over,
+                                                           optimized_schedule, workers_data):
+                            continue
+
+                        # Step B: Find a weekend date where mediator Z works, and
+                        #         under_worker Y can replace Z
+                        for d_med in weekend_dates:
+                            if d_med == d_over or d_med not in optimized_schedule:
+                                continue
+                            med_assignments = optimized_schedule[d_med]
+                            if not isinstance(med_assignments, list):
+                                continue
+                            for med_idx, med_w in enumerate(med_assignments):
+                                if med_w != mediator:
+                                    continue
+                                if self._is_mandatory_shift(mediator, d_med, workers_data):
+                                    continue
+                                st_med = f"Post_{med_idx}"
+                                if not self._can_worker_take_shift(under_worker, d_med, st_med,
+                                                                    optimized_schedule, workers_data):
+                                    continue
+
+                                # Chain found — execute atomically with verification
+                                pre_over = optimized_schedule[d_over][idx_over]
+                                pre_med = optimized_schedule[d_med][med_idx]
+                                # d_over: X → Z
+                                optimized_schedule[d_over][idx_over] = mediator
+                                # d_med:  Z → Y
+                                optimized_schedule[d_med][med_idx] = under_worker
+                                # Post-swap verification — rollback both if either failed
+                                if (optimized_schedule[d_over][idx_over] != mediator or
+                                        optimized_schedule[d_med][med_idx] != under_worker):
+                                    logging.error(f"CHAIN accounting error — rolling back both slots")
+                                    optimized_schedule[d_over][idx_over] = pre_over
+                                    optimized_schedule[d_med][med_idx] = pre_med
+                                    continue
+                                swaps_made += 1
+                                under_info['shortage'] = under_info.get('shortage', 1) - 1
+
+                                d_over_disp = d_over.strftime('%Y-%m-%d') if isinstance(d_over, datetime) else d_over
+                                d_med_disp = d_med.strftime('%Y-%m-%d') if isinstance(d_med, datetime) else d_med
+                                logging.info(
+                                    f"      🔗 CHAIN: {over_worker}→{mediator} on {d_over_disp}, "
+                                    f"{mediator}→{under_worker} on {d_med_disp}"
+                                )
+                                chain_done = True
+                                break  # done for this mediator date
+                            if chain_done:
+                                break  # done for this mediator
+                        if chain_done:
+                            break  # done for this over_shift
+
+        logging.info(f"   ✅ Chain rotation: {swaps_made} 3-way swaps")
+        return optimized_schedule
+
+    # ------------------------------------------------------------------
+    # Strategy 7: Ejection-Chain Weekend Swap
+    # ------------------------------------------------------------------
+    def _apply_ejection_chain(self, schedule: Dict,
+                              validation_report: Dict,
+                              workers_data: List[Dict],
+                              schedule_config: Dict) -> Dict:
+        """Attempt ejection chains to enable blocked weekend swaps.
+
+        When an under-assigned worker Y cannot take a weekend slot because of
+        the gap constraint (e.g., Y already works on a date too close), this
+        strategy first ejects Y from the conflicting date by finding a
+        replacement Z, then assigns Y to the target weekend slot.
+
+        Chain structure:
+          Step 1: Find target weekend slot (date D_we) assigned to over_worker X.
+          Step 2: Y fails _can_worker_take_shift for D_we — detect that gap
+                  conflict is caused by Y working on D_conflict.
+          Step 3: Find replacement Z who can take D_conflict (and Y is not
+                  mandatory there).
+          Step 4: Execute: D_conflict: Y→Z, D_we: X→Y.
+          Net: X −1 weekend, Y +1 weekend (moved from D_conflict to D_we),
+               Z +1 shift (takes Y's old non-weekend slot).
+        """
+        logging.info("   ⛓️  Strategy 7: Ejection-chain weekend swap")
+
+        weekend_violations = validation_report.get('weekend_shift_violations', [])
+        over_assigned = [v for v in weekend_violations if v.get('deviation_percentage', 0) > 0]
+        under_assigned = [v for v in weekend_violations if v.get('deviation_percentage', 0) < 0]
+
+        if not over_assigned or not under_assigned:
+            return schedule
+
+        random.shuffle(over_assigned)
+        random.shuffle(under_assigned)
+
+        optimized_schedule = copy.deepcopy(schedule)
+
+        _holidays = set(getattr(self.scheduler, 'holidays', [])) if hasattr(self, 'scheduler') and self.scheduler else set()
+        weekend_date_set = set()
+        for dk in optimized_schedule:
+            try:
+                dobj = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
+                if (dobj.weekday() >= 4 or dobj in _holidays
+                        or (dobj + timedelta(days=1)) in _holidays):
+                    weekend_date_set.add(dk)
+            except Exception:
+                continue
+
+        gap = int(schedule_config.get('gap_between_shifts', getattr(self.scheduler, 'gap_between_shifts', 2)))
+
+        # Build worker name list for replacement candidates
+        all_worker_names = []
+        for i, w in enumerate(workers_data):
+            if isinstance(w, dict):
+                wid = w.get('id', '')
+                if isinstance(wid, str) and wid.startswith('Worker'):
+                    all_worker_names.append(wid)
+                else:
+                    all_worker_names.append(f"Worker {wid}")
+            else:
+                all_worker_names.append(f"Worker {i+1}")
+
+        swaps_made = 0
+        max_swaps = min(20, len(weekend_violations) * 2)
+
+        for over_info in over_assigned:
+            if swaps_made >= max_swaps:
+                break
+            over_worker = over_info['worker']
+
+            # Collect non-mandatory weekend shifts of over_worker
+            over_we_shifts = []
+            for d in weekend_date_set:
+                if d not in optimized_schedule:
+                    continue
+                asgn = optimized_schedule[d]
+                if isinstance(asgn, list):
+                    for idx, w in enumerate(asgn):
+                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data):
+                            over_we_shifts.append((d, idx))
+            random.shuffle(over_we_shifts)
+
+            for under_info in under_assigned:
+                if under_info.get('shortage', 0) <= 0 or swaps_made >= max_swaps:
+                    continue
+                under_worker = under_info['worker']
+
+                for (we_date, we_idx) in over_we_shifts:
+                    shift_type_we = f"Post_{we_idx}"
+
+                    # Check if under_worker can directly take it (no ejection needed)
+                    if self._can_worker_take_shift(under_worker, we_date, shift_type_we,
+                                                   optimized_schedule, workers_data):
+                        # Direct swap — no chain needed
+                        pre = optimized_schedule[we_date][we_idx]
+                        optimized_schedule[we_date][we_idx] = under_worker
+                        if optimized_schedule[we_date][we_idx] != under_worker:
+                            optimized_schedule[we_date][we_idx] = pre
+                            continue
+                        swaps_made += 1
+                        under_info['shortage'] = under_info.get('shortage', 1) - 1
+                        logging.info(f"      ⛓️  DIRECT: {over_worker}→{under_worker} on "
+                                     f"{we_date.strftime('%Y-%m-%d') if isinstance(we_date, datetime) else we_date}")
+                        break
+
+                    # under_worker is blocked — try ejection chain
+                    # Find dates near we_date where under_worker has shifts (potential gap conflicts)
+                    we_date_obj = we_date if isinstance(we_date, datetime) else datetime.strptime(we_date, "%Y-%m-%d")
+                    conflict_dates = []
+                    for delta_days in range(-gap, gap + 1):
+                        if delta_days == 0:
+                            continue
+                        cd = we_date_obj + timedelta(days=delta_days)
+                        # Use same key type as schedule
+                        cd_key = cd
+                        if cd_key not in optimized_schedule:
+                            # Try string key
+                            cd_key = cd.strftime("%Y-%m-%d")
+                            if cd_key not in optimized_schedule:
+                                continue
+                        asgn = optimized_schedule[cd_key]
+                        if isinstance(asgn, list):
+                            for cidx, cw in enumerate(asgn):
+                                if cw == under_worker and not self._is_mandatory_shift(under_worker, cd_key, workers_data):
+                                    conflict_dates.append((cd_key, cidx))
+
+                    if not conflict_dates:
+                        continue
+
+                    # For each conflict, try to find a replacement Z
+                    ejected = False
+                    for (cd_key, cd_idx) in conflict_dates:
+                        cd_shift_type = f"Post_{cd_idx}"
+                        # Find Z who can take cd_key slot
+                        candidates = list(all_worker_names)
+                        random.shuffle(candidates)
+                        for z_worker in candidates:
+                            if z_worker == under_worker or z_worker == over_worker:
+                                continue
+                            asgn_cd = optimized_schedule[cd_key]
+                            if z_worker in asgn_cd:
+                                continue
+                            if not self._can_worker_take_shift(z_worker, cd_key, cd_shift_type,
+                                                               optimized_schedule, workers_data):
+                                continue
+
+                            # Execute ejection: cd_key: under_worker → z_worker
+                            pre_cd = optimized_schedule[cd_key][cd_idx]
+                            optimized_schedule[cd_key][cd_idx] = z_worker
+                            if optimized_schedule[cd_key][cd_idx] != z_worker:
+                                optimized_schedule[cd_key][cd_idx] = pre_cd
+                                continue
+
+                            # Now try the target swap: we_date: over_worker → under_worker
+                            if self._can_worker_take_shift(under_worker, we_date, shift_type_we,
+                                                           optimized_schedule, workers_data):
+                                pre_we = optimized_schedule[we_date][we_idx]
+                                optimized_schedule[we_date][we_idx] = under_worker
+                                if optimized_schedule[we_date][we_idx] != under_worker:
+                                    # Rollback both
+                                    optimized_schedule[we_date][we_idx] = pre_we
+                                    optimized_schedule[cd_key][cd_idx] = pre_cd
+                                    continue
+
+                                swaps_made += 1
+                                under_info['shortage'] = under_info.get('shortage', 1) - 1
+                                cd_disp = cd_key.strftime('%Y-%m-%d') if isinstance(cd_key, datetime) else cd_key
+                                we_disp = we_date.strftime('%Y-%m-%d') if isinstance(we_date, datetime) else we_date
+                                logging.info(
+                                    f"      ⛓️  EJECTION: {under_worker}→{z_worker} on {cd_disp}, "
+                                    f"then {over_worker}→{under_worker} on {we_disp}")
+                                ejected = True
+                                break
+                            else:
+                                # Still blocked even after ejection — rollback
+                                optimized_schedule[cd_key][cd_idx] = pre_cd
+                                continue
+
+                        if ejected:
+                            break
+                    if ejected:
+                        break  # Move to next over_worker
+
+        logging.info(f"   ✅ Ejection chains: {swaps_made} swaps")
+        return optimized_schedule
+
     def _apply_random_perturbations(self, schedule: Dict, workers_data: List[Dict],
                                   schedule_config: Dict, intensity: float = 0.1) -> Dict:
         """Apply SA-guided perturbations to escape local optima.
@@ -1582,7 +2230,13 @@ class IterativeOptimizer:
                 total_assignments += len(assignments)
 
         num_swaps = int(total_assignments * intensity)
-        logging.info(f"   🎲 Total assignments: {total_assignments}, planned SA swaps: {num_swaps}")
+        # Boost SA attempts during deep stagnation to search more of the space
+        _stag = getattr(self, 'no_change_counter', 0)
+        if _stag >= 4:
+            num_swaps = int(num_swaps * 3.0)  # 3× attempts
+        elif _stag >= 2:
+            num_swaps = int(num_swaps * 2.0)  # 2× attempts
+        logging.info(f"   🎲 Total assignments: {total_assignments}, planned SA swaps: {num_swaps} (stagnation boost: {_stag})")
 
         # ── Pre-compute monthly counts for giver monthly-floor check (G7) ────
         # Tracks how many shifts each worker has in each (year, month) bucket.
@@ -1623,10 +2277,52 @@ class IterativeOptimizer:
         rejected_constraint = 0
         rejected_sa         = 0
 
+        # ── Weekend-bias pre-computation (only when weekend_only_mode) ────────
+        _sa_weekend_mode = getattr(self, 'weekend_only_mode', False)
+        _sa_holidays = set(getattr(self.scheduler, 'holidays', [])) if hasattr(self, 'scheduler') and self.scheduler else set()
+        _sa_weekend_dates = []
+        _sa_weekday_dates = []
+        _sa_weekend_counts: Dict[str, int] = {}  # worker → weekend shift count
+        _sa_weekend_target: Dict[str, float] = {}  # worker → proportional weekend target
+
+        if _sa_weekend_mode:
+            for dk in optimized_schedule:
+                try:
+                    dobj = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
+                    if (dobj.weekday() >= 4 or dobj in _sa_holidays
+                            or (dobj + timedelta(days=1)) in _sa_holidays):
+                        _sa_weekend_dates.append(dk)
+                    else:
+                        _sa_weekday_dates.append(dk)
+                except Exception:
+                    continue
+
+            # Count weekend assignments per worker
+            for dk in _sa_weekend_dates:
+                asgn = optimized_schedule.get(dk, [])
+                if isinstance(asgn, list):
+                    for wn in asgn:
+                        if wn:
+                            _sa_weekend_counts[wn] = _sa_weekend_counts.get(wn, 0) + 1
+
+            # Compute proportional weekend target per worker
+            total_dates = len(_sa_weekend_dates) + len(_sa_weekday_dates)
+            if total_dates > 0:
+                we_ratio = len(_sa_weekend_dates) / total_dates
+                for wn, tgt in worker_targets.items():
+                    _sa_weekend_target[wn] = tgt * we_ratio
+
+            logging.info(f"   🎲 SA weekend-bias: {len(_sa_weekend_dates)} weekend, "
+                         f"{len(_sa_weekday_dates)} weekday dates")
+
         for swap_attempt in range(num_swaps):
             # ── Pick a random occupied slot ───────────────────────────────────
             dates = list(optimized_schedule.keys())
-            random_date = random.choice(dates)
+            # Weekend-biased date selection: 70% chance of picking a weekend date
+            if _sa_weekend_mode and _sa_weekend_dates and random.random() < 0.70:
+                random_date = random.choice(_sa_weekend_dates)
+            else:
+                random_date = random.choice(dates)
 
             if not optimized_schedule[random_date]:
                 T *= cooling_rate
@@ -1688,7 +2384,27 @@ class IterativeOptimizer:
                         T *= cooling_rate
                         continue
 
-            new_worker = random.choice(worker_names)
+            # ── Weekend-biased new_worker selection ─────────────────────────
+            # In weekend mode, prefer workers with weekend deficit (70% chance).
+            if (_sa_weekend_mode and random_date in _sa_weekend_dates
+                    and random.random() < 0.70):
+                # Build weighted pool: workers further below weekend target are more likely
+                _deficit_pool = []
+                for _cand in worker_names:
+                    if _cand in current_workers:
+                        continue
+                    _cand_we = _sa_weekend_counts.get(_cand, 0)
+                    _cand_tgt = _sa_weekend_target.get(_cand, 0)
+                    _deficit = _cand_tgt - _cand_we  # positive = needs more weekends
+                    if _deficit > 0:
+                        # Weight by deficit magnitude (min 1)
+                        _deficit_pool.extend([_cand] * max(1, int(_deficit * 2)))
+                if _deficit_pool:
+                    new_worker = random.choice(_deficit_pool)
+                else:
+                    new_worker = random.choice(worker_names)
+            else:
+                new_worker = random.choice(worker_names)
 
             if new_worker in current_workers:
                 T *= cooling_rate
@@ -1714,6 +2430,18 @@ class IterativeOptimizer:
             # Sum of squared deviations after the swap (old_worker loses 1, new gains 1)
             sq_after  = ((old_count - 1) - t_old) ** 2 + ((new_count + 1) - t_new) ** 2
             delta = sq_after - sq_before  # negative = improvement
+
+            # In weekend mode on weekend dates, also factor in weekend balance
+            if _sa_weekend_mode and random_date in _sa_weekend_dates:
+                _old_we = _sa_weekend_counts.get(old_worker, 0)
+                _new_we = _sa_weekend_counts.get(new_worker, 0)
+                _t_old_we = _sa_weekend_target.get(old_worker, 0.0)
+                _t_new_we = _sa_weekend_target.get(new_worker, 0.0)
+                we_sq_before = (_old_we - _t_old_we) ** 2 + (_new_we - _t_new_we) ** 2
+                we_sq_after = ((_old_we - 1) - _t_old_we) ** 2 + ((_new_we + 1) - _t_new_we) ** 2
+                we_delta = we_sq_after - we_sq_before
+                # Blend: weekend deviation counts 3x more than total-shift deviation
+                delta = delta + 3.0 * we_delta
 
             if delta <= 0:
                 accept = True
@@ -1790,6 +2518,11 @@ class IterativeOptimizer:
                         _sa_monthly.setdefault(old_worker, {}).get(_ym_swap, 0) - 1
                     _sa_monthly.setdefault(new_worker, {})[_ym_swap] = \
                         _sa_monthly.setdefault(new_worker, {}).get(_ym_swap, 0) + 1
+
+                # ── Update weekend-counts cache for weekend-biased scoring ────
+                if _sa_weekend_mode and random_date in _sa_weekend_dates:
+                    _sa_weekend_counts[old_worker] = _sa_weekend_counts.get(old_worker, 0) - 1
+                    _sa_weekend_counts[new_worker] = _sa_weekend_counts.get(new_worker, 0) + 1
 
             T *= cooling_rate
 
@@ -2329,9 +3062,14 @@ class IterativeOptimizer:
                     worker_name = f"Worker {worker_id}" if isinstance(worker_id, (int, str)) and str(worker_id).isdigit() else str(worker_id)
                     
                     # Check if worker can take this shift
-                    if self._can_worker_take_greedy_shift(
-                        worker_name, worker_id, date, slot, optimized_schedule, 
-                        workers_data, scheduler_core
+                    # Derive shift_type for full constraint validation
+                    if slot['format'] == 'list':
+                        shift_type = f"Post_{slot['post']}"
+                    else:
+                        shift_type = slot.get('shift_type', f"Post_{slot.get('idx', 0)}")
+
+                    if self._can_worker_take_shift(
+                        worker_name, date, shift_type, optimized_schedule, workers_data
                     ):
                         stats = worker_stats.get(worker_name, {})
                         assigned = stats.get('total_shifts', 0)
@@ -2356,11 +3094,21 @@ class IterativeOptimizer:
                 candidates.sort(key=lambda x: x['priority'], reverse=True)
                 best_worker = candidates[0]
                 
-                # Assign the slot
+                # Assign the slot with post-assignment verification
                 if slot['format'] == 'list':
+                    pre_val = optimized_schedule[date][slot['post']]
                     optimized_schedule[date][slot['post']] = best_worker['worker_name']
+                    if optimized_schedule[date][slot['post']] != best_worker['worker_name']:
+                        logging.error(f"GREEDY list verification failed — rolling back")
+                        optimized_schedule[date][slot['post']] = pre_val
+                        continue
                 elif slot['format'] == 'dict':
+                    pre_val = optimized_schedule[date][slot['shift_type']][slot['idx']]
                     optimized_schedule[date][slot['shift_type']][slot['idx']] = best_worker['worker_name']
+                    if optimized_schedule[date][slot['shift_type']][slot['idx']] != best_worker['worker_name']:
+                        logging.error(f"GREEDY dict verification failed — rolling back")
+                        optimized_schedule[date][slot['shift_type']][slot['idx']] = pre_val
+                        continue
                 
                 filled_count += 1
                 

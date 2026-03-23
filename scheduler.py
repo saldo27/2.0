@@ -1899,8 +1899,10 @@ class Scheduler:
     def _calculate_coverage(self):
         """Calculate the percentage of shifts that are filled in the schedule."""
         try:
-            total_shifts = (self.end_date - self.start_date).days + 1  # One shift per day
-            total_shifts *= self.num_shifts  # Multiply by number of shifts per day
+            total_shifts = sum(
+                self._get_shifts_for_date(d)
+                for d in self._get_date_range(self.start_date, self.end_date)
+            )
         
             # Count filled shifts (where worker is not None)
             filled_shifts = 0

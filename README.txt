@@ -1,6 +1,6 @@
 ================================================================================
                     GuardiasApp - Aplicación para Distribución de Guardias
-                                  Versión 2.5
+                                  Versión 2.6
 ================================================================================
 
 DESCRIPCIÓN:
@@ -12,7 +12,7 @@ CARACTERÍSTICAS:
 ----------------
 ✓ Generación automática de horarios optimizados
 ✓ Balance proporcional de turnos y fines de semana
-✓ Balance equitativo de turnos en días puente (NUEVO v2.5)
+✓ Balance equitativo de turnos en días puente
 ✓ Gestión de incompatibilidades entre trabajadores
 ✓ Días obligatorios y días libres configurables
 ✓ Períodos de trabajo personalizados
@@ -21,11 +21,15 @@ CARACTERÍSTICAS:
 ✓ Verificación automática de restricciones
 ✓ Análisis de calendarios de guardias (tab "Revisión")
 ✓ Cálculo de estadísticas por trabajador (Fin de Semana, Festivos, Rosell, Puentes)
-✓ Estadísticas y gráficos de turnos en puente (NUEVO v2.5)
+✓ Estadísticas y gráficos de turnos en puente
 ✓ Detección de guardias consecutivas
 ✓ Exportación de análisis a PDF y Excel
-✓ Interfaz optimizada con columnas de ancho fijo (NUEVO v2.5)
-✓ Configuración de locale español para calendarios L-D (NUEVO v2.5)
+✓ Interfaz optimizada con columnas de ancho fijo
+✓ Configuración de locale español para calendarios L-D
+✓ Importación de calendario previo para constraints cross-período (NUEVO v2.6)
+✓ Ajuste automático de cuotas basado en historial del período anterior (NUEVO v2.6)
+✓ Distribución de fines de semana con memoria de período previo (NUEVO v2.6)
+✓ Estrategias de distribución inicial diversificadas mediante GRASP-RCL (NUEVO v2.6)
 
 REQUISITOS DEL SISTEMA:
 -----------------------
@@ -88,6 +92,8 @@ EXPORTACIÓN DE DATOS:
   * Análisis de Guardias (Tab Revisión)
 - Excel: Estadísticas y alertas de guardias consecutivas (Tab Revisión)
 - JSON: Respaldo completo (trabajadores + configuración + calendario)
+         Este formato es también el que se usa para importar un calendario
+         previo en el expander "📅 Calendario Anterior" de la barra lateral.
 
 FORMATOS DE IMPORTACIÓN:
 -------------------------
@@ -133,15 +139,69 @@ issues en GitHub o contactar por email.
 CRÉDITOS:
 ---------
 Desarrollado por:  Luis Herrera Para
-Versión: 2.1
-Fecha:  Enero 2026
+Versión: 2.6
+Fecha:  Marzo 2026
 
 COPYRIGHT:
 ----------
 © 2025 Luis Herrera Para. Todos los derechos reservados. 
 
+CALENDARIO PREVIO (NUEVO v2.6):
+--------------------------------
+El sistema puede cargar un calendario exportado de un período anterior para
+tener en cuenta la carga de trabajo ya realizada al generar el nuevo reparto.
+
+Cómo usarlo:
+1. Generar y exportar el calendario del período anterior (botón
+   "💾 Descargar Respaldo Completo (JSON)" en Importar/Exportar).
+2. En la barra lateral del nuevo reparto, expandir "📅 Calendario Anterior".
+3. Cargar el archivo JSON del período anterior y pulsar "📥 Cargar".
+4. Generar el nuevo calendario normalmente con "🚀 Generar Calendario".
+
+Qué hace el sistema con el calendario previo:
+- Huecos mínimos: los últimos turnos del período anterior se tienen en cuenta
+  para no violar el hueco mínimo configurado entre guardias en los primeros
+  días del nuevo período.
+- Patrón mismo día de semana 7/14 días: se bloquea también cruzando el límite
+  de período (si un trabajador hizo guardia el último lunes del mes anterior,
+  no se le asignará el primer lunes del mes siguiente).
+- Viernes-Lunes: la regla de no asignar viernes+lunes consecutivos se aplica
+  respetando el fin del período anterior.
+- Fines de semana consecutivos: la cuenta de fines de semana consecutivos
+  continúa desde el último fin de semana del período anterior.
+- Cuota proporcional de fines de semana: el cap de fines de semana del nuevo
+  período se reduce en función de los fines de semana ya trabajados en el
+  período previo.
+- Ajuste de target de turnos: si un trabajador hizo más (o menos) guardias
+  de las previstas en el período anterior, su cuota del nuevo período se
+  reduce (o aumenta) en la misma cantidad para compensar el desequilibrio.
+- Prioridad de asignación: los conteos del período anterior se suman a los
+  del nuevo período para que el motor priorice siempre a los trabajadores
+  con menos guardias acumuladas.
+
+Nota: Solo se tienen en cuenta asignaciones de los últimos 90 días anteriores
+al inicio del nuevo período para evitar que períodos muy lejanos distorsionen
+las restricciones.
+
 HISTORIAL DE VERSIONES:
 ------------------------
+v2.6 (Marzo 2026):
+- NUEVO: Importación de calendario previo (expander "📅 Calendario Anterior")
+- Constraints cross-período: huecos mínimos, patrón 7/14 días, viernes-lunes
+  y fines de semana consecutivos se respetan cruzando el límite de período
+- Ajuste automático de cuota de turnos según sobre/infra-entrega del período
+  anterior (delta = turnos_reales - turnos_objetivo del período previo)
+- Distribución proporcional de fines de semana con memoria del período previo
+- Prioridad de asignación incorpora carga acumulada del período anterior
+- Corrección de bug: 7 errores de distribución de fines de semana y puentes
+  (round/int inconsistency, off-by-one en underloaded removal, falta de
+  comprobación de semana del receptor, paso post-finalización ausente,
+  tolerancia del paso estricto de Last Post incorrecta, ternario roto en
+  shifts_per_day, GRASP_ALPHA demasiado estrecho)
+- Corrección de diversidad de estrategias en Fase 1: todas las estrategias
+  A-Z y Z-A producían calendarios idénticos; reemplazadas por GRASP-RCL con
+  semillas únicas; solo se conserva 1 estrategia determinista de cada tipo
+
 v2.5 (Febrero 2026):
 - Estadísticas completas de turnos en días puente (gráficos y tablas)
 - Integración de datos de puente en pestaña Revisión

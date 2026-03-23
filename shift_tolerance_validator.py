@@ -32,7 +32,7 @@ class ShiftToleranceValidator:
         # Phase 2 tolerance: ±12% (absolute maximum - NEVER exceed)
         self.emergency_tolerance_percentage = 12.0
         
-    def calculate_tolerance_bounds(self, target_shifts: int, is_weekend: bool = False) -> Tuple[int, int]:
+    def calculate_tolerance_bounds(self, target_shifts: int, is_weekend: bool = False, worker_id: str = None) -> Tuple[int, int]:
         """
         Calcula los límites de tolerancia para un target_shifts dado
         
@@ -45,6 +45,13 @@ class ShiftToleranceValidator:
         """
         if target_shifts <= 0:
             return (0, 0)
+        
+        # ZERO TOLERANCE for manual workers (guardias/mes defined by user)
+        if worker_id is not None:
+            worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
+            if worker and not worker.get('auto_calculate_shifts', True):
+                # Manual workers: exact target, no tolerance band
+                return (int(target_shifts), int(target_shifts))
         
         if is_weekend:
             # For weekends: use weekend_tolerance from config (in shifts, e.g., ±1, ±2)
@@ -80,8 +87,8 @@ class ShiftToleranceValidator:
         target_shifts = worker.get('target_shifts', 0)
         assigned_shifts = self._count_assigned_shifts(worker_id, is_weekend_only)
         
-        # Pass is_weekend_only to use weekend_tolerance from config for weekends
-        min_shifts, max_shifts = self.calculate_tolerance_bounds(target_shifts, is_weekend=is_weekend_only)
+        # Pass is_weekend_only and worker_id to apply zero tolerance for manual workers
+        min_shifts, max_shifts = self.calculate_tolerance_bounds(target_shifts, is_weekend=is_weekend_only, worker_id=worker_id)
         
         is_valid = min_shifts <= assigned_shifts <= max_shifts
         deviation_percentage = 0.0

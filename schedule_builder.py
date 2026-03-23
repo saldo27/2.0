@@ -449,26 +449,32 @@ class ScheduleBuilder:
             logging.debug(f"✅ MANDATORY: {worker_id} mandatory shift on {date.strftime('%Y-%m-%d')}, bypassing tolerance")
             return False
         
-        # Phase-based tolerance system:
-        # Phase 1 (objective): ±10% tolerance
-        # Phase 2 (limit): ±12% tolerance (ABSOLUTE LIMIT)
-        if allow_relaxation:
-            tolerance = 0.12  # Phase 2: Absolute limit
+        # ZERO TOLERANCE for manual workers (guardias/mes defined by user)
+        is_manual_worker = not worker_data.get('auto_calculate_shifts', True)
+        
+        if is_manual_worker:
+            # Manual workers: exact target per period, no tolerance
+            max_allowed = target_shifts
+            tolerance = 0.0
+            logging.debug(f"Worker {worker_id} (MANUAL): Zero tolerance, max_allowed={max_allowed}")
         else:
-            tolerance = 0.10  # Phase 1: Objective tolerance
-        
-        # STRICTER tolerance for part-time workers
-        if work_percentage < 100:
-            # Reduce tolerance proportionally for part-time workers
-            # Phase 1 examples: 50% worker gets 5% (10%*50%), 75% worker gets 7.5% (10%*75%)
-            # Phase 2 examples: 50% worker gets 6% (12%*50%), 75% worker gets 9% (12%*75%)
-            adjusted_tolerance = tolerance * (work_percentage / 100.0)
-            tolerance = max(0.05, adjusted_tolerance)  # Minimum 5% tolerance
-            logging.debug(f"Worker {worker_id} (part-time {work_percentage}%): Using adjusted tolerance {tolerance*100:.1f}%")
-        
-        tolerance_amount = target_shifts * tolerance
-        # CRITICAL: Use int() to truncate, not round() - this ensures we never exceed the percentage
-        max_allowed = int(target_shifts * (1 + tolerance))
+            # Phase-based tolerance system:
+            # Phase 1 (objective): ±10% tolerance
+            # Phase 2 (limit): ±12% tolerance (ABSOLUTE LIMIT)
+            if allow_relaxation:
+                tolerance = 0.12  # Phase 2: Absolute limit
+            else:
+                tolerance = 0.10  # Phase 1: Objective tolerance
+            
+            # STRICTER tolerance for part-time workers
+            if work_percentage < 100:
+                # Reduce tolerance proportionally for part-time workers
+                adjusted_tolerance = tolerance * (work_percentage / 100.0)
+                tolerance = max(0.05, adjusted_tolerance)  # Minimum 5% tolerance
+                logging.debug(f"Worker {worker_id} (part-time {work_percentage}%): Using adjusted tolerance {tolerance*100:.1f}%")
+            
+            # CRITICAL: Use int() to truncate, not round() - this ensures we never exceed the percentage
+            max_allowed = int(target_shifts * (1 + tolerance))
         
         # ONLY check UPPER bound - never block workers with deficit
         if assignments_after > max_allowed:
@@ -976,7 +982,14 @@ class ScheduleBuilder:
                  logging.debug(f"Sim Check Fail: Double booking {worker_id} on {date}")
                  return False
 
-            sorted_sim_assignments = sorted(list(simulated_assignments.get(worker_id, [])))
+            # Merge prior-period assignments for Fri-Mon and 7/14-day pattern checks
+            # that must span the period boundary.
+            _sim_current = simulated_assignments.get(worker_id, set())
+            _sim_prior = getattr(self.scheduler, 'prior_assignments', {}).get(worker_id, set())
+            if _sim_prior:
+                _sim_cutoff = self.scheduler.start_date - timedelta(days=90)
+                _sim_prior = {d for d in _sim_prior if d >= _sim_cutoff}
+            sorted_sim_assignments = sorted(list(_sim_current | _sim_prior))
 
             # 7. Friday-Monday Check (Only if gap constraint allows 3 days, i.e., gap_between_shifts == 1)
             # Apply strictly during simulation checks
@@ -1062,7 +1075,13 @@ class ScheduleBuilder:
         if work_percentage < 70: # Example threshold for part-time adjustment
             min_days_between = max(min_days_between, self.scheduler.gap_between_shifts + 2)
 
-        assignments = sorted(list(simulated_assignments.get(worker_id, [])))
+        # Merge prior-period assignments so gap/7-14 pattern constraints span the boundary.
+        _current = simulated_assignments.get(worker_id, set())
+        _prior = getattr(self.scheduler, 'prior_assignments', {}).get(worker_id, set())
+        if _prior:
+            _cutoff = self.scheduler.start_date - timedelta(days=90)
+            _prior = {d for d in _prior if d >= _cutoff}
+        assignments = sorted(list(_current | _prior))
 
         for prev_date in assignments:
             if prev_date == date: continue # Don't compare date to itself
@@ -1666,7 +1685,14 @@ class ScheduleBuilder:
         - Patrón 7/14: Permite excepciones con déficit según relaxation_level
         """
         worker_id = worker['id']
-        assignments = sorted(list(self.worker_assignments[worker_id]))
+        # Merge current-period assignments with recent prior-period assignments so
+        # that gap / 7-14 day pattern constraints are enforced across the period boundary.
+        _current = self.worker_assignments.get(worker_id, set())
+        _prior = getattr(self.scheduler, 'prior_assignments', {}).get(worker_id, set())
+        if _prior:
+            _cutoff = self.scheduler.start_date - timedelta(days=90)
+            _prior = {d for d in _prior if d >= _cutoff}
+        assignments = sorted(list(_current | _prior))
         
         if not assignments:
             return True

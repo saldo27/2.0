@@ -2,7 +2,7 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 2.5 (Febrero 2026)
+Versión: 2.6 (Marzo 2026)
 """
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
 # Esto asegura que los calendarios muestren Lunes-Domingo (formato español/ISO 8601)
@@ -472,7 +472,7 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
         config = {
             'start_date': start_date,
             'end_date': end_date,
-            'num_shifts': st.session_state.config.get('num_shifts', 3),
+            'num_shifts': st.session_state.config.get('num_shifts', 4),
             'workers_data': st.session_state.workers_data,  # Pass directly, matching Kivy
             'holidays': holidays,
             'variable_shifts': variable_shifts,
@@ -584,7 +584,12 @@ def get_schedule_dataframe():
             row[f'Puesto {i+1}'] = worker if worker else '-'
         data.append(row)
     
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    # For days with fewer posts than the maximum (variable_shifts), pandas creates NaN
+    # in the extra columns.  Replace those with a distinct marker '---' so they are
+    # visually distinguishable from real empty slots ('-') and are never counted as
+    # real guard slots in any coverage calculation.
+    return df.fillna('---')
 
 def get_worker_statistics():
     """Obtener estadísticas de asignaciones por médico usando el motor central"""
@@ -595,32 +600,36 @@ def get_worker_statistics():
     scheduler = st.session_state.scheduler
     core_stats = scheduler.stats.calculate_statistics()
     
-    # Calcular el ratio de días de weekend (Vie/Sab/Dom + festivos + pre-festivos) sobre total
+    # Calcular el ratio de SLOTS de weekend (no de días) sobre total de slots
+    # para que el target proporcional por worker sea correcto.
     from datetime import timedelta
     total_days = (scheduler.end_date - scheduler.start_date).days + 1  # Inclusive
     holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
     
-    weekend_days = 0
+    total_weekend_slots = 0
+    total_all_slots = 0
     current_date = scheduler.start_date
     while current_date <= scheduler.end_date:  # Inclusive end_date
+        shifts_for_date = scheduler._get_shifts_for_date(current_date)
+        total_all_slots += shifts_for_date
         is_weekend = (
             current_date.weekday() >= 4 or  # Vie/Sab/Dom
             current_date in holidays_set or  # Festivo
             (current_date + timedelta(days=1)) in holidays_set  # Pre-festivo
         )
         if is_weekend:
-            weekend_days += 1
+            total_weekend_slots += shifts_for_date
         current_date += timedelta(days=1)
     
-    weekend_ratio = weekend_days / total_days if total_days > 0 else 0
+    weekend_ratio = total_weekend_slots / total_all_slots if total_all_slots > 0 else 0
     
     # Rosell (último puesto) pre-calculations
     last_post_idx = scheduler.num_shifts - 1
     total_last_post_slots = sum(
-        1 for date, shifts in scheduler.schedule.items()
-        if len(shifts) > last_post_idx
+        1 for date in scheduler._get_date_range(scheduler.start_date, scheduler.end_date)
+        if scheduler._get_shifts_for_date(date) > last_post_idx
     )
-    total_schedule_slots = sum(len(shifts) for shifts in scheduler.schedule.values())
+    total_schedule_slots = total_all_slots
     rosell_ratio = total_last_post_slots / total_schedule_slots if total_schedule_slots > 0 else 0
 
     stats = []
@@ -1099,7 +1108,7 @@ with st.sidebar:
     st.header("⚙️ Configuración")
 
     # Importación y Exportación
-    with st.expander("📂 Importar / Exportar / Backup", expanded=False):
+    with st.expander("📂 Importar Calendario", expanded=False):
         # Importar
         sched_file = st.file_uploader("Cargar JSON Completo", type="json", key=f"schedule_uploader_{st.session_state.schedule_upload_counter}")
         if sched_file is not None:
@@ -1293,10 +1302,10 @@ with st.sidebar:
         st.markdown("**Configurar días con diferente número de guardias**")
         
         variable_shifts_text = st.text_area(
-            "Formato: DD-MM-YYYY: número",
-            value="25-12-2026: 2\n26-12-2026: 2",
+            "Formato: DD-MM-YYYY: número (ej: 25-12-2026: 2)",
+            value="",
             height=100,
-            help="Días específicos con diferente número de guardias"
+            help="Días específicos con diferente número de guardias. Un día por línea. Ejemplo: 25-12-2026: 2"
         )
         
         variable_shifts = []
@@ -1908,9 +1917,21 @@ with tab2:
             # Métricas rápidas
             col1, col2, col3, col4 = st.columns(4)
             
-            total_slots = sum(len([w for w in workers if w != '-']) 
-                            for workers in df.iloc[:, 2:].values)
-            total_possible = len(df) * (len(df.columns) - 2)
+            # Denominator: use the scheduler's configured expectation (num_shifts per
+            # date over the full range), NOT the dict's actual list lengths, because
+            # the dict can be missing keys or have shorter lists for transient reasons.
+            # This correctly gives 184 * 4 = 736 when there are no variable_shifts,
+            # and still accounts for variable_shifts days when they exist.
+            _scheduler = st.session_state.scheduler
+            _sched_raw = st.session_state.schedule
+            total_possible = sum(
+                _scheduler._get_shifts_for_date(d)
+                for d in _scheduler._get_date_range(_scheduler.start_date, _scheduler.end_date)
+            )
+            total_slots = sum(
+                sum(1 for w in shifts if w is not None)
+                for shifts in _sched_raw.values()
+            )
             coverage = (total_slots / total_possible * 100) if total_possible > 0 else 0
             
             with col1:
@@ -2178,10 +2199,14 @@ with tab3:
             st.subheader("📈 Resumen General")
             col1, col2, col3 = st.columns(3)
             
-            # CORRECCIÓN: Total Objetivo debe ser el número real de turnos a cubrir
-            # No la suma de _raw_target (que puede incluir sobreestimaciones)
+            # CORRECCIÓN: Total Objetivo son los slots totales a cubrir según la
+            # configuración del scheduler (num_shifts × días del rango), no los
+            # tamaños reales de las listas del dict (que pueden quedarse cortos).
             scheduler = st.session_state.scheduler
-            total_target = sum(len(shifts) for shifts in scheduler.schedule.values())
+            total_target = sum(
+                scheduler._get_shifts_for_date(d)
+                for d in scheduler._get_date_range(scheduler.start_date, scheduler.end_date)
+            )
             total_assigned = stats_df['Asignados'].sum()
             avg_deviation = stats_df['Desviación'].mean()
             
@@ -2198,17 +2223,18 @@ with tab3:
             col4, col5, col6 = st.columns(3)
             
             # CORRECCIÓN: Objetivo Weekend debe ser el número real de slots de weekend a cubrir
+            # Usa _get_shifts_for_date para respetar la configuración (no len(shifts) del dict)
             from datetime import timedelta
             holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
             total_weekend_target = 0
-            for date, shifts in scheduler.schedule.items():
+            for d in scheduler._get_date_range(scheduler.start_date, scheduler.end_date):
                 is_weekend = (
-                    date.weekday() >= 4 or  # Vie/Sab/Dom
-                    date in holidays_set or  # Festivo
-                    (date + timedelta(days=1)) in holidays_set  # Pre-festivo
+                    d.weekday() >= 4 or  # Vie/Sab/Dom
+                    d in holidays_set or  # Festivo
+                    (d + timedelta(days=1)) in holidays_set  # Pre-festivo
                 )
                 if is_weekend:
-                    total_weekend_target += len(shifts)
+                    total_weekend_target += scheduler._get_shifts_for_date(d)
             
             total_weekend_assigned = stats_df['Weekend'].sum()
             avg_weekend_deviation = stats_df['Desv. Wknd'].mean()
