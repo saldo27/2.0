@@ -146,42 +146,6 @@ COPYRIGHT:
 ----------
 © 2025 Luis Herrera Para. Todos los derechos reservados. 
 
-CALENDARIO PREVIO (NUEVO v2.6):
---------------------------------
-El sistema puede cargar un calendario exportado de un período anterior para
-tener en cuenta la carga de trabajo ya realizada al generar el nuevo reparto.
-
-Cómo usarlo:
-1. Generar y exportar el calendario del período anterior (botón
-   "💾 Descargar Respaldo Completo (JSON)" en Importar/Exportar).
-2. En la barra lateral del nuevo reparto, expandir "📅 Calendario Anterior".
-3. Cargar el archivo JSON del período anterior y pulsar "📥 Cargar".
-4. Generar el nuevo calendario normalmente con "🚀 Generar Calendario".
-
-Qué hace el sistema con el calendario previo:
-- Huecos mínimos: los últimos turnos del período anterior se tienen en cuenta
-  para no violar el hueco mínimo configurado entre guardias en los primeros
-  días del nuevo período.
-- Patrón mismo día de semana 7/14 días: se bloquea también cruzando el límite
-  de período (si un trabajador hizo guardia el último lunes del mes anterior,
-  no se le asignará el primer lunes del mes siguiente).
-- Viernes-Lunes: la regla de no asignar viernes+lunes consecutivos se aplica
-  respetando el fin del período anterior.
-- Fines de semana consecutivos: la cuenta de fines de semana consecutivos
-  continúa desde el último fin de semana del período anterior.
-- Cuota proporcional de fines de semana: el cap de fines de semana del nuevo
-  período se reduce en función de los fines de semana ya trabajados en el
-  período previo.
-- Ajuste de target de turnos: si un trabajador hizo más (o menos) guardias
-  de las previstas en el período anterior, su cuota del nuevo período se
-  reduce (o aumenta) en la misma cantidad para compensar el desequilibrio.
-- Prioridad de asignación: los conteos del período anterior se suman a los
-  del nuevo período para que el motor priorice siempre a los trabajadores
-  con menos guardias acumuladas.
-
-Nota: Solo se tienen en cuenta asignaciones de los últimos 90 días anteriores
-al inicio del nuevo período para evitar que períodos muy lejanos distorsionen
-las restricciones.
 
 HISTORIAL DE VERSIONES:
 ------------------------
