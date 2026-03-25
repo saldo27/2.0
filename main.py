@@ -219,7 +219,7 @@ class WelcomeScreen(Screen):
         try:
             # Try multiple possible paths for the historical data
             possible_paths = [
-                '/workspaces/10/historical_data/consolidated_history.json',
+                '/workspaces/2.0/historical_data/consolidated_history.json',
                 './historical_data/consolidated_history.json',
                 'historical_data/consolidated_history.json',
                 os.path.join(os.path.dirname(__file__), 'historical_data', 'consolidated_history.json')
@@ -469,7 +469,7 @@ Error: {str(e)}
             
             # Try multiple possible paths for the historical data
             possible_paths = [
-                '/workspaces/10/historical_data/consolidated_history.json',
+                '/workspaces/2.0/historical_data/consolidated_history.json',
                 './historical_data/consolidated_history.json', 
                 'historical_data/consolidated_history.json',
                 os.path.join(os.path.dirname(__file__), 'historical_data', 'consolidated_history.json')
@@ -667,7 +667,7 @@ Error al acceder a datos históricos: {str(e)}
         try:
             # Try multiple possible paths for the historical data
             possible_paths = [
-                '/workspaces/10/historical_data/consolidated_history.json',
+                '/workspaces/2.0/historical_data/consolidated_history.json',
                 './historical_data/consolidated_history.json',
                 'historical_data/consolidated_history.json',
                 os.path.join(os.path.dirname(__file__), 'historical_data', 'consolidated_history.json')
@@ -1141,7 +1141,7 @@ Error al acceder a datos históricos: {str(e)}
             
             # Try multiple possible paths for the historical data directory
             possible_dirs = [
-                '/workspaces/10/historical_data',
+                '/workspaces/2.0/historical_data',
                 './historical_data',
                 'historical_data',
                 os.path.join(os.path.dirname(__file__), 'historical_data')
@@ -2413,9 +2413,9 @@ class CalendarViewScreen(Screen):
         for worker, data in sorted(stats.items()):
             worker_stats = (
                 f"Worker {worker}:\n"
-                f"  Total Shifts: {data['nº de guardias']}\n"
-                f"  Weekend Shifts: {data['Findes']}\n"
-                f"  Holiday Shifts: {data['Festivos']}\n"
+                f"  Total Shifts: {data['total_shifts']}\n"
+                f"  Weekend Shifts: {data['weekends']}\n"
+                f"  Holiday Shifts: {data['holidays']}\n"
             )
             content.add_widget(Label(text=worker_stats))
     
