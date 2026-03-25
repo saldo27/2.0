@@ -103,6 +103,19 @@ class ScheduleBuilder:
                 incompatible_list = [incompatible_list] if incompatible_list else []
             self._incompatibility_cache[worker_id] = set(incompatible_list)
         
+        # Pre-parse mandatory dates for each worker (avoids repeated string parsing)
+        self._mandatory_dates_cache = {}
+        for worker in self.workers_data:
+            worker_id = worker['id']
+            mandatory_str = worker.get('mandatory_days', '')
+            if mandatory_str:
+                try:
+                    self._mandatory_dates_cache[worker_id] = set(self.date_utils.parse_dates(mandatory_str))
+                except Exception:
+                    self._mandatory_dates_cache[worker_id] = set()
+            else:
+                self._mandatory_dates_cache[worker_id] = set()
+        
         # Build date cache for weekend/holiday status
         current_date = self.start_date
         holiday_set = set(self.holidays)
@@ -271,7 +284,10 @@ class ScheduleBuilder:
     # 3. WORKER CONSTRAINT CHECKING
     # ========================================
     def _is_mandatory(self, worker_id, date):
-        # This is a placeholder for your actual implementation
+        # Use pre-parsed cache for O(1) lookup instead of re-parsing each time
+        if hasattr(self, '_mandatory_dates_cache') and worker_id in self._mandatory_dates_cache:
+            return date in self._mandatory_dates_cache[worker_id]
+        # Fallback if cache not built yet
         worker = next((w for w in self.workers_data if w['id'] == worker_id), None)
         if not worker: return False
         mandatory_days_str = worker.get('mandatory_days', '')

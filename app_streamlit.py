@@ -201,8 +201,8 @@ if 'license_checked' not in st.session_state:
     st.session_state.license_checked = True
     can_use, message, remaining = license_manager.can_use()
     st.session_state.can_use = can_use
-    st. session_state.license_message = message
-    st. session_state.uses_remaining = remaining
+    st.session_state.license_message = message
+    st.session_state.uses_remaining = remaining
     st.session_state.limitations = license_manager.get_limitations()
 
 # Real-time features
@@ -328,8 +328,8 @@ def load_schedule_from_json(uploaded_file):
                  return False, f"❌ Error: Este parece ser un archivo de Análisis Histórico (Analytics), no un respaldo de calendario completo. Claves encontradas: {keys_found}"
             return False, f"❌ El archivo no contiene datos de trabajadores ('workers_data'). Claves encontradas: {keys_found}"
             
-        # 2. Cargar Workers Data
-        st.session_state.workers_data = data['workers_data']
+        # 2. Preparar Workers Data (no asignar a session_state hasta validar todo)
+        new_workers_data = data['workers_data']
         
         # 3. Cargar Configuración
         config = st.session_state.config.copy()
@@ -385,11 +385,13 @@ def load_schedule_from_json(uploaded_file):
                         holidays.append(datetime.fromisoformat(h))
                     else:
                         holidays.append(h)
-                except: pass
+                except (ValueError, TypeError): pass
             config['holidays'] = holidays
             
         if 'variable_shifts' in data: config['variable_shifts'] = data['variable_shifts']
         
+        # Commit validated data to session_state
+        st.session_state.workers_data = new_workers_data
         st.session_state.config = config
         
         # 4. Reconstruir Scheduler y Schedule
@@ -401,13 +403,13 @@ def load_schedule_from_json(uploaded_file):
                     try:
                         dt = datetime.fromisoformat(date_str)
                         schedule[dt] = workers
-                    except: pass
+                    except (ValueError, TypeError): pass
                 
                 if schedule:
                     # Crear scheduler dummy con esta config
                     scheduler = Scheduler(config)
                     scheduler.schedule = schedule
-                    scheduler.workers_data = st.session_state.workers_data
+                    scheduler.workers_data = new_workers_data
                     scheduler.worker_assignments = scheduler._map_worker_assignments() 
                     
                     st.session_state.scheduler = scheduler
@@ -552,9 +554,9 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
         if success:
             if limitations['mode'] == 'DEMO':
                 uses = license_manager.increment_usage()
-                st.session_state. uses_remaining = license_manager.DEMO_MAX_USES - uses
+                st.session_state.uses_remaining = license_manager.DEMO_MAX_USES - uses
                 
-                if st.session_state. uses_remaining <= 3:
+                if st.session_state.uses_remaining <= 3:
                     st.warning(f"⚠️ **Atención**: Solo quedan **{st.session_state.uses_remaining}** usos en modo DEMO")
                 
                 st.info(f"✅ Generación #{uses} completada.  Quedan {st.session_state.uses_remaining} usos.")
@@ -1023,7 +1025,7 @@ def show_license_info():
                         time.sleep(2)
                         st.rerun()
                     else:
-                        st. error(message)
+                        st.error(message)
             
             st.caption("📧 Contacto: luisherrerapara@gmail.com")
         
@@ -1277,7 +1279,7 @@ with st.sidebar:
             try:
                 holiday_date = datetime.strptime(line, '%d-%m-%Y')
                 holidays.append(holiday_date)
-            except:
+            except ValueError:
                 st.warning(f"⚠️ Fecha inválida ignorada: {line}")
     
     # Guardar festivos en session_state para acceso desde otras tabs
@@ -1336,7 +1338,7 @@ with st.sidebar:
                         'end_date': date_obj,
                         'shifts': shifts_num
                     })
-                except:
+                except (ValueError, TypeError):
                     st.warning(f"⚠️ Línea inválida: {line}")
         
         if variable_shifts:
@@ -2112,7 +2114,7 @@ with tab2:
                                         try:
                                             p_idx = scheduler.schedule[date].index(w_id)
                                             post_counts[p_idx] = post_counts.get(p_idx, 0) + 1
-                                        except: pass
+                                        except (ValueError, KeyError): pass
                                         # Weekdays
                                         wd = date.weekday()
                                         weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
@@ -3048,15 +3050,19 @@ with tab6:
         st.caption("• PDF\n• Excel (.xlsx, .xls)\n• CSV")
     
     if uploaded_file is not None:
-        try:
-            # Procesar archivo subido
-            processor = CalendarFileProcessor()
-            calendar_text = processor.process_file(uploaded_file)
-            st.session_state.revision_calendar_text = calendar_text
-            st.success("✅ Archivo subido cargado correctamente")
-        except Exception as e:
-            st.error(f"❌ Error procesando archivo: {str(e)}")
-            st.session_state.revision_calendar_text = ""
+        # Only process if file changed (avoid re-processing on every rerun)
+        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+        if file_id != st.session_state.get('_revision_last_file_id'):
+            try:
+                # Procesar archivo subido
+                processor = CalendarFileProcessor()
+                calendar_text = processor.process_file(uploaded_file)
+                st.session_state.revision_calendar_text = calendar_text
+                st.session_state._revision_last_file_id = file_id
+                st.success("✅ Archivo subido cargado correctamente")
+            except Exception as e:
+                st.error(f"❌ Error procesando archivo: {str(e)}")
+                st.session_state.revision_calendar_text = ""
     
     # Preview del texto extraído (funciona para ambas fuentes)
     if st.session_state.revision_calendar_text:
@@ -3309,7 +3315,7 @@ with tab6:
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                     st.session_state.revision_stats.to_excel(writer, sheet_name='Estadísticas', index=False)
-                    if not st.session_state.revision_alerts.empty:
+                    if st.session_state.revision_alerts is not None and not st.session_state.revision_alerts.empty:
                         st.session_state.revision_alerts.to_excel(writer, sheet_name='Alertas', index=False)
                 
                 buffer.seek(0)
