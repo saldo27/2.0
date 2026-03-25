@@ -2,7 +2,7 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 2.6 (Marzo 2026)
+Versión: 2.7 (Marzo 2026)
 """
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
 # Esto asegura que los calendarios muestren Lunes-Domingo (formato español/ISO 8601)
@@ -34,7 +34,7 @@ logging.getLogger('PIL').setLevel(logging.WARNING)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 # Constante de versión
-APP_VERSION = "2.5"
+APP_VERSION = "2.7"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -508,33 +508,46 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
             else:
                 st.session_state.prior_schedule_data = _result.get('summary', {})
         
-        # UI progresiva
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        def update_progress(phase, percentage, details=""):
-            status_text.markdown(f"**Fase:** {phase} | {details}")
-            progress_bar.progress(min(max(percentage, 0), 100))
-            
-        # Generar horario con feedback visual
-        # Monkey patch o callback wrapper para capturar progreso si el scheduler lo soportara nativamente
-        # Por ahora simulamos las fases principales o si SchedulerCore expone hooks
-        
-        update_progress("Fase 1: Configuración", 10, "Inicializando motor y validando restricciones...")
-        
-        # Simulación visual de fases para dar feedback de actividad
-        # En una integración futura, SchedulerCore enviará eventos reales
+        # Generación con soporte de cancelación
+        import threading
         import time
-        
-        # Como SchedulerCore.orchestrate_schedule_generation es bloqueante, 
-        # mostramos que el proceso iniciará
-        time.sleep(0.5)
-        update_progress("Fase 2: Asignaciones Fijas", 30, "Procesando días obligatorios y festivos...")
-        
-        with st.spinner("🚀 Ejecutando motor de optimización avanzado (Fase 1 + Swaps + Iteraciones)..."):
-            # Mensaje informativo para el usuario
-            status_text.info("⚙️ Ejecutando: Distribución Inicial → Optimización Iterativa → Balanceo")
-            success = scheduler.generate_schedule()
+
+        status_text = st.empty()
+        cancel_placeholder = st.empty()
+        st.session_state.generation_cancelled = False
+        scheduler._cancelled = False
+
+        generation_result = {'success': False, 'error': None}
+
+        def _run_generation():
+            try:
+                generation_result['success'] = scheduler.generate_schedule()
+            except Exception as exc:
+                generation_result['error'] = exc
+
+        status_text.info("⚙️ Ejecutando: Distribución Inicial → Optimización Iterativa → Balanceo...")
+        thread = threading.Thread(target=_run_generation, daemon=True)
+        thread.start()
+
+        # Polling loop: mostrar progreso real y permitir cancelación
+        while thread.is_alive():
+            if cancel_placeholder.button("⛔ Cancelar generación", key=f"cancel_{time.time()}"):
+                scheduler._cancelled = True
+                st.session_state.generation_cancelled = True
+                status_text.warning("⏳ Cancelando... esperando a que el motor se detenga")
+            time.sleep(0.3)
+
+        thread.join()
+        cancel_placeholder.empty()
+
+        if st.session_state.generation_cancelled:
+            status_text.warning("🛑 Generación cancelada por el usuario")
+            return False, "🛑 Generación cancelada"
+
+        if generation_result['error']:
+            raise generation_result['error']
+
+        success = generation_result['success']
         
         if success:
             if limitations['mode'] == 'DEMO':
@@ -550,7 +563,7 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
             if hasattr(scheduler, 'enable_real_time_features'):
                 scheduler.enable_real_time_features()
                 
-            update_progress("Fase Final: Completado", 100, "¡Calendario generado y optimizado!")
+            status_text.success("✅ ¡Calendario generado y optimizado!")
             st.session_state.schedule = scheduler.schedule
             return True, "✅ Calendario generado exitosamente"
         else:
@@ -759,8 +772,8 @@ def assign_worker_real_time(worker_id, date, post_index):
             
             # Update worker_assignments
             if worker_id not in scheduler.worker_assignments:
-                scheduler.worker_assignments[worker_id] = []
-            scheduler.worker_assignments[worker_id].append(date)
+                scheduler.worker_assignments[worker_id] = set()
+            scheduler.worker_assignments[worker_id].add(date)
             
             # Save to undo stack
             st.session_state.undo_stack.append({
@@ -827,8 +840,8 @@ def redo_last_change():
             
             # Update worker_assignments
             if worker_id not in scheduler.worker_assignments:
-                scheduler.worker_assignments[worker_id] = []
-            scheduler.worker_assignments[worker_id].append(date)
+                scheduler.worker_assignments[worker_id] = set()
+            scheduler.worker_assignments[worker_id].add(date)
             
             # Save to undo stack
             st.session_state.undo_stack.append(last_undone)
@@ -1108,7 +1121,7 @@ with st.sidebar:
     st.header("⚙️ Configuración")
 
     # Importación y Exportación
-    with st.expander("📂 Importar Calendario", expanded=False):
+    with st.expander("📂 Restaurar sesión / Exportar Calendario", expanded=False):
         # Importar
         sched_file = st.file_uploader("Cargar JSON Completo", type="json", key=f"schedule_uploader_{st.session_state.schedule_upload_counter}")
         if sched_file is not None:
@@ -2994,39 +3007,67 @@ with tab6:
     # Sección 1: Carga de archivo
     st.subheader("📂 Carga de Archivo")
     
-    col1, col2 = st.columns([3, 1])
+    # Opción A: Seleccionar archivo local del directorio
+    local_extensions = ('.pdf', '.xlsx', '.xls', '.csv')
+    local_files = sorted([
+        f.name for f in Path('.').iterdir()
+        if f.is_file() and f.name.lower().endswith(local_extensions)
+    ])
     
-    with col1:
+    col_local, col_upload, col_info = st.columns([2, 2, 1])
+    
+    with col_local:
+        st.markdown("**Opción A: Archivo del directorio**")
+        selected_local = st.selectbox(
+            "Archivos disponibles",
+            options=["(ninguno)"] + local_files,
+            index=0,
+            help="Archivos PDF, Excel o CSV encontrados en el directorio de trabajo"
+        )
+        if selected_local != "(ninguno)" and st.button("📂 Cargar archivo local", key="btn_load_local_file"):
+            try:
+                processor = CalendarFileProcessor()
+                calendar_text = processor.process_local_file(Path('.') / selected_local)
+                st.session_state.revision_calendar_text = calendar_text
+                st.success(f"✅ Archivo «{selected_local}» cargado correctamente")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error procesando archivo: {str(e)}")
+                st.session_state.revision_calendar_text = ""
+    
+    with col_upload:
+        st.markdown("**Opción B: Subir archivo**")
         uploaded_file = st.file_uploader(
             "Seleccione archivo (PDF, Excel, CSV)",
             type=["pdf", "xlsx", "xls", "csv"],
             help="Archivo con guardias a analizar"
         )
     
-    with col2:
+    with col_info:
         st.markdown("**Formatos soportados:**")
         st.caption("• PDF\n• Excel (.xlsx, .xls)\n• CSV")
     
     if uploaded_file is not None:
         try:
-            # Procesar archivo
+            # Procesar archivo subido
             processor = CalendarFileProcessor()
             calendar_text = processor.process_file(uploaded_file)
             st.session_state.revision_calendar_text = calendar_text
-            st.success("✅ Archivo cargado correctamente")
-            
-            # Mostrar preview del texto extraído
-            with st.expander("👁️ Preview del contenido extraído"):
-                st.text_area(
-                    "Contenido del archivo:",
-                    value=calendar_text[:500] + "..." if len(calendar_text) > 500 else calendar_text,
-                    height=150,
-                    disabled=True
-                )
-        
+            st.success("✅ Archivo subido cargado correctamente")
         except Exception as e:
             st.error(f"❌ Error procesando archivo: {str(e)}")
             st.session_state.revision_calendar_text = ""
+    
+    # Preview del texto extraído (funciona para ambas fuentes)
+    if st.session_state.revision_calendar_text:
+        with st.expander("👁️ Preview del contenido extraído"):
+            preview_text = st.session_state.revision_calendar_text
+            st.text_area(
+                "Contenido del archivo:",
+                value=preview_text[:500] + "..." if len(preview_text) > 500 else preview_text,
+                height=150,
+                disabled=True
+            )
     
     # Sección 2: Configuración
     if st.session_state.revision_calendar_text:
@@ -3285,7 +3326,7 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "Sistema de Generación de Guardias v2.5 | "
+    "Sistema de Generación de Guardias v2.7 | "
     "Interfaz Streamlit | "
     f"© {datetime.now().year}"
     "</div>",

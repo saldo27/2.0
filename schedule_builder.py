@@ -449,32 +449,26 @@ class ScheduleBuilder:
             logging.debug(f"✅ MANDATORY: {worker_id} mandatory shift on {date.strftime('%Y-%m-%d')}, bypassing tolerance")
             return False
         
-        # ZERO TOLERANCE for manual workers (guardias/mes defined by user)
-        is_manual_worker = not worker_data.get('auto_calculate_shifts', True)
-        
-        if is_manual_worker:
-            # Manual workers: exact target per period, no tolerance
-            max_allowed = target_shifts
-            tolerance = 0.0
-            logging.debug(f"Worker {worker_id} (MANUAL): Zero tolerance, max_allowed={max_allowed}")
+        # Phase-based tolerance system:
+        # Phase 1 (objective): ±10% tolerance
+        # Phase 2 (limit): ±12% tolerance (ABSOLUTE LIMIT)
+        if allow_relaxation:
+            tolerance = 0.12  # Phase 2: Absolute limit
         else:
-            # Phase-based tolerance system:
-            # Phase 1 (objective): ±10% tolerance
-            # Phase 2 (limit): ±12% tolerance (ABSOLUTE LIMIT)
-            if allow_relaxation:
-                tolerance = 0.12  # Phase 2: Absolute limit
-            else:
-                tolerance = 0.10  # Phase 1: Objective tolerance
-            
-            # STRICTER tolerance for part-time workers
-            if work_percentage < 100:
-                # Reduce tolerance proportionally for part-time workers
-                adjusted_tolerance = tolerance * (work_percentage / 100.0)
-                tolerance = max(0.05, adjusted_tolerance)  # Minimum 5% tolerance
-                logging.debug(f"Worker {worker_id} (part-time {work_percentage}%): Using adjusted tolerance {tolerance*100:.1f}%")
-            
-            # CRITICAL: Use int() to truncate, not round() - this ensures we never exceed the percentage
-            max_allowed = int(target_shifts * (1 + tolerance))
+            tolerance = 0.10  # Phase 1: Objective tolerance
+        
+        # STRICTER tolerance for part-time workers
+        if work_percentage < 100:
+            # Reduce tolerance proportionally for part-time workers
+            # Phase 1 examples: 50% worker gets 5% (10%*50%), 75% worker gets 7.5% (10%*75%)
+            # Phase 2 examples: 50% worker gets 6% (12%*50%), 75% worker gets 9% (12%*75%)
+            adjusted_tolerance = tolerance * (work_percentage / 100.0)
+            tolerance = max(0.05, adjusted_tolerance)  # Minimum 5% tolerance
+            logging.debug(f"Worker {worker_id} (part-time {work_percentage}%): Using adjusted tolerance {tolerance*100:.1f}%")
+        
+        tolerance_amount = target_shifts * tolerance
+        # CRITICAL: Use int() to truncate, not round() - this ensures we never exceed the percentage
+        max_allowed = int(target_shifts * (1 + tolerance))
         
         # ONLY check UPPER bound - never block workers with deficit
         if assignments_after > max_allowed:
@@ -704,10 +698,9 @@ class ScheduleBuilder:
                         return False
                 
                     # Check for 7-14 day pattern (same weekday in consecutive weeks)
-                    # CRITICAL: This constraint applies to ALL days (including weekends)
+                    # HARD CONSTRAINT: applies to ALL days (including weekends)
                     # Workers should NOT have the same weekday in consecutive weeks (7 or 14 days apart)
                     if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                        # STRICT: NO overrides for 7/14 pattern - this is a HARD constraint for ALL days
                         logging.debug(f"Worker {worker_id} 7/14 pattern violation: {date.strftime('%Y-%m-%d')} and {prev_date.strftime('%Y-%m-%d')} are both {date.strftime('%A')}")
                         return False
             

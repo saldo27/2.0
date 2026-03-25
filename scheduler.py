@@ -12,7 +12,7 @@ from schedule_builder import ScheduleBuilder
 from data_manager import DataManager
 from utilities import DateTimeUtils
 from statistics_calculator import StatisticsCalculator
-from exceptions import SchedulerError
+from exceptions import SchedulerError, ConfigurationError, DataIntegrityError
 from worker_eligibility import WorkerEligibilityTracker
 
 # Initialize logging using the configuration module
@@ -39,172 +39,178 @@ class Scheduler:
             # Then validate the configuration
             self._validate_config(config)
     
-            # Basic setup from config
-            self.config = config
-            self.start_date = config['start_date']
-            self.end_date = config['end_date']
-            self.num_shifts = config['num_shifts']
-            self.variable_shifts = config.get('variable_shifts', [])
-            self.workers_data = config['workers_data']
-            self.holidays = config.get('holidays', [])
-            self.enable_proportional_weekends = config.get('enable_proportional_weekends', True)
-            self.weekend_tolerance = config.get('weekend_tolerance', 1)  # +/- 1 as specified
-            self.bridge_tolerance = config.get('bridge_tolerance', 0.5)  # +/- 0.5 for bridge periods
+            # Phase 1: Extract config into instance attributes
+            self._init_config(config)
 
-            # Initialize bridge periods tracking
-            year = self.start_date.year if hasattr(self, 'start_date') else datetime.now().year
-            self.bridge_periods = self.date_utils.identify_bridge_periods(self.holidays, year)
-            # Track which bridge periods (by ID) are assigned to each worker
-            self.worker_bridge_counts = {w['id']: set() for w in self.workers_data}
+            # Phase 2: Build incompatibility matrix
+            self._init_incompatibilities()
 
-            # --- START: Build incompatibility lists ---
-            incompatible_worker_ids = {
-                worker['id'] for worker in self.workers_data if worker.get('is_incompatible', False)
-            }
-            logging.debug(f"Identified incompatible worker IDs (from is_incompatible flag): {incompatible_worker_ids}")
+            # Phase 3: Initialize all tracking dictionaries
+            self._init_tracking_state()
 
-            for worker in self.workers_data:
-                worker_id = worker['id']
-                # Check if incompatible_with is already defined
-                if 'incompatible_with' not in worker or not worker['incompatible_with']:
-                    # Initialize the list if not already set
-                    worker['incompatible_with'] = []
-                    if worker.get('is_incompatible', False):
-                        # If this worker is incompatible, add all *other* incompatible workers to its list
-                        worker['incompatible_with'] = list(incompatible_worker_ids - {worker_id}) # Exclude self
-                else:
-                    # Respect existing incompatible_with list
-                    logging.debug(f"Worker {worker_id} has predefined incompatible_with list: {worker['incompatible_with']}")
-                logging.debug(f"Worker {worker_id} final incompatible_with list: {worker['incompatible_with']}")
-            # --- END: Build incompatibility lists ---
-    
-            # Get the new configurable parameters with defaults from config
-            default_config = SchedulerConfig.get_default_config()
-            self.gap_between_shifts = config.get('gap_between_shifts', default_config['gap_between_shifts'])
-            self.max_consecutive_weekends = config.get('max_consecutive_weekends', default_config['max_consecutive_weekends'])
+            # Phase 4: Initialize helper modules / engines
+            self._init_modules(config)
 
-            # Initialize tracking dictionaries
-            self.schedule = {}
-            self.worker_assignments = {w['id']: set() for w in self.workers_data}
-            self.worker_posts = {w['id']: set() for w in self.workers_data} # CORRECTED: Initialize as a set
-            self.worker_weekdays = {w['id']: {i: 0 for i in range(7)} for w in self.workers_data}
-            self.worker_weekends = {w['id']: [] for w in self.workers_data} # This is a list of dates, which is fine
-            # Initialize the schedule structure with the appropriate number of shifts for each date
-            self._initialize_schedule_with_variable_shifts() 
-            # Initialize tracking data structures (These seem to be for overall counts, distinct from worker_posts which tracks *which* posts)
-            self.worker_shift_counts = {w['id']: 0 for w in self.workers_data}
-            self.worker_weekend_counts = {w['id']: 0 for w in self.workers_data} 
-            self.worker_post_counts = {w['id']: {p: 0 for p in range(self.num_shifts)} for w in self.workers_data} # This is for counting how many times each post is worked by a worker, distinct from self.worker_posts
-            self.worker_weekday_counts = {w['id']: {d: 0 for d in range(7)} for w in self.workers_data}
-            self.worker_holiday_counts = {w['id']: 0 for w in self.workers_data}
-            self.last_assignment_date = {w['id']: None for w in self.workers_data} # Corrected attribute name
-            # Initialize consecutive_shifts
-            self.consecutive_shifts = {w['id']: 0 for w in self.workers_data} # <<< --- ADD THIS LINE
-                      
-            # Initialize worker targets
-            for worker in self.workers_data:
-                if 'target_shifts' not in worker:
-                    worker['target_shifts'] = 0
-
-            # Set current time and user
-            # self.date_utils = DateTimeUtils() # Already initialized above
-            self.current_datetime = self.date_utils.get_spain_time()
-            self.current_user = 'saldo27'
-        
-            # Add max_shifts_per_worker calculation
-            total_days = (self.end_date - self.start_date).days + 1
-            total_shifts_possible = total_days * self.num_shifts # Renamed for clarity
-            num_workers = len(self.workers_data)
-            # Ensure num_workers is not zero to prevent DivisionByZeroError
-            self.max_shifts_per_worker = (total_shifts_possible // num_workers) + 2 if num_workers > 0 else total_shifts_possible 
-
-            # Track constraint skips
-            self.constraint_skips = {
-                w['id']: {
-                    'gap': [],
-                    'incompatibility': [],
-                    'reduced_gap': []  # For part-time workers
-                } for w in self.workers_data
-            }
-        
-            # Initialize helper modules
-            self.stats = StatisticsCalculator(self)
-            self.constraint_checker = ConstraintChecker(self)  
-            self.data_manager = DataManager(self)
-            # self.schedule_builder will be initialized later in generate_schedule
-            self.eligibility_tracker = WorkerEligibilityTracker(
-                self.workers_data,
-                self.holidays,
-                self.gap_between_shifts,
-                self.max_consecutive_weekends,
-                start_date=self.start_date,  # Pass start_date
-                end_date=self.end_date,      # Pass end_date
-                date_utils=self.date_utils,  # Pass date_utils
-                scheduler=self              # Pass reference to scheduler
-            )
-
-            # Initialize real-time engine (optional, only if real-time features are enabled)
-            self.real_time_engine = None
-            if config.get('enable_real_time', False):
-                try:
-                    from real_time_engine import RealTimeEngine
-                    self.real_time_engine = RealTimeEngine(self)
-                    logging.info("Real-time engine initialized")
-                except ImportError:
-                    logging.warning("Real-time engine not available - real-time features disabled")
-
-            # Initialize predictive analytics engine (optional, only if enabled)
-            self.predictive_analytics = None
-            self.predictive_optimizer = None
-            if config.get('enable_predictive_analytics', True):
-                try:
-                    from predictive_analytics import PredictiveAnalyticsEngine
-                    from predictive_optimizer import PredictiveOptimizer
-                    
-                    predictive_config = config.get('predictive_analytics_config', {})
-                    self.predictive_analytics = PredictiveAnalyticsEngine(self, predictive_config)
-                    self.predictive_optimizer = PredictiveOptimizer(self, self.predictive_analytics)
-                    logging.info("Predictive analytics engine initialized")
-                    
-                    # Auto-collect data if enabled
-                    if predictive_config.get('auto_collect_data', True):
-                        self.predictive_analytics.auto_collect_data_if_enabled()
-                        
-                except ImportError as e:
-                    logging.warning(f"Predictive analytics not available - predictive features disabled: {e}")
-                except Exception as e:
-                    logging.error(f"Error initializing predictive analytics: {e}")
-
-            # Sort the variable shifts by start date for efficient lookup
-            self.variable_shifts.sort(key=lambda x: x['start_date'])
-    
-            # Calculate targets before proceeding
-            self._calculate_target_shifts()
-
-            # Snapshot of target_shifts per worker immediately after _calculate_target_shifts.
-            # Used as the stable baseline so that repeated calls to load_prior_schedule_data
-            # always adjust from the original targets (not from a previously-adjusted value).
-            self._base_target_shifts: Dict[str, float] = {
-                w['id']: float(w.get('target_shifts', 0)) for w in self.workers_data
-            }
-
-            # Initialize prior-schedule data containers (populated lazily via
-            # load_prior_schedule_data() before generate_schedule is called).
-            self.prior_assignments: Dict[str, set] = {}      # worker_id → set of datetime
-            self.prior_shift_counts: Dict[str, int] = {}     # worker_id → int
-            self.prior_weekend_counts: Dict[str, int] = {}   # worker_id → int
-            self.prior_target_shifts: Dict[str, float] = {}  # configured target in prior period
-            self.prior_last_date: Dict[str, Optional[Any]] = {}  # worker_id → datetime|None
+            # Phase 5: Calculate targets and prior-schedule containers
+            self._init_targets_and_prior()
 
             self._log_initialization()
 
-            # The ScheduleBuilder is now initialized within the generate_schedule method
-            # after the scheduler's own state for the run is fully prepared.
-            # self.schedule_builder = ScheduleBuilder(self) # This line is moved to generate_schedule
-
+        except SchedulerError:
+            raise
         except Exception as e:
-            logging.error(f"Initialization error: {str(e)}", exc_info=True) # Added exc_info=True
+            logging.error(f"Initialization error: {str(e)}", exc_info=True)
             raise SchedulerError(f"Failed to initialize scheduler: {str(e)}")
+
+    # ------------------------------------------------------------------
+    # Init sub-phases (called only from __init__)
+    # ------------------------------------------------------------------
+
+    def _init_config(self, config: Dict[str, Any]) -> None:
+        """Phase 1: Extract configuration into instance attributes."""
+        self.config = config
+        self.start_date = config['start_date']
+        self.end_date = config['end_date']
+        self.num_shifts = config['num_shifts']
+        self.variable_shifts = config.get('variable_shifts', [])
+        self.workers_data = config['workers_data']
+        self.holidays = config.get('holidays', [])
+        self.enable_proportional_weekends = config.get('enable_proportional_weekends', True)
+        self.weekend_tolerance = config.get('weekend_tolerance', 1)
+        self.bridge_tolerance = config.get('bridge_tolerance', 0.5)
+
+        # Bridge periods
+        year = self.start_date.year
+        self.bridge_periods = self.date_utils.identify_bridge_periods(self.holidays, year)
+        self.worker_bridge_counts = {w['id']: set() for w in self.workers_data}
+
+        # Configurable parameters with defaults
+        default_config = SchedulerConfig.get_default_config()
+        self.gap_between_shifts = config.get('gap_between_shifts', default_config['gap_between_shifts'])
+        self.max_consecutive_weekends = config.get('max_consecutive_weekends', default_config['max_consecutive_weekends'])
+
+        # Sort variable shifts for efficient lookup
+        self.variable_shifts.sort(key=lambda x: x['start_date'])
+
+        # Current time and user
+        self.current_datetime = self.date_utils.get_spain_time()
+        self.current_user = 'saldo27'
+
+    def _init_incompatibilities(self) -> None:
+        """Phase 2: Build incompatibility lists from worker flags."""
+        incompatible_worker_ids = {
+            worker['id'] for worker in self.workers_data if worker.get('is_incompatible', False)
+        }
+        logging.debug(f"Identified incompatible worker IDs (from is_incompatible flag): {incompatible_worker_ids}")
+
+        for worker in self.workers_data:
+            worker_id = worker['id']
+            if 'incompatible_with' not in worker or not worker['incompatible_with']:
+                worker['incompatible_with'] = []
+                if worker.get('is_incompatible', False):
+                    worker['incompatible_with'] = list(incompatible_worker_ids - {worker_id})
+            else:
+                logging.debug(f"Worker {worker_id} has predefined incompatible_with list: {worker['incompatible_with']}")
+            logging.debug(f"Worker {worker_id} final incompatible_with list: {worker['incompatible_with']}")
+
+    def _init_tracking_state(self) -> None:
+        """Phase 3: Initialize all tracking dictionaries and schedule structure."""
+        self.schedule = {}
+        self.worker_assignments = {w['id']: set() for w in self.workers_data}
+        self.worker_posts = {w['id']: set() for w in self.workers_data}
+        self.worker_weekdays = {w['id']: {i: 0 for i in range(7)} for w in self.workers_data}
+        self.worker_weekends = {w['id']: [] for w in self.workers_data}
+
+        self._initialize_schedule_with_variable_shifts()
+
+        self.worker_shift_counts = {w['id']: 0 for w in self.workers_data}
+        self.worker_weekend_counts = {w['id']: 0 for w in self.workers_data}
+        self.worker_post_counts = {w['id']: {p: 0 for p in range(self.num_shifts)} for w in self.workers_data}
+        self.worker_weekday_counts = {w['id']: {d: 0 for d in range(7)} for w in self.workers_data}
+        self.worker_holiday_counts = {w['id']: 0 for w in self.workers_data}
+        self.last_assignment_date = {w['id']: None for w in self.workers_data}
+        self.consecutive_shifts = {w['id']: 0 for w in self.workers_data}
+
+        for worker in self.workers_data:
+            if 'target_shifts' not in worker:
+                worker['target_shifts'] = 0
+
+        # Max shifts per worker
+        total_days = (self.end_date - self.start_date).days + 1
+        total_shifts_possible = total_days * self.num_shifts
+        num_workers = len(self.workers_data)
+        self.max_shifts_per_worker = (total_shifts_possible // num_workers) + 2 if num_workers > 0 else total_shifts_possible
+
+        # Constraint skips tracking
+        self.constraint_skips = {
+            w['id']: {
+                'gap': [],
+                'incompatibility': [],
+                'reduced_gap': []
+            } for w in self.workers_data
+        }
+
+    def _init_modules(self, config: Dict[str, Any]) -> None:
+        """Phase 4: Initialize helper modules and optional engines."""
+        self.stats = StatisticsCalculator(self)
+        self.constraint_checker = ConstraintChecker(self)
+        self.data_manager = DataManager(self)
+        self.eligibility_tracker = WorkerEligibilityTracker(
+            self.workers_data,
+            self.holidays,
+            self.gap_between_shifts,
+            self.max_consecutive_weekends,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            date_utils=self.date_utils,
+            scheduler=self
+        )
+
+        # Real-time engine (optional)
+        self.real_time_engine = None
+        if config.get('enable_real_time', False):
+            try:
+                from real_time_engine import RealTimeEngine
+                self.real_time_engine = RealTimeEngine(self)
+                logging.info("Real-time engine initialized")
+            except ImportError:
+                logging.warning("Real-time engine not available - real-time features disabled")
+
+        # Predictive analytics engine (optional)
+        self.predictive_analytics = None
+        self.predictive_optimizer = None
+        if config.get('enable_predictive_analytics', True):
+            try:
+                from predictive_analytics import PredictiveAnalyticsEngine
+                from predictive_optimizer import PredictiveOptimizer
+                
+                predictive_config = config.get('predictive_analytics_config', {})
+                self.predictive_analytics = PredictiveAnalyticsEngine(self, predictive_config)
+                self.predictive_optimizer = PredictiveOptimizer(self, self.predictive_analytics)
+                logging.info("Predictive analytics engine initialized")
+                
+                if predictive_config.get('auto_collect_data', True):
+                    self.predictive_analytics.auto_collect_data_if_enabled()
+                    
+            except ImportError as e:
+                logging.warning(f"Predictive analytics not available - predictive features disabled: {e}")
+            except Exception as e:
+                logging.error(f"Error initializing predictive analytics: {e}")
+
+    def _init_targets_and_prior(self) -> None:
+        """Phase 5: Calculate shift targets and initialize prior-schedule containers."""
+        self._calculate_target_shifts()
+
+        self._base_target_shifts: Dict[str, float] = {
+            w['id']: float(w.get('target_shifts', 0)) for w in self.workers_data
+        }
+
+        # Prior-schedule data (populated lazily via load_prior_schedule_data())
+        self.prior_assignments: Dict[str, set] = {}
+        self.prior_shift_counts: Dict[str, int] = {}
+        self.prior_weekend_counts: Dict[str, int] = {}
+        self.prior_target_shifts: Dict[str, float] = {}
+        self.prior_last_date: Dict[str, Optional[Any]] = {}
 
     # =========================================================================
     # PRIOR SCHEDULE INTEGRATION
@@ -364,32 +370,32 @@ class Scheduler:
             config: Dictionary containing schedule configuration
         
         Raises:
-            SchedulerError: If configuration is invalid
+            ConfigurationError: If configuration is invalid
         """
         # Use the enhanced configuration validation
         is_valid, error_message = SchedulerConfig.validate_config(config)
         if not is_valid:
-            raise SchedulerError(error_message)
+            raise ConfigurationError(error_message)
 
         # Additional validation specific to scheduler needs
         # Validate date range
         if not isinstance(config['start_date'], datetime) or not isinstance(config['end_date'], datetime):
-            raise SchedulerError("Start date and end date must be datetime objects")
+            raise ConfigurationError("Start date and end date must be datetime objects")
         
         if config['start_date'] > config['end_date']:
-            raise SchedulerError("Start date must be before end date")
+            raise ConfigurationError("Start date must be before end date")
 
         # Validate workers data
         if not config['workers_data'] or not isinstance(config['workers_data'], list):
-            raise SchedulerError("workers_data must be a non-empty list")
+            raise ConfigurationError("workers_data must be a non-empty list")
             
         # Validate each worker's data
         for worker in config['workers_data']:
             if not isinstance(worker, dict):
-                raise SchedulerError("Each worker must be a dictionary")
+                raise ConfigurationError("Each worker must be a dictionary")
             
             if 'id' not in worker:
-                raise SchedulerError("Each worker must have an 'id' field")
+                raise ConfigurationError("Each worker must have an 'id' field")
             
             # Validate work percentage if present
             if 'work_percentage' in worker:
@@ -400,7 +406,7 @@ class Scheduler:
                         worker['work_percentage'] = 100
                         work_percentage = 100
                     elif work_percentage < 0 or work_percentage > 100:
-                        raise SchedulerError(f"Invalid work percentage for worker {worker['id']}: {work_percentage}")
+                        raise ConfigurationError(f"Invalid work percentage for worker {worker['id']}: {work_percentage}")
                 except (ValueError, TypeError):
                     # Si hay error de conversión, usar 100% por defecto
                     worker['work_percentage'] = 100
@@ -410,30 +416,30 @@ class Scheduler:
                 try:
                     self.date_utils.parse_date_ranges(worker['work_periods'])
                 except ValueError as e:
-                    raise SchedulerError(f"Invalid work_periods format for worker {worker['id']}: {str(e)}")
+                    raise ConfigurationError(f"Invalid work_periods format for worker {worker['id']}: {str(e)}")
 
             # Validate date formats in mandatory_days if present
             if 'mandatory_days' in worker and worker['mandatory_days']:
                 try:
                     self.date_utils.parse_dates(worker['mandatory_days'])
                 except ValueError as e:
-                    raise SchedulerError(f"Invalid mandatory_days format for worker {worker['id']}: {str(e)}")
+                    raise ConfigurationError(f"Invalid mandatory_days format for worker {worker['id']}: {str(e)}")
 
             # Validate date formats in days_off if present
             if 'days_off' in worker and worker['days_off']:
                 try:
                     self.date_utils.parse_date_ranges(worker['days_off'])
                 except ValueError as e:
-                    raise SchedulerError(f"Invalid days_off format for worker {worker['id']}: {str(e)}")
+                    raise ConfigurationError(f"Invalid days_off format for worker {worker['id']}: {str(e)}")
 
         # Validate holidays if present
         if 'holidays' in config:
             if not isinstance(config['holidays'], list):
-                raise SchedulerError("holidays must be a list")
+                raise ConfigurationError("holidays must be a list")
             
             for holiday in config['holidays']:
                 if not isinstance(holiday, datetime):
-                    raise SchedulerError("Each holiday must be a datetime object")
+                    raise ConfigurationError("Each holiday must be a datetime object")
                 
     def _log_initialization(self):
         """Log initialization parameters"""

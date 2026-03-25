@@ -7,6 +7,7 @@ Automatically retries and optimizes schedule assignments until tolerance require
 import logging
 import random
 import copy
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass
@@ -51,7 +52,7 @@ class IterativeOptimizer:
         self.convergence_threshold = 8  # Stop after 8 iterations without improvement (increased from 3)
         self.stagnation_counter = 0
         self.best_result = None
-        self.optimization_history = []
+        self.optimization_history = deque(maxlen=max_iterations)
         self.weekend_only_mode = False  # Special mode when only weekend violations remain
         self.no_change_counter = 0  # Track iterations with zero changes
         self.max_no_change = 6  # Stop if no changes for 6 consecutive iterations (increased from 2)
@@ -87,7 +88,7 @@ class IterativeOptimizer:
         self.stagnation_counter = 0
         self.no_change_counter = 0
         self.best_result = None
-        self.optimization_history = []
+        self.optimization_history = deque(maxlen=self.max_iterations)
         self.weekend_only_mode = False
         self.relaxed_weekend_constraints = False
         logging.info("🔄 Optimizer state reset for new optimization run")
@@ -125,6 +126,11 @@ class IterativeOptimizer:
         logging.info(f"🔍 DEBUG: This should generate iterations: {list(range(1, min(self.max_iterations + 1, 6)))[:5]}...")
         
         for iteration in range(1, self.max_iterations + 1):
+            # Check cancellation flag
+            if self.scheduler and getattr(self.scheduler, '_cancelled', False):
+                logging.info(f"🛑 Optimization cancelled by user at iteration {iteration}")
+                break
+
             logging.info(f"🔄 Optimization iteration {iteration}/{self.max_iterations}")
             logging.info(f"   📊 State: stagnation={self.stagnation_counter}, best_violations={best_violations}")
             
@@ -936,10 +942,7 @@ class IterativeOptimizer:
                 # CRITICAL CONSTRAINT: Prevent same weekday assignments 7 or 14 days apart
                 # This only applies to weekdays (Mon-Thu), not weekends (Fri-Sun)
                 if (days_between == 7 or days_between == 14) and shift_date.weekday() == assigned_date.weekday():
-                    # Allow weekend days to be assigned on same weekday 7/14 days apart
-                    if shift_date.weekday() >= 4 or assigned_date.weekday() >= 4:  # Fri, Sat, Sun
-                        continue  # Skip constraint for weekend days
-                    
+                    # HARD CONSTRAINT — applies to ALL days (including weekends)
                     logging.debug(f"❌ {worker_name} blocked: 7/14 day pattern violation - {shift_date.strftime('%A %Y-%m-%d')} vs {assigned_date.strftime('%A %Y-%m-%d')}")
                     return False
                 
@@ -1034,16 +1037,16 @@ class IterativeOptimizer:
                         pass
                 expected_monthly_rough = raw_target / months_in_period
                 
-                # ZERO TOLERANCE for manual workers (guardias/mes = exact monthly count)
+                # Manual workers: guardias/mes with ±1 tolerance to allow redistribution
                 is_manual_worker = not worker_data.get('auto_calculate_shifts', True)
                 
                 if is_manual_worker:
-                    # Manual workers: exact guardias/mes, no tolerance
                     guardias_mes = worker_data.get('_original_target_shifts', 0)
                     if guardias_mes > 0:
-                        if shifts_this_month + 1 > guardias_mes:
+                        # Allow +1 tolerance per month to unblock forced redistribution
+                        if shifts_this_month + 1 > guardias_mes + 1:
                             logging.debug(f"❌ {worker_name} blocked: MANUAL monthly limit - "
-                                        f"{shifts_this_month + 1} would exceed {guardias_mes} guardias/mes "
+                                        f"{shifts_this_month + 1} would exceed {guardias_mes}+1 guardias/mes "
                                         f"(month: {shift_date.strftime('%Y-%m')})")
                             return False
                 else:
@@ -1156,13 +1159,13 @@ class IterativeOptimizer:
             # Check overall tolerance
             # CRITICAL: Usar non_mandatory_shifts para comparar con target_shifts
             if target_shifts > 0:
-                # ZERO TOLERANCE for manual workers (guardias/mes defined by user)
+                # Manual workers: allow small tolerance to enable redistribution
                 is_manual_worker = not worker_data.get('auto_calculate_shifts', True)
                 
                 if is_manual_worker:
-                    # Manual workers: exact target, no tolerance band
-                    max_shifts = target_shifts
-                    tolerance_label = "0% (MANUAL)"
+                    # Manual workers: allow +1 shift tolerance to unblock redistribution
+                    max_shifts = target_shifts + 1
+                    tolerance_label = "+1 (MANUAL)"
                 else:
                     # Use Phase 2 tolerance (12%) during optimization
                     # Part-time workers get adjusted tolerance (minimum 5%)
@@ -2634,7 +2637,12 @@ class IterativeOptimizer:
                         elif isinstance(_asgn_g9, list):
                             _g9_monthly_counts[_ym_g9] = _g9_monthly_counts.get(_ym_g9, 0) + _asgn_g9.count(worker)
                     _g9_num_months = max(1, len(_g9_all_months))
-                    _g9_monthly_target = float(_g9_worker_data.get('target_shifts', 0)) / _g9_num_months
+                    # For manual workers, use guardias_mes directly as monthly target
+                    _g9_guardias_mes = _g9_worker_data.get('_original_target_shifts', 0)
+                    if _g9_guardias_mes > 0:
+                        _g9_monthly_target = float(_g9_guardias_mes)
+                    else:
+                        _g9_monthly_target = float(_g9_worker_data.get('target_shifts', 0)) / _g9_num_months
                 
                 # Try to redistribute ANY of the shifts
                 redistributed_count = 0

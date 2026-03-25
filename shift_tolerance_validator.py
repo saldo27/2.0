@@ -87,6 +87,28 @@ class ShiftToleranceValidator:
         target_shifts = worker.get('target_shifts', 0)
         assigned_shifts = self._count_assigned_shifts(worker_id, is_weekend_only)
         
+        # CRITICAL: target_shifts already has mandatory subtracted.
+        # We must also subtract mandatory from assigned_shifts for a fair comparison.
+        if not is_weekend_only:
+            mandatory_str = worker.get('mandatory_days', '')
+            if mandatory_str:
+                try:
+                    mandatory_dates = self.scheduler.date_utils.parse_dates(mandatory_str)
+                    mandatory_in_period = [d for d in mandatory_dates 
+                                           if self.scheduler.start_date <= d <= self.scheduler.end_date]
+                    # Count how many mandatory dates the worker is actually assigned to
+                    schedule_to_use = self.scheduler.schedule if hasattr(self.scheduler, 'schedule') and self.scheduler.schedule else self.schedule
+                    mandatory_assigned = 0
+                    for mdate in mandatory_in_period:
+                        workers_on_date = schedule_to_use.get(mdate, [])
+                        if workers_on_date:
+                            for w in workers_on_date:
+                                if w == worker_id:
+                                    mandatory_assigned += 1
+                    assigned_shifts -= mandatory_assigned
+                except Exception:
+                    pass
+        
         # Pass is_weekend_only and worker_id to apply zero tolerance for manual workers
         min_shifts, max_shifts = self.calculate_tolerance_bounds(target_shifts, is_weekend=is_weekend_only, worker_id=worker_id)
         
@@ -155,10 +177,11 @@ class ShiftToleranceValidator:
             original_target = worker.get('target_shifts', 0)
             worker['target_shifts'] = weekend_target
             
-            validation = self.validate_worker_shift_count(worker_id, is_weekend_only=True)
-            
-            # Restauramos el target original
-            worker['target_shifts'] = original_target
+            try:
+                validation = self.validate_worker_shift_count(worker_id, is_weekend_only=True)
+            finally:
+                # Restauramos el target original incluso si hay excepción
+                worker['target_shifts'] = original_target
             
             results.append(validation)
         
@@ -232,23 +255,35 @@ class ShiftToleranceValidator:
         Returns:
             Número de shifts asignados
         """
+        # Usar worker_assignments como índice invertido O(A) en lugar de escanear O(D×P)
+        if hasattr(self.scheduler, 'worker_assignments') and self.scheduler.worker_assignments:
+            assignments = self.scheduler.worker_assignments.get(worker_id, set())
+            if not is_weekend_only:
+                return len(assignments)
+            holidays_set = set(self.scheduler.holidays)
+            count = 0
+            for date in assignments:
+                if (date.weekday() >= 4 or
+                    date in holidays_set or
+                    (date + timedelta(days=1)) in holidays_set):
+                    count += 1
+            return count
+        
+        # Fallback: escaneo completo si worker_assignments no disponible
         count = 0
         holidays_set = set(self.scheduler.holidays)
         
-        # Asegurar que tenemos el horario más actual
         if hasattr(self.scheduler, 'schedule') and self.scheduler.schedule:
             schedule_to_use = self.scheduler.schedule
         else:
             schedule_to_use = self.schedule
         
         for date, assigned_workers in schedule_to_use.items():
-            # Contar cada puesto donde el trabajador está asignado
-            if assigned_workers:  # Verificar que no sea None
+            if assigned_workers:
                 for worker_in_post in assigned_workers:
                     if worker_in_post == worker_id:
                         if is_weekend_only:
-                            # Solo contar si es weekend o holiday
-                            if (date.weekday() >= 4 or  # Friday=4, Saturday=5, Sunday=6
+                            if (date.weekday() >= 4 or
                                 date in holidays_set or
                                 (date + timedelta(days=1)) in holidays_set):
                                 count += 1

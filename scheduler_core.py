@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Set, Optional, Tuple, Any
 
 from scheduler_config import SchedulerConfig
-from exceptions import SchedulerError
+from exceptions import SchedulerError, ConstraintViolationError
 from optimization_metrics import OptimizationMetrics
 from operation_prioritizer import OperationPrioritizer
 from progress_monitor import ProgressMonitor
@@ -42,6 +42,7 @@ class SchedulerCore:
         self.start_date = scheduler.start_date
         self.end_date = scheduler.end_date
         self.workers_data = scheduler.workers_data
+        self._cancelled = False
         
         # Initialize enhancement systems
         self.metrics = OptimizationMetrics(scheduler)
@@ -82,11 +83,11 @@ class SchedulerCore:
         try:
             # Phase 1: Initialize schedule structure
             if not self._initialize_schedule_phase():
-                raise SchedulerError("Failed to initialize schedule structure")
+                raise ConstraintViolationError("Failed to initialize schedule structure")
             
             # Phase 2: Assign mandatory shifts
             if not self._assign_mandatory_phase():
-                raise SchedulerError("Failed to assign mandatory shifts")
+                raise ConstraintViolationError("Failed to assign mandatory shifts")
             
             # Save mandatory state (preserved across all attempts)
             mandatory_backup = copy.deepcopy(self.scheduler.schedule)
@@ -112,6 +113,11 @@ class SchedulerCore:
             complete_attempts = []
             
             for complete_attempt_num in range(1, max_complete_attempts + 1):
+                # Check cancellation flag
+                if getattr(self.scheduler, '_cancelled', False):
+                    logging.info("🛑 Schedule generation cancelled by user")
+                    return False
+
                 logging.info(f"\n{'█' * 80}")
                 logging.info(f"🎯 COMPLETE ATTEMPT {complete_attempt_num}/{max_complete_attempts}")
                 logging.info(f"{'█' * 80}")
@@ -170,7 +176,7 @@ class SchedulerCore:
             
             # Phase 4: Select best complete attempt
             if not complete_attempts:
-                raise SchedulerError("All complete attempts failed!")
+                raise ConstraintViolationError("All complete attempts failed!")
             
             best_attempt = self._select_best_complete_attempt(complete_attempts)
             
@@ -195,7 +201,7 @@ class SchedulerCore:
             
             # Phase 5: Finalization
             if not self._finalization_phase():
-                raise SchedulerError("Failed to finalize schedule")
+                raise ConstraintViolationError("Failed to finalize schedule")
             
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
@@ -353,6 +359,15 @@ class SchedulerCore:
                 num_attempts = 30
             else:
                 num_attempts = 40  # Maximum reduced from 60 to 40
+
+            # When prior-period data is loaded the initial worker ordering is already
+            # biased by accumulated shift counts, so there is less variance between
+            # attempts.  Halve the attempt count to recover most of the extra time
+            # cost introduced by the prior-data constraints, while keeping at least 5.
+            has_prior = bool(getattr(self.scheduler, 'prior_relevant_assignments', {}))
+            if has_prior and not is_simulation:
+                num_attempts = max(5, num_attempts // 2)
+                logging.info(f"📅 Prior calendar loaded: reduced initial attempts to {num_attempts}")
             
             logging.info(f"Problem complexity: {complexity_score:.0f}")
             logging.info(f"Number of initial distribution attempts: {num_attempts}")
@@ -368,12 +383,26 @@ class SchedulerCore:
             
             best_attempt = None
             best_score = -1
+            # If prior data is loaded, capture the shift counts that already include
+            # the prior-period seed (set by _synchronize_tracking_data after mandatory
+            # assignment).  We restore these after each attempt so that the ordering
+            # bias from the prior period is preserved across resets.
+            _prior_seeded_counts = (
+                {wid: cnt for wid, cnt in self.scheduler.worker_shift_counts.items()}
+                if has_prior else None
+            )
+
             attempts_results = []
             
             # Start adaptive iteration manager timer
             self.adaptive_manager.start_time = datetime.now()
             
             for attempt_num in range(1, num_attempts + 1):
+                # Check cancellation flag
+                if getattr(self.scheduler, '_cancelled', False):
+                    logging.info("🛑 Initial distribution cancelled by user")
+                    break
+
                 logging.info(f"\n{'─' * 80}")
                 logging.info(f"🔄 Initial Distribution Attempt {attempt_num}/{num_attempts}")
                 logging.info(f"{'─' * 80}")
@@ -384,6 +413,10 @@ class SchedulerCore:
                 self.scheduler.worker_shift_counts = copy.deepcopy(mandatory_counts)
                 self.scheduler.worker_weekend_counts = copy.deepcopy(mandatory_weekend_counts)
                 self.scheduler.worker_posts = copy.deepcopy(mandatory_posts)
+
+                # Re-apply prior-period seed so ordering stays biased correctly
+                if _prior_seeded_counts:
+                    self.scheduler.worker_shift_counts.update(_prior_seeded_counts)
                 
                 # CRITICAL: Sync ALL schedule_builder references to the new deep-copied objects
                 if hasattr(self.scheduler, 'schedule_builder'):

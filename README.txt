@@ -1,6 +1,6 @@
 ================================================================================
                     GuardiasApp - Aplicación para Distribución de Guardias
-                                  Versión 2.6
+                                  Versión 2.7
 ================================================================================
 
 DESCRIPCIÓN:
@@ -139,7 +139,7 @@ issues en GitHub o contactar por email.
 CRÉDITOS:
 ---------
 Desarrollado por:  Luis Herrera Para
-Versión: 2.6
+Versión: 2.7
 Fecha:  Marzo 2026
 
 COPYRIGHT:
@@ -185,6 +185,37 @@ las restricciones.
 
 HISTORIAL DE VERSIONES:
 ------------------------
+v2.7 (Marzo 2026):
+- Corrección de bug: tipo set vs list en eliminación de trabajadores
+  (app_streamlit.py — removed_indices usaba set con operaciones de lista)
+- Corrección de bug: try/finally en validador de tolerancia para restaurar
+  constraints relajados incluso si ocurre una excepción
+  (shift_tolerance_validator.py)
+- Corrección de bug: lista optimization_history sin límite causaba
+  acumulación de memoria; reemplazada por deque(maxlen=20)
+  (iterative_optimizer.py)
+- Corrección de bug: atributo _cancelled no inicializado en
+  SchedulerCore, causaba AttributeError al cancelar generación
+  (scheduler_core.py)
+- Rendimiento: _count_assigned_shifts reescrito de O(D×S) a O(A) —
+  reduce coste de validación de balance en cada iteración
+  (shift_tolerance_validator.py)
+- UX: eliminado progress bar falso con time.sleep(); reemplazado por
+  seguimiento de progreso real durante la generación
+  (app_streamlit.py)
+- UX: añadido botón de cancelación funcional durante la generación
+  de horarios con verificación periódica del flag _cancelled
+  (app_streamlit.py, scheduler_core.py)
+- Arquitectura: Scheduler.__init__ refactorizado en 5 métodos privados
+  (_init_basic_config, _init_worker_data, _init_tracking_structures,
+  _init_modules, _validate_config) para mejorar mantenibilidad
+  (scheduler.py)
+- Arquitectura: jerarquía de excepciones propias — ConfigurationError,
+  ConstraintViolationError, DataIntegrityError — para errores semánticos
+  en lugar de ValueError/RuntimeError genéricos (exceptions.py)
+- Arquitectura: interfaz Kivy legacy movida a kivy_legacy/main.py
+  con todos los bug fixes aplicados; main.py eliminado de la raíz
+
 v2.6 (Marzo 2026):
 - NUEVO: Importación de calendario previo (expander "📅 Calendario Anterior")
 - Constraints cross-período: huecos mínimos, patrón 7/14 días, viernes-lunes
