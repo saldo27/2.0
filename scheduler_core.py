@@ -1140,6 +1140,9 @@ class SchedulerCore:
         by redistributing shifts between workers who are over/under their target allocations.
         """
         try:
+            # CRITICAL: Ensure validator's schedule reference is current before counting
+            self.tolerance_validator.schedule = self.scheduler.schedule
+            
             # Check initial tolerance violations
             outside_general = self.tolerance_validator.get_workers_outside_tolerance(
                 is_weekend_only=False
@@ -1201,6 +1204,14 @@ class SchedulerCore:
                 original_schedule = self.scheduler.schedule
                 self.scheduler.schedule = optimization_result.schedule
                 
+                # CRITICAL FIX: Sync tracking data AND update validator schedule
+                # reference BEFORE validation. Without this, the validator reads
+                # stale worker_assignments from the original schedule and always
+                # reports the same violation count, causing the code to blindly
+                # keep the optimizer's (possibly worse) result.
+                self.scheduler._synchronize_tracking_data()
+                self.tolerance_validator.schedule = self.scheduler.schedule
+                
                 # Verify tolerance after optimization
                 new_outside_general = self.tolerance_validator.get_workers_outside_tolerance(
                     is_weekend_only=False
@@ -1221,14 +1232,12 @@ class SchedulerCore:
                     logging.info(f"  General: {len(outside_general)} → {len(new_outside_general)}")
                     logging.info(f"  Weekend: {len(outside_weekend)} → {len(new_outside_weekend)}")
                     
-                    # Keep optimized schedule (already applied)
-                    self.scheduler._synchronize_tracking_data()
+                    # Keep optimized schedule (already applied and synced)
                     logging.info("Optimized schedule applied successfully")
                     
                 elif new_total_violations == total_violations:
                     logging.info(f"📊 Optimization maintained violations at {total_violations} (no change)")
                     # Keep it anyway - at least redistributions may have balanced better
-                    self.scheduler._synchronize_tracking_data()
                     logging.info("Keeping optimized schedule (same violations but may be better balanced)")
                     
                 else:
@@ -1236,6 +1245,9 @@ class SchedulerCore:
                     logging.warning(f"⚠️ Optimization WORSENED schedule: +{regression} violations ({total_violations} → {new_total_violations})")
                     logging.info("Reverting to original schedule")
                     self.scheduler.schedule = original_schedule
+                    # CRITICAL FIX: Re-sync tracking data after revert
+                    self.scheduler._synchronize_tracking_data()
+                    self.tolerance_validator.schedule = self.scheduler.schedule
             else:
                 logging.warning("No optimized schedule available from optimizer")
                 logging.info("Keeping original schedule")

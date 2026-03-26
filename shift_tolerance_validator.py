@@ -97,7 +97,8 @@ class ShiftToleranceValidator:
                     mandatory_in_period = [d for d in mandatory_dates 
                                            if self.scheduler.start_date <= d <= self.scheduler.end_date]
                     # Count how many mandatory dates the worker is actually assigned to
-                    schedule_to_use = self.scheduler.schedule if hasattr(self.scheduler, 'schedule') and self.scheduler.schedule else self.schedule
+                    # CRITICAL FIX: Always use self.schedule (consistent with _count_assigned_shifts)
+                    schedule_to_use = self.schedule
                     mandatory_assigned = 0
                     for mdate in mandatory_in_period:
                         workers_on_date = schedule_to_use.get(mdate, [])
@@ -255,28 +256,14 @@ class ShiftToleranceValidator:
         Returns:
             Número de shifts asignados
         """
-        # Usar worker_assignments como índice invertido O(A) en lugar de escanear O(D×P)
-        if hasattr(self.scheduler, 'worker_assignments') and self.scheduler.worker_assignments:
-            assignments = self.scheduler.worker_assignments.get(worker_id, set())
-            if not is_weekend_only:
-                return len(assignments)
-            holidays_set = set(self.scheduler.holidays)
-            count = 0
-            for date in assignments:
-                if (date.weekday() >= 4 or
-                    date in holidays_set or
-                    (date + timedelta(days=1)) in holidays_set):
-                    count += 1
-            return count
-        
-        # Fallback: escaneo completo si worker_assignments no disponible
+        # CRITICAL FIX: Always scan self.schedule (the validator's own schedule
+        # reference) instead of self.scheduler.worker_assignments.  The iterative
+        # optimizer temporarily sets validator.schedule to its working copy, so
+        # using worker_assignments here would return stale data from the original
+        # schedule, making the optimizer blind to its own changes.
         count = 0
         holidays_set = set(self.scheduler.holidays)
-        
-        if hasattr(self.scheduler, 'schedule') and self.scheduler.schedule:
-            schedule_to_use = self.scheduler.schedule
-        else:
-            schedule_to_use = self.schedule
+        schedule_to_use = self.schedule
         
         for date, assigned_workers in schedule_to_use.items():
             if assigned_workers:

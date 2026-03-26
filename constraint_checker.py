@@ -293,6 +293,23 @@ class ConstraintChecker:
                 if max_consecutive > adjusted_max_consecutive:
                     return True  # Would exceed consecutive limit
 
+            # Build a current-period-only weekend list for Part 2.
+            # (weekend_dates above includes prior-period dates via
+            # _get_effective_assignments and is correct for Part 1's
+            # consecutive-weekend check, but must NOT be re-used for
+            # the proportional cap which accounts for prior separately.)
+            current_only_assignments = self.scheduler.worker_assignments.get(worker_id, set())
+            current_period_weekend_dates = []
+            for d in current_only_assignments:
+                if (d.weekday() >= 4 or
+                    d in self.scheduler.holidays or
+                    (d + timedelta(days=1)) in self.scheduler.holidays):
+                    current_period_weekend_dates.append(d)
+            # Include the prospective date if it belongs to the current period
+            if (date not in current_period_weekend_dates and
+                    self.scheduler.start_date <= date <= self.scheduler.end_date):
+                current_period_weekend_dates.append(date)
+
             # PART 2: ENHANCED PROPORTIONAL WEEKEND DISTRIBUTION CHECK
             # Calculate all weekend days in the full schedule period
             all_schedule_days = []
@@ -345,19 +362,19 @@ class ConstraintChecker:
             max_target = int(raw_target) + weekend_tolerance_shifts
 
             # Count current-period weekend assignments (including the prospective one).
-            # Also add prior-period weekend count so the proportional cap is honoured
-            # across the period boundary (a worker who worked many weekends last month
-            # should not receive as many in the new month).
+            # prior_weekend is added ONLY to the cap so that workers who already
+            # served many weekends last period are slightly deprioritised, but
+            # current_period_weekend_dates does NOT include prior dates (those
+            # are already counted by _get_effective_assignments in Part 1).
             prior_weekend = (
                 self.scheduler._get_prior_weekend_count(worker_id)
                 if hasattr(self.scheduler, '_get_prior_weekend_count')
                 else 0
             )
-            current_weekend_count = len(weekend_dates) + prior_weekend
+            current_weekend_count = len(current_period_weekend_dates) + prior_weekend
 
-            # Adjust the cap by the same prior amount so the tolerance window still
-            # applies correctly: effective_cap = base_cap + prior_weekends
-            # (we want current_period_weekends ≤ max_target - prior_weekends ± tolerance)
+            # Adjust the cap by the same prior amount so the tolerance window
+            # applies correctly across periods.
             adjusted_max_target = max_target + prior_weekend
 
             # Check if assignment would exceed the tolerance limit
