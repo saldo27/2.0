@@ -1,7 +1,0 @@
-main.py
-exporters.py 	main.py
-collaboration_manager.py 	main.py
-websocket_handler.py 	main.py
-real_time_ui.py 	main.py
-generate_keys.py
-
