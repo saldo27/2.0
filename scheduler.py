@@ -1892,6 +1892,7 @@ class Scheduler:
         
         # Create scheduler core for orchestration
         scheduler_core = SchedulerCore(self)
+        self._scheduler_core = scheduler_core
         
         # Use orchestrated workflow
         return scheduler_core.orchestrate_schedule_generation(max_improvement_loops)

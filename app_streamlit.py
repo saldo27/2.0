@@ -33,6 +33,35 @@ logging.getLogger('pdfplumber').setLevel(logging.WARNING)
 logging.getLogger('PIL').setLevel(logging.WARNING)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 
+# Handler de logging para capturar mensajes de progreso en el sidebar
+import threading
+
+class SidebarLogHandler(logging.Handler):
+    """Captura mensajes de logging para mostrar en el sidebar de Streamlit"""
+    def __init__(self, max_messages=50):
+        super().__init__()
+        self.messages = []
+        self.max_messages = max_messages
+        self._lock = threading.Lock()
+    
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            with self._lock:
+                self.messages.append(msg)
+                if len(self.messages) > self.max_messages:
+                    self.messages = self.messages[-self.max_messages:]
+        except Exception:
+            pass
+    
+    def get_messages(self, last_n=15):
+        with self._lock:
+            return list(self.messages[-last_n:])
+    
+    def clear(self):
+        with self._lock:
+            self.messages.clear()
+
 # Constante de versión
 APP_VERSION = "2.8"
 
@@ -506,6 +535,13 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
 
         generation_result = {'success': False, 'error': None}
 
+        # Instalar handler de logging para capturar progreso
+        sidebar_handler = SidebarLogHandler(max_messages=80)
+        sidebar_handler.setLevel(logging.INFO)
+        sidebar_handler.setFormatter(logging.Formatter('%(message)s'))
+        root_logger = logging.getLogger()
+        root_logger.addHandler(sidebar_handler)
+
         def _run_generation():
             try:
                 generation_result['success'] = scheduler.generate_schedule()
@@ -522,12 +558,25 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
                 scheduler._cancelled = True
                 st.session_state.generation_cancelled = True
                 status_text.warning("⏳ Cancelando... esperando a que el motor se detenga")
-            time.sleep(0.3)
+            # Actualizar log de progreso en el sidebar
+            _log_ph = st.session_state.get('_sidebar_log_placeholder')
+            if _log_ph:
+                _msgs = sidebar_handler.get_messages(last_n=15)
+                if _msgs:
+                    _log_ph.code("\n".join(_msgs), language=None)
+            time.sleep(0.5)
 
         thread.join()
         cancel_placeholder.empty()
 
+        # Limpiar handler
+        root_logger.removeHandler(sidebar_handler)
+
         if st.session_state.generation_cancelled:
+            # Mostrar log parcial en sidebar
+            _log_ph = st.session_state.get('_sidebar_log_placeholder')
+            if _log_ph:
+                _log_ph.warning("🛑 Generación cancelada")
             status_text.warning("🛑 Generación cancelada por el usuario")
             return False, "🛑 Generación cancelada"
 
@@ -535,6 +584,62 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             raise generation_result['error']
 
         success = generation_result['success']
+        
+        # Construir resumen final para el sidebar
+        _log_ph = st.session_state.get('_sidebar_log_placeholder')
+        if _log_ph and success:
+            summary_lines = []
+            # Obtener datos del progress_monitor si existe
+            _core = getattr(scheduler, '_scheduler_core', None)
+            _pm = getattr(_core, 'progress_monitor', None) if _core else None
+            
+            if _pm and _pm.iteration_data:
+                final_iter = len(_pm.iteration_data)
+                total_iter = _pm.total_iterations
+                final_score = _pm.iteration_data[-1].get('current_score', 0) if _pm.iteration_data else 0
+                
+                summary_lines.append("📊 Resumen de ejecución:")
+                summary_lines.append(f"   • Iteraciones: {final_iter}/{total_iter}")
+                summary_lines.append(f"   • Score final: {final_score:.2f}")
+                
+                # Evaluación
+                if final_score >= 95:
+                    summary_lines.append("🌟 EXCELENTE: Score objetivo alcanzado!")
+                elif final_score >= 85:
+                    summary_lines.append("👍 BUENO: Score satisfactorio")
+                elif final_score >= 70:
+                    summary_lines.append("⚠️  REGULAR: Puede requerir ajustes adicionales")
+                else:
+                    summary_lines.append("❌ BAJO: Requiere revisión de restricciones")
+                
+                # Tiempo total
+                if _pm.start_time:
+                    total_time = datetime.now() - _pm.start_time
+                    summary_lines.append(f"   • Tiempo total: {str(total_time).split('.')[0]}")
+            
+            # Violaciones
+            try:
+                core_violations = scheduler._check_schedule_constraints()
+                n_violations = len(core_violations)
+                if n_violations == 0:
+                    summary_lines.append("✅ Sin violaciones de restricciones")
+                else:
+                    summary_lines.append(f"⚠️ Violaciones: {n_violations}")
+                    for v in core_violations[:5]:
+                        v_type = v.get('type', '')
+                        if v_type == 'incompatibility':
+                            summary_lines.append(f"   • Incomp: {v['worker_id']} ↔ {v['incompatible_id']} ({v['date'].strftime('%d-%m')})")
+                        elif v_type == 'weekly_pattern':
+                            summary_lines.append(f"   • Patrón: {v['worker_id']} {v['date1'].strftime('%d-%m')}→{v['date2'].strftime('%d-%m')}")
+                    if n_violations > 5:
+                        summary_lines.append(f"   ... y {n_violations - 5} más")
+            except Exception:
+                pass
+            
+            if summary_lines:
+                _log_ph.code("\n".join(summary_lines), language=None)
+        elif _log_ph and not success:
+            _log_ph.warning("❌ Fallo en la generación")
         
         if success:
             if limitations['mode'] == 'DEMO':
@@ -1324,6 +1429,12 @@ with st.sidebar:
         - 📆 Fines de semana consecutivos
         - 📊 Tolerancia general y de fines de semana
         """)
+    
+    # Contenedor para mensajes de progreso durante la generación
+    st.markdown("---")
+    sidebar_progress_container = st.container()
+    sidebar_progress_container.caption("📋 **Log de Progreso**")
+    st.session_state._sidebar_log_placeholder = sidebar_progress_container.empty()
 
 # Tabs principales
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
