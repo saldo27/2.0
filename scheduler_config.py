@@ -97,9 +97,9 @@ class SchedulerConfig:
     # Default configuration values
     DEFAULT_GAP_BETWEEN_SHIFTS = 3
     DEFAULT_MAX_CONSECUTIVE_WEEKENDS = 3
-    DEFAULT_NUM_SHIFTS = 3
+    DEFAULT_NUM_SHIFTS = 4
     DEFAULT_OPTIMIZATION_LOOPS = 70
-    DEFAULT_LAST_POST_ADJUSTMENT_ITERATIONS = 5
+    DEFAULT_LAST_POST_ADJUSTMENT_ITERATIONS = 6
     
     # Performance optimization settings
     CACHE_ENABLED = True

@@ -62,7 +62,7 @@ class ShiftToleranceValidator:
             # For general shifts: use percentage-based tolerance
             tolerance_amount = target_shifts * (self.tolerance_percentage / 100.0)
             min_shifts = max(0, int(target_shifts - tolerance_amount))
-            max_shifts = int(target_shifts + tolerance_amount + 0.5)  # Round up for max
+            max_shifts = int(target_shifts + tolerance_amount)  # Use int() to truncate, consistent with enforcement
         
         return (min_shifts, max_shifts)
     

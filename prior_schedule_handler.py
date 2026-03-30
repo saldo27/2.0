@@ -127,15 +127,17 @@ def load_prior_schedule(
 
     # ── 3. Extract prior period dates ─────────────────────────────────────────
     try:
-        meta = data.get("metadata", {}) or data.get("config", {})
-        ps = meta.get("period_start") or data.get("start_date")
-        pe = meta.get("period_end") or data.get("end_date")
+        meta = data.get("metadata") or data.get("config") or {}
+        ps = meta.get("period_start") or meta.get("start_date") or data.get("start_date")
+        pe = meta.get("period_end") or meta.get("end_date") or data.get("end_date")
         if ps:
             result["prior_period_start"] = datetime.fromisoformat(str(ps).split("T")[0])
         if pe:
             result["prior_period_end"] = datetime.fromisoformat(str(pe).split("T")[0])
-    except Exception:
-        pass  # Non-critical — we still process assignments
+        if not ps or not pe:
+            logging.warning("[PriorSchedule] Could not extract period dates from imported JSON")
+    except Exception as exc:
+        logging.warning(f"[PriorSchedule] Error parsing period dates: {exc}")
 
     # ── 4. Extract prior holidays ─────────────────────────────────────────────
     prior_holidays: Set[datetime] = set()
@@ -167,9 +169,12 @@ def load_prior_schedule(
         )
 
     # ── 6. Extract prior targets per worker from workers_data ──────────────────
+    #   Use _raw_target (pre-mandatory-adjustment) so that delta calculation
+    #   compares total_actual vs total_target and mandatory shifts cancel out.
+    #   Falls back to target_shifts for exports created before _raw_target existed.
     for w in data.get("workers_data", []):
         wid = str(w.get("id", ""))
-        t = w.get("target_shifts")
+        t = w.get("_raw_target", w.get("target_shifts"))
         if wid and t is not None:
             try:
                 result["prior_target_shifts"][wid] = float(t)

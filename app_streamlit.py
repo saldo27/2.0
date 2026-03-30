@@ -2,7 +2,7 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 2.7 (Marzo 2026)
+Versión: 2.8 (Marzo 2026)
 """
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
 # Esto asegura que los calendarios muestren Lunes-Domingo (formato español/ISO 8601)
@@ -34,7 +34,7 @@ logging.getLogger('PIL').setLevel(logging.WARNING)
 logging.getLogger('urllib3').setLevel(logging.WARNING)
 
 # Constante de versión
-APP_VERSION = "2.7"
+APP_VERSION = "2.8"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -204,16 +204,6 @@ if 'license_checked' not in st.session_state:
     st.session_state.license_message = message
     st.session_state.uses_remaining = remaining
     st.session_state.limitations = license_manager.get_limitations()
-
-# Real-time features
-if 'real_time_enabled' not in st.session_state:
-    st.session_state.real_time_enabled = False
-if 'change_history' not in st.session_state:
-    st.session_state.change_history = []
-if 'undo_stack' not in st.session_state:
-    st.session_state.undo_stack = []
-if 'redo_stack' not in st.session_state:
-    st.session_state.redo_stack = []
 
 # Predictive analytics
 if 'predictive_enabled' not in st.session_state:
@@ -430,7 +420,7 @@ def load_schedule_from_json(uploaded_file):
 
 
 
-def generate_schedule_internal(start_date, end_date, tolerance, holidays, variable_shifts):
+def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
     """Generar el horario internamente"""
     limitations = st.session_state.limitations
     
@@ -482,18 +472,13 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
             'max_consecutive_weekends': st.session_state.config.get('max_consecutive_weekends', 2),
             'enable_proportional_weekends': st.session_state.config.get('enable_proportional_weekends', True),
             'weekend_tolerance': st.session_state.config.get('weekend_tolerance', 1),
-            'tolerance': tolerance,  # Use exact tolerance from UI
             'cache_enabled': st.session_state.config.get('cache_enabled', False),
             'lazy_evaluation': st.session_state.config.get('lazy_evaluation', False),
             'batch_size': st.session_state.config.get('batch_size', 100),
             'max_improvement_loops': st.session_state.config.get('max_improvement_loops', 150),
             'last_post_adjustment_max_iterations': st.session_state.config.get('last_post_adjustment_max_iterations', 10),
-            # Dual-mode scheduler parameters
-            'enable_dual_mode': st.session_state.config.get('enable_dual_mode', True),
-            'num_initial_attempts': st.session_state.config.get('num_initial_attempts', 30),
+
             'max_complete_attempts': st.session_state.config.get('max_complete_attempts', 5),  # Match Kivy default
-            # Real-time features (matching Kivy)
-            'enable_real_time': True  # Kivy enables this by default
         }
         
         # Crear scheduler
@@ -561,10 +546,6 @@ def generate_schedule_internal(start_date, end_date, tolerance, holidays, variab
                 
                 st.info(f"✅ Generación #{uses} completada.  Quedan {st.session_state.uses_remaining} usos.")
             
-            # Activar características de tiempo real
-            if hasattr(scheduler, 'enable_real_time_features'):
-                scheduler.enable_real_time_features()
-                
             status_text.success("✅ ¡Calendario generado y optimizado!")
             st.session_state.schedule = scheduler.schedule
             return True, "✅ Calendario generado exitosamente"
@@ -735,124 +716,6 @@ def check_violations():
         # si queremos implementar una comprobación específica.
         
     return violations
-
-# ==================== REAL-TIME FEATURES ====================
-
-def assign_worker_real_time(worker_id, date, post_index):
-    """Asignar médico en tiempo real con validación"""
-    if not st.session_state.real_time_enabled or st.session_state.scheduler is None:
-        return False, "Real-time features not enabled"
-    
-    try:
-        scheduler = st.session_state.scheduler
-        
-        # Check if real-time engine exists
-        if hasattr(scheduler, 'assign_worker_real_time'):
-            result = scheduler.assign_worker_real_time(worker_id, date, post_index, 'streamlit_user')
-            if result.get('success'):
-                # Save to undo stack
-                st.session_state.undo_stack.append({
-                    'action': 'assign',
-                    'worker_id': worker_id,
-                    'date': date,
-                    'post': post_index,
-                    'timestamp': datetime.now()
-                })
-                st.session_state.redo_stack = []  # Clear redo stack
-                return True, result.get('message', 'Worker assigned')
-            return False, result.get('message', 'Assignment failed')
-        else:
-            # Fallback: manual assignment
-            if date not in scheduler.schedule:
-                return False, "Date not in schedule"
-            if post_index >= len(scheduler.schedule[date]):
-                return False, "Invalid post index"
-            
-            # Simple assignment
-            old_worker = scheduler.schedule[date][post_index]
-            scheduler.schedule[date][post_index] = worker_id
-            
-            # Update worker_assignments
-            if worker_id not in scheduler.worker_assignments:
-                scheduler.worker_assignments[worker_id] = set()
-            scheduler.worker_assignments[worker_id].add(date)
-            
-            # Save to undo stack
-            st.session_state.undo_stack.append({
-                'action': 'assign',
-                'worker_id': worker_id,
-                'old_worker': old_worker,
-                'date': date,
-                'post': post_index,
-                'timestamp': datetime.now()
-            })
-            st.session_state.redo_stack = []
-            
-            return True, f"Assigned {worker_id} to {date.strftime('%d-%m-%Y')}"
-    except Exception as e:
-        return False, f"Error: {str(e)}"
-
-def undo_last_change():
-    """Deshacer último cambio"""
-    if not st.session_state.undo_stack:
-        return False, "No changes to undo"
-    
-    try:
-        last_change = st.session_state.undo_stack.pop()
-        scheduler = st.session_state.scheduler
-        
-        if last_change['action'] == 'assign':
-            # Revert assignment
-            date = last_change['date']
-            post = last_change['post']
-            old_worker = last_change.get('old_worker')
-            
-            scheduler.schedule[date][post] = old_worker
-            
-            # Update worker_assignments
-            worker_id = last_change['worker_id']
-            if worker_id in scheduler.worker_assignments and date in scheduler.worker_assignments[worker_id]:
-                scheduler.worker_assignments[worker_id].remove(date)
-            
-            # Save to redo stack
-            st.session_state.redo_stack.append(last_change)
-            
-            return True, "Change undone"
-        
-        return False, "Unknown action type"
-    except Exception as e:
-        return False, f"Error: {str(e)}"
-
-def redo_last_change():
-    """Rehacer último cambio deshecho"""
-    if not st.session_state.redo_stack:
-        return False, "No changes to redo"
-    
-    try:
-        last_undone = st.session_state.redo_stack.pop()
-        scheduler = st.session_state.scheduler
-        
-        if last_undone['action'] == 'assign':
-            # Redo assignment
-            date = last_undone['date']
-            post = last_undone['post']
-            worker_id = last_undone['worker_id']
-            
-            scheduler.schedule[date][post] = worker_id
-            
-            # Update worker_assignments
-            if worker_id not in scheduler.worker_assignments:
-                scheduler.worker_assignments[worker_id] = set()
-            scheduler.worker_assignments[worker_id].add(date)
-            
-            # Save to undo stack
-            st.session_state.undo_stack.append(last_undone)
-            
-            return True, "Change redone"
-        
-        return False, "Unknown action type"
-    except Exception as e:
-        return False, f"Error: {str(e)}"
 
 # ==================== PREDICTIVE ANALYTICS ====================
 
@@ -1157,6 +1020,16 @@ with st.sidebar:
             # Convert all datetime objects in the config
             export_data = convert_datetime_to_string(export_data)
     
+            # Add metadata for prior-schedule handler compatibility
+            if 'start_date' in st.session_state.config and 'end_date' in st.session_state.config:
+                sd = st.session_state.config['start_date']
+                ed = st.session_state.config['end_date']
+                export_data['metadata'] = {
+                    'period_start': sd.strftime('%Y-%m-%d') if isinstance(sd, datetime) else str(sd),
+                    'period_end': ed.strftime('%Y-%m-%d') if isinstance(ed, datetime) else str(ed),
+                    'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                }
+
             # Add workers data
             export_data['workers_data'] = st.session_state.workers_data
     
@@ -1294,14 +1167,6 @@ with st.sidebar:
     # Parámetros del sistema
     st.subheader("⚙️ Parámetros Globales")
     
-    tolerance = st.slider(
-        "Tolerancia de desviación (%)",
-        min_value=5,
-        max_value=20,
-        value=10,
-        help="Tolerancia permitida en la desviación de turnos asignados vs objetivo"
-    )
-    
     # Período con número de guardias por defecto
     num_shifts = st.number_input(
         "Guardias por día (por defecto)",
@@ -1314,13 +1179,13 @@ with st.sidebar:
     
     # Variable shifts (períodos con diferente número de guardias)
     with st.expander("📊 Períodos con guardias/día variables"):
-        st.markdown("**Configurar días con diferente número de guardias**")
+        st.markdown("**Periodos de días con diferente número de guardias**")
         
         variable_shifts_text = st.text_area(
-            "Formato: DD-MM-YYYY: número (ej: 25-12-2026: 2)",
+            "Formato: DD-MM-YYYY / DD-MM-YYYY: número",
             value="",
             height=100,
-            help="Días específicos con diferente número de guardias. Un día por línea. Ejemplo: 25-12-2026: 2"
+            help="Periodos con diferente número de guardias. Un periodo por línea. Ejemplo: 01-08-2026 / 31-08-2026: 2"
         )
         
         variable_shifts = []
@@ -1328,14 +1193,18 @@ with st.sidebar:
             line = line.strip()
             if ':' in line:
                 try:
-                    date_str, shifts_str = line.split(':')
-                    date_obj = datetime.strptime(date_str.strip(), '%d-%m-%Y')
+                    dates_part, shifts_str = line.rsplit(':', 1)
                     shifts_num = int(shifts_str.strip())
-                    # El scheduler espera: start_date, end_date, shifts
-                    # Para un día específico, start_date == end_date
+                    if '/' in dates_part:
+                        start_str, end_str = dates_part.split('/')
+                        start_date_obj = datetime.strptime(start_str.strip(), '%d-%m-%Y')
+                        end_date_obj = datetime.strptime(end_str.strip(), '%d-%m-%Y')
+                    else:
+                        start_date_obj = datetime.strptime(dates_part.strip(), '%d-%m-%Y')
+                        end_date_obj = start_date_obj
                     variable_shifts.append({
-                        'start_date': date_obj,
-                        'end_date': date_obj,
+                        'start_date': start_date_obj,
+                        'end_date': end_date_obj,
                         'shifts': shifts_num
                     })
                 except (ValueError, TypeError):
@@ -1353,7 +1222,7 @@ with st.sidebar:
             "Días mínimos entre guardias",
             min_value=0,
             max_value=7,
-            value=st.session_state.config.get('gap_between_shifts', 2),
+            value=st.session_state.config.get('gap_between_shifts', 3),
             help="Número mínimo de días de descanso entre guardias consecutivos"
         )
         st.session_state.config['gap_between_shifts'] = gap_between_shifts
@@ -1363,7 +1232,7 @@ with st.sidebar:
             "Fines de semana consecutivos máx.",
             min_value=1,
             max_value=5,
-            value=st.session_state.config.get('max_consecutive_weekends', 2),
+            value=st.session_state.config.get('max_consecutive_weekends', 3),
             help="Número máximo de fines de semana consecutivos que puede trabajar un trabajador"
         )
         st.session_state.config['max_consecutive_weekends'] = max_consecutive_weekends
@@ -1385,44 +1254,6 @@ with st.sidebar:
             help="Tolerancia permitida en la desviación de fines de semana asignados"
         )
         st.session_state.config['weekend_tolerance'] = weekend_tolerance
-    
-    # Dual-Mode Scheduler Configuration
-    with st.expander("🔀 Dual-Mode Scheduler (Strict + Relaxed)"):
-        st.markdown("**Configure strict initial distribution and relaxed optimization**")
-        
-        enable_dual_mode = st.checkbox(
-            "Enable dual-mode scheduler",
-            value=st.session_state.config.get('enable_dual_mode', True),
-            help="Use strict initial distribution followed by relaxed iterative optimization"
-        )
-        st.session_state.config['enable_dual_mode'] = enable_dual_mode
-        
-        if enable_dual_mode:
-            st.info("ℹ️ Dual-mode: Strict initial (90-95% coverage) → Relaxed optimization (98-100%)")
-            
-            num_attempts = st.slider(
-                "Initial attempts",
-                min_value=5,
-                max_value=60,
-                value=st.session_state.config.get('num_initial_attempts', 30),
-                help="Number of strict initial distribution attempts (more = better quality)"
-            )
-            st.session_state.config['num_initial_attempts'] = num_attempts
-            
-    
-    # Real-Time Features
-    with st.expander("⚡ Real-Time Features"):
-        enable_real_time = st.checkbox(
-            "Enable real-time editing",
-            value=st.session_state.config.get('enable_real_time', False),
-            help="Enable interactive schedule editing with undo/redo"
-        )
-        st.session_state.config['enable_real_time'] = enable_real_time
-        st.session_state.real_time_enabled = enable_real_time
-        
-        if enable_real_time:
-            st.success("✅ Real-time editing enabled")
-            st.caption("You can manually assign/unassign workers in the Calendar tab")
     
     # Predictive Analytics
     with st.expander("🔮 Predictive Analytics"):
@@ -1456,7 +1287,6 @@ with st.sidebar:
                 success, message = generate_schedule_internal(
                     start_date, 
                     end_date, 
-                    tolerance/100, 
                     holidays,
                     st.session_state.config.get('variable_shifts', [])
                 )
@@ -1482,7 +1312,6 @@ with st.sidebar:
         - ✅ Días mínimos entre guardias configurables
         - ✅ Fines de semana consecutivos máximos
         - ✅ Balance proporcional de fines de semana
-        - ✅ Tolerancia de desviación configurable
         - ✅ Días fuera (no disponibles)
         - ✅ Períodos personalizados por médico
         - ✅ Guardias variables por día/período
@@ -1491,7 +1320,7 @@ with st.sidebar:
         - 📅 Período de reparto (fecha inicial/final)
         - 🎉 Festivos
         - 🔢 Guardias por día (por defecto y variables)
-        - ⏳ Gap entre guaridas
+        - ⏳ Gap entre guardias
         - 📆 Fines de semana consecutivos
         - 📊 Tolerancia general y de fines de semana
         """)
@@ -1961,72 +1790,6 @@ with tab2:
                 st.metric("PDFs generados", len(pdf_files))
             
             st.markdown("---")
-            
-            # Real-Time Editing Controls
-            if st.session_state.real_time_enabled:
-                st.subheader("⚡ Real-Time Editing")
-                
-                col_undo, col_redo, col_info = st.columns([1, 1, 2])
-                
-                with col_undo:
-                    if st.button("↶ Undo", disabled=len(st.session_state.undo_stack) == 0):
-                        success, message = undo_last_change()
-                        if success:
-                            st.success(message)
-                            st.rerun()
-                        else:
-                            st.error(message)
-                
-                with col_redo:
-                    if st.button("↷ Redo", disabled=len(st.session_state.redo_stack) == 0):
-                        success, message = redo_last_change()
-                        if success:
-                            st.success(message)
-                            st.rerun()
-                        else:
-                            st.error(message)
-                
-                with col_info:
-                    st.caption(f"📝 Changes: {len(st.session_state.undo_stack)} | Can undo: {len(st.session_state.undo_stack) > 0}")
-                
-                # Interactive assignment
-                with st.expander("✏️ Manual Assignment"):
-                    st.markdown("**Assign worker to a specific shift**")
-                    
-                    col_date, col_post, col_worker = st.columns(3)
-                    
-                    with col_date:
-                        available_dates = sorted(st.session_state.schedule.keys())
-                        selected_date = st.selectbox(
-                            "Select date",
-                            options=available_dates,
-                            format_func=lambda d: d.strftime('%d-%m-%Y (%a)')
-                        )
-                    
-                    with col_post:
-                        num_posts = len(st.session_state.schedule[selected_date])
-                        selected_post = st.selectbox(
-                            "Select post",
-                            options=list(range(num_posts)),
-                            format_func=lambda p: f"Puesto {p+1}"
-                        )
-                    
-                    with col_worker:
-                        worker_ids = [w['id'] for w in st.session_state.workers_data]
-                        selected_worker = st.selectbox(
-                            "Select worker",
-                            options=worker_ids
-                        )
-                    
-                    if st.button("✅ Assign Worker", type="primary"):
-                        success, message = assign_worker_real_time(selected_worker, selected_date, selected_post)
-                        if success:
-                            st.success(message)
-                            st.rerun()
-                        else:
-                            st.error(message)
-                
-                st.markdown("---")
             
             # Tabla del calendario
             st.subheader("📋 Calendario Detallado")
@@ -3332,7 +3095,7 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "Sistema de Generación de Guardias v2.7 | "
+    "Sistema de Generación de Guardias v2.8 | "
     "Interfaz Streamlit | "
     f"© {datetime.now().year}"
     "</div>",

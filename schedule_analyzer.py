@@ -53,19 +53,82 @@ class CalendarFileProcessor:
         self.calendar_data = {}
         
     def extract_text_from_pdf(self, file_content):
-        """Extrae texto de archivo PDF"""
+        """Extrae texto de archivo PDF - calendario L-D.
+        
+        Intenta extracción via tablas primero (preserva nombres compuestos
+        como 'LUIS H' en una celda). Si la tabla parece válida (tiene al
+        menos 7 columnas y filas con números de día), la usa con tabs.
+        Si no, usa extracción de texto plano como fallback.
+        """
         if not PDFPLUMBER_AVAILABLE:
             raise RuntimeError("pdfplumber no está disponible. Instale con: pip install pdfplumber")
         
         try:
+            # Intentar extracción por tablas primero
+            table_text = self._extract_pdf_via_tables(file_content)
+            if table_text:
+                logger.info("PDF: extracción por tablas exitosa")
+                return table_text
+            
+            # Fallback: texto plano
+            logger.info("PDF: usando extracción de texto plano")
             text = ""
             with pdfplumber.open(io.BytesIO(file_content)) as pdf:
                 for page in pdf.pages:
-                    text += page.extract_text() + "\n"
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
             return text
         except Exception as e:
             logger.error(f"Error extrayendo PDF: {e}")
             raise
+    
+    def _extract_pdf_via_tables(self, file_content):
+        """Intenta extraer el calendario via detección de tablas de pdfplumber.
+        
+        Valida que las tablas encontradas sean un calendario real (>=7 columnas,
+        filas con números de día). Retorna texto tab-separated o None si falla.
+        """
+        try:
+            all_rows = []
+            with pdfplumber.open(io.BytesIO(file_content)) as pdf:
+                for page in pdf.pages:
+                    tables = page.extract_tables()
+                    if not tables:
+                        return None  # Una página sin tablas → fallback
+                    for table in tables:
+                        for row in table:
+                            if row:
+                                cells = [(c.strip() if c else '') for c in row]
+                                if any(cells):
+                                    all_rows.append(cells)
+            
+            if not all_rows:
+                return None
+            
+            # Validar que parece un calendario: al menos una fila con >=5 números
+            # y filas con >=7 columnas
+            has_day_row = False
+            for row in all_rows:
+                non_empty = [c for c in row if c]
+                numeric_count = sum(1 for c in non_empty if c.isdigit())
+                if numeric_count >= 5 and len(non_empty) >= 5:
+                    has_day_row = True
+                    break
+            
+            if not has_day_row:
+                logger.info("PDF tablas: no parece un calendario (sin fila de días)")
+                return None
+            
+            # Convertir a texto tab-separated
+            text_parts = []
+            for row in all_rows:
+                text_parts.append('\t'.join(row))
+            
+            return '\n'.join(text_parts)
+        except Exception as e:
+            logger.debug(f"Extracción por tablas falló: {e}")
+            return None
     
     def extract_text_from_excel(self, file_content):
         """Extrae texto de archivo Excel (.xlsx, .xls)"""
@@ -122,6 +185,38 @@ class CalendarFileProcessor:
             return self.text_content
         except Exception as e:
             logger.error(f"Error procesando archivo: {e}")
+            raise
+
+    def process_local_file(self, file_path):
+        """
+        Procesa un archivo local del directorio (detecta tipo y extrae texto)
+        
+        Args:
+            file_path: Ruta al archivo local (str o Path)
+            
+        Returns:
+            str: Texto extraído del archivo
+        """
+        try:
+            file_path = Path(file_path)
+            if not file_path.exists():
+                raise FileNotFoundError(f"Archivo no encontrado: {file_path}")
+            
+            file_content = file_path.read_bytes()
+            filename = file_path.name.lower()
+            
+            if filename.endswith('.pdf'):
+                self.text_content = self.extract_text_from_pdf(file_content)
+            elif filename.endswith(('.xlsx', '.xls')):
+                self.text_content = self.extract_text_from_excel(file_content)
+            elif filename.endswith('.csv'):
+                self.text_content = self.extract_text_from_csv(file_content)
+            else:
+                raise ValueError(f"Formato de archivo no soportado: {filename}")
+            
+            return self.text_content
+        except Exception as e:
+            logger.error(f"Error procesando archivo local: {e}")
             raise
     
     def detect_calendar_structure(self, text):
@@ -247,8 +342,13 @@ class ScheduleAnalyzer:
         # Procesar en bloques de (1 + shifts_per_day) líneas
         i = 0
         while i < len(lines):
-            # Línea de días
-            days_line = lines[i].strip().split()
+            # Línea de días - detectar si viene separada por tabs (tabla) o espacios
+            raw_line = lines[i].strip()
+            is_tab_separated = '\t' in raw_line
+            days_line = [t.strip() for t in raw_line.split('\t')] if is_tab_separated else raw_line.split()
+            
+            # Filtrar tokens vacíos de celdas vacías en tablas
+            days_line = [t for t in days_line if t]
             
             # Verificar si es línea de números de días
             numeric_count = sum(1 for token in days_line if token.isdigit())
@@ -264,7 +364,17 @@ class ScheduleAnalyzer:
             for row_num in range(self.shifts_per_day):
                 line_idx = i + 1 + row_num
                 if line_idx < len(lines):
-                    row = self._parse_worker_names(lines[line_idx].split(), day_count)
+                    worker_line = lines[line_idx].strip()
+                    if '\t' in worker_line:
+                        # Tab-separated (de tabla): cada celda es un nombre exacto
+                        cells = [c.strip() if c.strip() else None for c in worker_line.split('\t')]
+                        # Ajustar al número de días
+                        while len(cells) < day_count:
+                            cells.append(None)
+                        row = cells[:day_count]
+                    else:
+                        # Space-separated: usar heurística de nombres compuestos
+                        row = self._parse_worker_names(worker_line.split(), day_count)
                 else:
                     row = [None] * day_count
                 worker_rows.append(row)
@@ -333,12 +443,12 @@ class ScheduleAnalyzer:
     @staticmethod
     def _is_likely_initial(word):
         """
-        Detecta si una palabra es probablemente una inicial o segunda parte de nombre compuesto.
+        Detecta si una palabra es probablemente una inicial o parte de nombre compuesto.
         
         Una inicial es:
         - Una sola letra: "H", "R", "M"
         - Dos letras: "HZ", "RM"
-        - Letra con punto: "H.", "R."
+        - Letra con punto: "H.", "R.", "M."
         
         Retorna: bool
         """
@@ -360,10 +470,9 @@ class ScheduleAnalyzer:
         """
         Parsea nombres de trabajadores, detectando y combinando nombres compuestos.
         
-        Por ejemplo:
-        ["LUIS", "H", "LUIS", "R", "CARLOS"] → ["LUIS H", "LUIS R", "CARLOS"]
-        
-        Usa heurística: si una palabra es una inicial (1-2 letras), se combina con la anterior.
+        Maneja dos tipos de iniciales:
+        - Sufijo sin punto: "LUIS" + "H" → "LUIS H" (inicial va después)
+        - Prefijo con punto: "M." + "CARMEN" → "M.CARMEN" (inicial va antes)
         
         Args:
             names: Lista de palabras/nombres
@@ -387,19 +496,24 @@ class ScheduleAnalyzer:
             name = name.strip()
             
             if not name or name.isdigit():
-                # Si encontramos un vacío pero tenemos nombre actual, guardarlo
                 if current_name:
                     processed.append(current_name)
                     current_name = ""
                 continue
             
-            # Si es el primer nombre o el anterior no fue una inicial
             if not current_name:
                 current_name = name
-            # Si la palabra actual es una inicial, combinarla con la anterior
             elif ScheduleAnalyzer._is_likely_initial(name):
-                current_name += " " + name
-            # Si no es una inicial, guardar el nombre anterior y empezar uno nuevo
+                if '.' in name:
+                    # Prefijo con punto (ej: "M.") → empieza nuevo nombre compuesto
+                    processed.append(current_name)
+                    current_name = name
+                else:
+                    # Sufijo sin punto (ej: "H", "R") → combinar con anterior
+                    current_name += " " + name
+            elif ScheduleAnalyzer._is_likely_initial(current_name):
+                # El nombre anterior era un prefijo (ej: "M.") → combinar
+                current_name += name
             else:
                 processed.append(current_name)
                 current_name = name
@@ -536,7 +650,7 @@ class ScheduleAnalyzer:
             bridge_pct = (stats['bridge'] / total * 100) if total > 0 else 0
             
             stats_list.append({
-                'Trabajador': worker,
+                'Médico': worker,
                 'Total': total,
                 'Viernes': stats['viernes'],
                 'Sábado': stats['sabado'],
@@ -565,7 +679,7 @@ class ScheduleAnalyzer:
         
         for stat in stats_list:
             row = {
-                'Trabajador': stat['Trabajador'],
+                'Médico': stat['Médico'],
                 'Total': stat['Total'],
                 'Viernes': stat['Viernes'],
                 'Sábado': stat['Sábado'],
@@ -588,7 +702,7 @@ class ScheduleAnalyzer:
         logging.info(f"Total de turnos en puente detectados: {total_bridge_shifts}")
         for stat in stats_list:
             if stat['Puente'] > 0:
-                logging.info(f"  {stat['Trabajador']}: {stat['Puente']} turnos en puente ({stat['% Puente']}%)")
+                logging.info(f"  {stat['Médico']}: {stat['Puente']} turnos en puente ({stat['% Puente']}%)")
         
         return pd.DataFrame(df_data)
     
@@ -624,7 +738,7 @@ class ScheduleAnalyzer:
                     
                     for worker in consecutive_workers:
                         alerts.append({
-                            'Trabajador': worker,
+                            'Médico': worker,
                             'Fecha 1': current_date.strftime('%d-%m-%Y'),
                             'Fecha 2': next_date.strftime('%d-%m-%Y'),
                             'Alerta': '⚠️ Guardias consecutivas'
@@ -635,7 +749,7 @@ class ScheduleAnalyzer:
                 if stat.get('consecutive_dates'):
                     for date1, date2 in stat['consecutive_dates']:
                         alerts.append({
-                            'Trabajador': stat['Trabajador'],
+                            'Médico': stat['Médico'],
                             'Fecha 1': date1.strftime('%d-%m-%Y'),
                             'Fecha 2': date2.strftime('%d-%m-%Y'),
                             'Alerta': '⚠️ Guardias consecutivas'
@@ -708,10 +822,10 @@ class PDFReportGenerator:
         elements.append(heading)
         
         # Preparar datos para tabla
-        table_data = [['Trabajador', 'Total', 'Vie', 'Sab', 'Dom', 'Tot FS', '% FS', 'Rosell', '% Ros']]
+        table_data = [['Médico', 'Total', 'Vie', 'Sab', 'Dom', 'Tot FS', '% FS', 'Rosell', '% Ros']]
         for _, row in df_stats.iterrows():
             table_data.append([
-                row['Trabajador'][:15],  # Truncar nombre
+                row['Médico'][:15],  # Truncar nombre
                 str(row['Total']),
                 str(row['Viernes']),
                 str(row['Sábado']),

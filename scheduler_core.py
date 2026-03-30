@@ -364,7 +364,7 @@ class SchedulerCore:
             # biased by accumulated shift counts, so there is less variance between
             # attempts.  Halve the attempt count to recover most of the extra time
             # cost introduced by the prior-data constraints, while keeping at least 5.
-            has_prior = bool(getattr(self.scheduler, 'prior_relevant_assignments', {}))
+            has_prior = bool(getattr(self.scheduler, 'prior_assignments', {}))
             if has_prior and not is_simulation:
                 num_attempts = max(5, num_attempts // 2)
                 logging.info(f"📅 Prior calendar loaded: reduced initial attempts to {num_attempts}")
@@ -481,9 +481,6 @@ class SchedulerCore:
                     'workload_imbalance': workload_imbalance,
                     'weekend_imbalance': weekend_imbalance
                 })
-                
-                # CRITICAL: Export PDF for THIS attempt (to compare different initial distributions)
-                self._export_initial_attempt_pdf(attempt_num, strategy['name'])
                 
                 # Check if this is the best so far
                 if score > best_score:
@@ -1339,53 +1336,6 @@ class SchedulerCore:
         except Exception as e:
             logging.error(f"❌ Error generating initial calendar PDF: {str(e)}", exc_info=True)
             logging.info("Continuing without initial PDF export")
-    
-    def _export_initial_attempt_pdf(self, attempt_num: int, strategy_name: str) -> None:
-        """
-        Export PDF for a specific initial distribution attempt.
-        This allows comparing different strategies visually.
-        
-        Args:
-            attempt_num: The attempt number
-            strategy_name: Name of the strategy used
-        """
-        try:
-            # Import PDF exporter
-            from pdf_exporter import PDFExporter
-            
-            # Prepare configuration for PDF exporter
-            schedule_config = {
-                'schedule': self.scheduler.schedule,
-                'workers_data': self.scheduler.workers_data,
-                'num_shifts': self.scheduler.num_shifts,
-                'holidays': self.scheduler.holidays
-            }
-            
-            # Create exporter instance
-            pdf_exporter = PDFExporter(schedule_config)
-            
-            # Generate filename with attempt number and strategy
-            start_date = self.scheduler.start_date
-            end_date = self.scheduler.end_date
-            period_str = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            # Clean strategy name for filename
-            strategy_clean = strategy_name.replace(' ', '_').replace('(', '').replace(')', '')[:30]
-            filename = f'schedule_INITIAL_Attempt{attempt_num:02d}_{strategy_clean}_{timestamp}.pdf'
-            
-            # Export all months to single PDF (landscape A4, one month per page)
-            result_file = pdf_exporter.export_all_months_calendar(filename=filename)
-            
-            if result_file:
-                logging.info(f"✅ Attempt {attempt_num} PDF exported: {result_file}")
-            else:
-                logging.warning(f"⚠️  Attempt {attempt_num} PDF export returned no file")
-            
-        except ImportError:
-            # Skip PDF export if module not available (only log once at first call)
-            pass
-        except Exception as e:
-            logging.warning(f"⚠️  Could not export PDF for attempt {attempt_num}: {str(e)}")
     
     @staticmethod
     def _make_hash_seed(attempt_num: int, tag: str) -> int:

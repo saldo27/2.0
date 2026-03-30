@@ -432,6 +432,10 @@ class ScheduleBuilder:
         if target_shifts <= 0:
             return False  # No target, no tolerance check
         
+        # ZERO TOLERANCE for manual workers (guardias/mes defined by user)
+        # Consistent with shift_tolerance_validator.get_tolerance_range()
+        is_manual_worker = not worker_data.get('auto_calculate_shifts', True)
+        
         # Calculate current assignments EXCLUDING mandatory shifts
         # Mandatory shifts don't count toward tolerance limits
         all_assignments = self.worker_assignments.get(worker_id, set())
@@ -464,6 +468,14 @@ class ScheduleBuilder:
         if is_new_mandatory:
             logging.debug(f"✅ MANDATORY: {worker_id} mandatory shift on {date.strftime('%Y-%m-%d')}, bypassing tolerance")
             return False
+        
+        # Manual workers: exact target, zero tolerance (block any excess immediately)
+        if is_manual_worker and assignments_after > target_shifts:
+            deviation_pct = ((assignments_after - target_shifts) / target_shifts * 100) if target_shifts > 0 else 0
+            logging.warning(f"🚫 BLOCKED: {worker_id} (manual) would have {assignments_after} shifts "
+                          f"(exact target: {target_shifts}, deviation: {deviation_pct:+.1f}%) "
+                          f"[current={current_assignments}, mandatory={mandatory_count}, non-mand={non_mandatory_assignments}]")
+            return True
         
         # Phase-based tolerance system:
         # Phase 1 (objective): ±10% tolerance
@@ -3860,214 +3872,6 @@ class ScheduleBuilder:
             self._save_current_as_best()
         return changes_made > 0
 
-    def _balance_weekend_shifts(self):
-        """
-        Balance weekend/holiday shifts across workers based on their percentage of working days.
-        Each worker should have approximately:
-        (total_shifts_for_worker) * (total_weekend_days / total_days) shifts on weekends/holidays, ±1.
-        """
-        logging.info("Balancing weekend and holiday shifts among workers...")
-        fixes_made = 0
-    
-        # Calculate the total days and weekend/holiday days in the schedule period
-        total_days_in_period = (self.end_date - self.start_date).days + 1 # Renamed total_days
-        weekend_days_in_period = sum(1 for d_val in self.date_utils.generate_date_range(self.start_date, self.end_date) # Renamed d, use generate_date_range
-                      if self.date_utils.is_weekend_day(d_val) or d_val in self.holidays)
-    
-        # Calculate the target percentage
-        weekend_percentage = weekend_days_in_period / total_days_in_period if total_days_in_period > 0 else 0
-        logging.info(f"Schedule period has {weekend_days_in_period} weekend/holiday days out of {total_days_in_period} total days ({weekend_percentage:.1%})")
-    
-        # Check each worker's current weekend shift allocation
-        workers_to_check = self.workers_data.copy()
-        random.shuffle(workers_to_check)  # Process in random order
-    
-        for worker_val in workers_to_check: # Renamed worker
-            worker_id_val = worker_val['id'] # Renamed worker_id
-            assignments = self.worker_assignments.get(worker_id_val, set())
-            total_shifts = len(assignments)
-        
-            if total_shifts == 0:
-                continue  # Skip workers with no assignments
-            
-            # Count weekend assignments for this worker
-            weekend_shifts = sum(1 for date_val in assignments # Renamed date
-                                if self.date_utils.is_weekend_day(date_val) or date_val in self.holidays)
-        
-            # Calculate target weekend shifts for this worker
-            target_weekend_shifts = total_shifts * weekend_percentage
-            deviation = weekend_shifts - target_weekend_shifts
-            allowed_deviation = 0.75  # Tighten the tolerance
-
-            ## And add priority scoring based on how far workers are from target:
-            deviation_priority = abs(deviation)
-            # Process workers with largest deviations first
-            logging.debug(f"Worker {worker_id_val}: {weekend_shifts} weekend shifts, target {target_weekend_shifts:.2f}, deviation {deviation:.2f}")
-        
-            # Case 1: Worker has too many weekend shifts
-            if deviation > allowed_deviation:
-                logging.info(f"Worker {worker_id_val} has too many weekend shifts ({weekend_shifts}, target {target_weekend_shifts:.2f})")
-                swap_found = False
-            
-                # Find workers with too few weekend shifts to swap with
-                potential_swap_partners = []
-                for other_worker_val in self.workers_data: # Renamed other_worker
-                    other_id = other_worker_val['id']
-                    if other_id == worker_id_val:
-                        continue
-                
-                    other_total = len(self.worker_assignments.get(other_id, []))
-                    if other_total == 0:
-                        continue
-                    
-                    other_weekend = sum(1 for d_val in self.worker_assignments.get(other_id, []) # Renamed d
-                                       if self.date_utils.is_weekend_day(d_val) or d_val in self.holidays)
-                                    
-                    other_target = other_total * weekend_percentage
-                    other_deviation = other_weekend - other_target
-                
-                    if other_deviation < -allowed_deviation:
-                        potential_swap_partners.append((other_id, other_deviation))
-            
-                # Sort potential partners by how under-assigned they are
-                potential_swap_partners.sort(key=lambda x: x[1])
-            
-                # Try to swap a weekend shift from this worker to an under-assigned worker
-                if potential_swap_partners:
-                    for swap_partner_id, _ in potential_swap_partners:
-                        # Find a weekend assignment from this worker to swap
-                        possible_from_dates = [d_val for d_val in assignments # Renamed d
-                                             if (self.date_utils.is_weekend_day(d_val) or d_val in self.holidays)\
-                                             and not self._is_mandatory(worker_id_val, d_val)]
-                    
-                        if not possible_from_dates:
-                            continue  # No swappable weekend shifts
-                        
-                        random.shuffle(possible_from_dates)
-                    
-                        for from_date in possible_from_dates:
-                            # Giver monthly check: don't take weekend from a month at/below target
-                            if self._would_drop_below_monthly_floor(worker_id_val, from_date):
-                                continue
-                            
-                            # Find the post this worker is assigned to
-                            from_post = self.schedule[from_date].index(worker_id_val)
-                        
-                            # Find a weekday assignment from the swap partner that could be exchanged
-                            partner_assignments = self.worker_assignments.get(swap_partner_id, set())
-                            possible_to_dates = [d_val for d_val in partner_assignments # Renamed d
-                                               if not (self.date_utils.is_weekend_day(d_val) or d_val in self.holidays)\
-                                               and not self._is_mandatory(swap_partner_id, d_val)\
-                                               and not self._would_drop_below_monthly_floor(swap_partner_id, d_val)]
-                        
-                            if not possible_to_dates:
-                                continue  # No swappable weekday shifts for partner
-                            
-                            random.shuffle(possible_to_dates)
-                        
-                            for to_date in possible_to_dates:
-                                # Find the post the partner is assigned to
-                                to_post = self.schedule[to_date].index(swap_partner_id)
-                            
-                                # Check if swap is valid (worker1 <-> worker2)
-                                if self._can_worker_swap(worker_id_val, from_date, from_post, swap_partner_id, to_date, to_post): # Corrected: _can_worker_swap
-                                    # Execute worker-worker swap
-                                    self._execute_worker_swap(worker_id_val, from_date, from_post, swap_partner_id, to_date, to_post)
-                                    logging.info(f"Swapped weekend shift: Worker {worker_id_val} on {from_date.strftime('%Y-%m-%d')} with "\
-                                               f"Worker {swap_partner_id} on {to_date.strftime('%Y-%m-%d')}")
-                                    fixes_made += 1
-                                    swap_found = True
-                                    break
-                        
-                            if swap_found:
-                                break
-                    
-                        if swap_found:
-                            break
-                        
-            # Case 2: Worker has too few weekend shifts
-            elif deviation < allowed_deviation:
-                logging.info(f"Worker {worker_id_val} has too few weekend shifts ({weekend_shifts}, target {target_weekend_shifts:.2f})")
-                swap_found = False
-            
-                # Find workers with too many weekend shifts to swap with
-                potential_swap_partners = []
-                for other_worker_val in self.workers_data: # Renamed other_worker
-                    other_id = other_worker_val['id']
-                    if other_id == worker_id_val:
-                        continue
-                
-                    other_total = len(self.worker_assignments.get(other_id, []))
-                    if other_total == 0:
-                        continue
-                    
-                    other_weekend = sum(1 for d_val in self.worker_assignments.get(other_id, []) # Renamed d
-                                       if self.date_utils.is_weekend_day(d_val) or d_val in self.holidays)
-                                    
-                    other_target = other_total * weekend_percentage
-                    other_deviation = other_weekend - other_target
-                
-                    if other_deviation > allowed_deviation:
-                        potential_swap_partners.append((other_id, other_deviation))
-            
-                # Sort potential partners by how over-assigned they are
-                potential_swap_partners.sort(key=lambda x: -x[1])
-            
-                # Implementation similar to above but with roles reversed
-                if potential_swap_partners:
-                    for swap_partner_id, _ in potential_swap_partners:
-                        # Find a weekend assignment from the partner to swap
-                        partner_assignments = self.worker_assignments.get(swap_partner_id, set())
-                        possible_from_dates = [d_val for d_val in partner_assignments # Renamed d
-                                             if (self.date_utils.is_weekend_day(d_val) or d_val in self.holidays)\
-                                             and not self._is_mandatory(swap_partner_id, d_val)]
-                    
-                        if not possible_from_dates:
-                            continue
-                        
-                        random.shuffle(possible_from_dates)
-                    
-                        for from_date in possible_from_dates:
-                            # Giver monthly check: don't take weekend from partner's month at/below target
-                            if self._would_drop_below_monthly_floor(swap_partner_id, from_date):
-                                continue
-                            
-                            from_post = self.schedule[from_date].index(swap_partner_id)
-                        
-                            # Find a weekday assignment from this worker
-                            possible_to_dates = [d_val for d_val in assignments # Renamed d
-                                               if not (self.date_utils.is_weekend_day(d_val) or d_val in self.holidays)\
-                                               and not self._is_mandatory(worker_id_val, d_val)\
-                                               and not self._would_drop_below_monthly_floor(worker_id_val, d_val)]
-                        
-                            if not possible_to_dates:
-                                continue
-                            
-                            random.shuffle(possible_to_dates)
-                        
-                            for to_date in possible_to_dates:
-                                to_post = self.schedule[to_date].index(worker_id_val)
-                            
-                                # Check if swap is valid (partner <-> this worker)
-                                if self._can_worker_swap(swap_partner_id, from_date, from_post, worker_id_val, to_date, to_post): # Corrected: _can_worker_swap
-                                    self._execute_worker_swap(swap_partner_id, from_date, from_post, worker_id_val, to_date, to_post)
-                                    logging.info(f"Swapped weekend shift: Worker {swap_partner_id} on {from_date.strftime('%Y-%m-%d')} with "\
-                                               f"Worker {worker_id_val} on {to_date.strftime('%Y-%m-%d')}")
-                                    fixes_made += 1
-                                    swap_found = True
-                                    break
-                        
-                            if swap_found:
-                                break
-                    
-                        if swap_found:
-                            break
-    
-        logging.info(f"Weekend shift balancing: made {fixes_made} changes")
-        if fixes_made > 0:
-            self._save_current_as_best()
-        return fixes_made > 0
-        
     def _improve_weekend_distribution(self):
         """
         Improve weekend distribution by balancing "special constraint days" 

@@ -252,6 +252,9 @@ class Scheduler:
         # Adjust new-period targets to compensate for prior-period over/under-delivery
         self._apply_prior_period_balance()
 
+        # Validate that adjusted targets don't exceed available capacity
+        self._validate_target_capacity()
+
         logging.info(
             f"Prior schedule loaded: {len(self.prior_assignments)} workers, "
             f"period {prior_data['prior_period_start']} → {prior_data['prior_period_end']}"
@@ -308,6 +311,85 @@ class Scheduler:
                 f"[PriorBalance] {wid}: base_target={base_target} → adjusted={adjusted} "
                 f"(prior_actual={prior_actual}, prior_target={prior_target}, delta={delta:+.0f})"
             )
+
+    def _validate_target_capacity(self) -> None:
+        """
+        Check that the sum of all adjusted target_shifts does not exceed the
+        total available slots.  If it does, proportionally scale down the
+        adjustments that *increased* targets (workers who were under-assigned
+        in the prior period) so the total fits within capacity.
+        """
+        total_slots = sum(len(slots) for slots in self.schedule.values())
+        if total_slots <= 0:
+            return
+
+        target_sum = sum(w.get('target_shifts', 0) for w in self.workers_data)
+        logging.info(
+            f"[TargetValidation] Sum of targets={target_sum}, "
+            f"available slots={total_slots}"
+        )
+
+        if target_sum <= total_slots:
+            return
+
+        overflow = target_sum - total_slots
+        logging.warning(
+            f"[TargetValidation] Adjusted targets exceed capacity by {overflow} "
+            f"({target_sum} targets vs {total_slots} slots). "
+            f"Scaling down inflated targets to fit."
+        )
+
+        # Identify workers whose targets were inflated by prior-balance (delta < 0)
+        inflated = []
+        for w in self.workers_data:
+            wid = w['id']
+            base = self._base_target_shifts.get(wid, 0)
+            current = w.get('target_shifts', 0)
+            if current > base:
+                inflated.append((w, current - base))
+
+        if not inflated:
+            logging.warning(
+                "[TargetValidation] No inflated targets to reduce; "
+                "deficit may be unavoidable with current constraints."
+            )
+            return
+
+        total_inflation = sum(inc for _, inc in inflated)
+        remaining_overflow = overflow
+
+        # Proportionally reduce inflated targets
+        for w, increment in inflated:
+            reduction = min(increment, round(increment / total_inflation * overflow))
+            reduction = min(reduction, remaining_overflow)
+            if reduction > 0:
+                old = w['target_shifts']
+                w['target_shifts'] = max(1, old - reduction)
+                remaining_overflow -= reduction
+                logging.info(
+                    f"[TargetValidation] {w['id']}: target {old} → {w['target_shifts']} "
+                    f"(reduced by {reduction} to fit capacity)"
+                )
+
+        # If rounding left leftover, remove one more from the largest remaining inflation
+        if remaining_overflow > 0:
+            inflated.sort(key=lambda x: x[0].get('target_shifts', 0), reverse=True)
+            for w, _ in inflated:
+                if remaining_overflow <= 0:
+                    break
+                if w['target_shifts'] > 1:
+                    w['target_shifts'] -= 1
+                    remaining_overflow -= 1
+                    logging.info(
+                        f"[TargetValidation] {w['id']}: further reduced to "
+                        f"{w['target_shifts']} (residual rounding)"
+                    )
+
+        new_sum = sum(w.get('target_shifts', 0) for w in self.workers_data)
+        logging.info(
+            f"[TargetValidation] After scaling: sum of targets={new_sum}, "
+            f"available slots={total_slots}"
+        )
 
     def _get_effective_assignments(self, worker_id: str) -> set:
         """
@@ -1067,11 +1149,34 @@ class Scheduler:
 
             # 2) MANUAL CALCULATION for manual_workers (guardias/mes)
             if manual_workers:
-                # Calculate number of months in the period
-                months_in_period = (self.end_date.year - self.start_date.year) * 12 + \
-                                   (self.end_date.month - self.start_date.month) + 1
+                # Calculate proportional months: only count full-month
+                # fractions based on the actual days of each calendar month
+                # that fall within the period.
+                import calendar
+                proportional_months = 0.0
+                cur_year, cur_month = self.start_date.year, self.start_date.month
+                end_year, end_month = self.end_date.year, self.end_date.month
+                while (cur_year, cur_month) <= (end_year, end_month):
+                    days_in_month = calendar.monthrange(cur_year, cur_month)[1]
+                    month_start = datetime(cur_year, cur_month, 1)
+                    month_end = datetime(cur_year, cur_month, days_in_month)
+                    effective_start = max(month_start, self.start_date)
+                    effective_end = min(month_end, self.end_date)
+                    days_covered = (effective_end - effective_start).days + 1
+                    fraction = days_covered / days_in_month
+                    proportional_months += fraction
+                    logging.debug(
+                        f"Manual month calc: {cur_year}-{cur_month:02d} → "
+                        f"{days_covered}/{days_in_month} days = {fraction:.3f} months"
+                    )
+                    cur_month += 1
+                    if cur_month > 12:
+                        cur_month = 1
+                        cur_year += 1
                 
-                logging.info(f"Manual target calculation: {months_in_period} months in period")
+                logging.info(
+                    f"Manual target calculation: {proportional_months:.2f} proportional months in period"
+                )
                 
                 for w in manual_workers:
                     wid = w['id']
@@ -1081,7 +1186,7 @@ class Scheduler:
                     if '_original_target_shifts' not in w:
                         w['_original_target_shifts'] = w.get('target_shifts', 0)
                     guardias_per_mes = w['_original_target_shifts']
-                    raw_target = guardias_per_mes * months_in_period
+                    raw_target = round(guardias_per_mes * proportional_months)
                     
                     mand_count = 0
                     mand_str = w.get('mandatory_days', '').strip()
@@ -1099,7 +1204,7 @@ class Scheduler:
                     w['_mandatory_count'] = mand_count
                     
                     logging.info(
-                        f"Worker {wid} (MANUAL): {guardias_per_mes} guardias/mes * {months_in_period} meses = {raw_target}, "
+                        f"Worker {wid} (MANUAL): {guardias_per_mes} guardias/mes * {proportional_months:.2f} meses = {raw_target}, "
                         f"Mandatory={mand_count}, Adjusted target_shifts={adjusted}"
                     )
 
@@ -1109,25 +1214,6 @@ class Scheduler:
             logging.error(f"Error in target calculation: {e}", exc_info=True)
             return False
         
-    def _adjust_for_mandatory(self):
-        """
-        Mandatory days are not extra shifts: reduce each worker's
-        target_shifts by the number of mandatories in range.
-        """
-        for w in self.workers_data:
-            mand_list = []
-            try:
-                mand_list = self.date_utils.parse_dates(w.get('mandatory_days',''))
-            except Exception:
-                pass
-
-            mand_count = sum(1 for d in mand_list
-                             if self.start_date <= d <= self.end_date)
-            # never go below zero
-            new_target = max(0, w.get('target_shifts',0) - mand_count)
-            logging.info(f"[Worker {w['id']}] target_shifts {w['target_shifts']} → {new_target} after mandatory")
-            w['target_shifts'] = new_target
-
     def _calculate_monthly_targets(self):
         """
         Calculate monthly target shifts for each worker based on their overall targets
@@ -2388,49 +2474,6 @@ class Scheduler:
         except Exception as e:
             logging.error(f"Validation error: {str(e)}", exc_info=True)
             return False
-        
-    def verify_schedule_integrity(self):
-        """
-        Verify schedule integrity and constraints
-        
-        Returns:
-            tuple: (bool, dict) - (is_valid, results)
-                is_valid: True if schedule passes all validations
-                results: Dictionary containing validation results and metrics
-        """
-        try:
-            # Run comprehensive validation
-            self._validate_final_schedule()
-            
-            # Gather statistics and metrics
-            stats = self.gather_statistics()
-            metrics = self.get_schedule_metrics()
-            
-            # Calculate coverage
-            coverage = self._calculate_coverage()
-            if coverage < 95:  # Less than 95% coverage is considered problematic
-                logging.warning(f"Low schedule coverage: {coverage:.1f}%")
-            
-            # Check worker assignment balance
-            for worker_id, worker_stats in stats['workers'].items():
-                if abs(worker_stats['total_shifts'] - worker_stats['target_shifts']) > 2:
-                    logging.warning(
-                        f"Worker {worker_id} has significant deviation from target shifts: "
-                        f"Actual={worker_stats['total_shifts']}, "
-                        f"Target={worker_stats['target_shifts']}"
-                    )
-            
-            return True, {
-                'stats': stats,
-                'metrics': metrics,
-                'coverage': coverage,
-                'timestamp': datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
-                'validator': self.current_user
-            }
-            
-        except SchedulerError as e:
-            logging.error(f"Schedule validation failed: {str(e)}")
-            return False, str(e)
         
     # ========================================
     # 9. REPORTING AND EXPORT
