@@ -90,7 +90,10 @@ def test_multiple_subscribers(bus):
 
 def test_unsubscribe(bus):
     received = []
-    callback = lambda e: received.append(e)
+
+    def callback(e):
+        received.append(e)
+
     bus.subscribe(EventType.SHIFT_ASSIGNED, callback)
     bus.unsubscribe(EventType.SHIFT_ASSIGNED, callback)
 

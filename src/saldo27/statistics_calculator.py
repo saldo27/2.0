@@ -434,13 +434,13 @@ class StatisticsCalculator:
         if hasattr(self.scheduler, 'data_manager') and hasattr(self.scheduler.data_manager, 'bridge_manager'):
             # Convert workers_data list to dictionary for bridge_manager
             workers_dict = {w['id']: w for w in self.scheduler.workers_data}
-            
+
             bridge_stats = self.scheduler.data_manager.bridge_manager.calculate_bridge_stats(
                 actual_assignments,
                 workers_dict
             )
             stats['bridge_stats'] = bridge_stats
-            
+
             # Add bridge count to each worker's stats
             for worker_id in stats['workers']:
                 stats['workers'][worker_id]['bridge_days'] = bridge_stats['worker_bridge_counts'].get(worker_id, 0)

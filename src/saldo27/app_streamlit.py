@@ -157,19 +157,19 @@ components.html(
 (function() {
     var MAX_RETRIES = 60;
     var retries = 0;
-    
+
     function shiftSundayToEnd(table) {
         // Evitar procesar la misma tabla dos veces
         if (table.dataset.mondayFixed) return;
         table.dataset.mondayFixed = '1';
-        
+
         // Cabecera (th)
         var headRow = table.querySelector('thead tr');
         if (headRow && headRow.cells.length > 0) {
             var sun = headRow.cells[0];
             headRow.appendChild(sun);          // mueve (no copia)
         }
-        
+
         // Filas de días (td)
         table.querySelectorAll('tbody tr').forEach(function(row) {
             if (row.cells.length > 0) {
@@ -177,21 +177,21 @@ components.html(
             }
         });
     }
-    
+
     function fixAllCalendars(root) {
         (root || window.parent.document).querySelectorAll(
             'table[role="grid"]'
         ).forEach(shiftSundayToEnd);
     }
-    
+
     function waitForParent() {
         try {
             var parentDoc = window.parent.document;
             if (!parentDoc) { retry(); return; }
-            
+
             // Corregir calendarios ya abiertos
             fixAllCalendars(parentDoc);
-            
+
             // Observar futuras aperturas de calendario
             var observer = new MutationObserver(function(mutations) {
                 mutations.forEach(function(m) {
@@ -209,14 +209,14 @@ components.html(
                 });
             });
             observer.observe(parentDoc.body, { childList: true, subtree: true });
-            
+
         } catch(e) { retry(); }
     }
-    
+
     function retry() {
         if (retries++ < MAX_RETRIES) setTimeout(waitForParent, 150);
     }
-    
+
     waitForParent();
 })();
 </script>
@@ -1076,9 +1076,9 @@ if not st.session_state.can_use:
 
     st.markdown("""
     ### Has alcanzado el límite de la versión DEMO
-    
-    La versión DEMO permite **10 generaciones de horarios** para que puedas 
-    evaluar todas las funcionalidades de GuardiasApp. 
+
+    La versión DEMO permite **10 generaciones de horarios** para que puedas
+    evaluar todas las funcionalidades de GuardiasApp.
     """)
 
     # Obtener estadísticas
@@ -1460,7 +1460,7 @@ with st.sidebar:
         - ✅ Días fuera (no disponibles)
         - ✅ Períodos personalizados por médico
         - ✅ Guardias variables por día/período
-        
+
         **Parámetros configurables:**
         - 📅 Período de reparto (fecha inicial/final)
         - 🎉 Festivos
