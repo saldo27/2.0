@@ -1,7 +1,8 @@
 """Tests for saldo27.change_tracker — undo/redo and audit trail."""
 
 import pytest
-from saldo27.change_tracker import ChangeTracker, OperationType, ChangeRecord
+
+from saldo27.change_tracker import ChangeTracker, OperationType
 
 
 @pytest.fixture
@@ -131,9 +132,7 @@ def test_filter_by_operation_type(tracker):
     tracker.record_change("admin", OperationType.ASSIGN_WORKER, "a", {}, {})
     tracker.record_change("admin", OperationType.SWAP_WORKERS, "b", {}, {})
 
-    history = tracker.get_change_history(
-        operation_types=[OperationType.SWAP_WORKERS]
-    )
+    history = tracker.get_change_history(operation_types=[OperationType.SWAP_WORKERS])
     assert len(history) == 1
 
 
@@ -142,12 +141,20 @@ def test_filter_by_operation_type(tracker):
 
 def test_audit_trail_by_worker(tracker):
     tracker.record_change(
-        "admin", OperationType.ASSIGN_WORKER, "assign",
-        {}, {}, affected_workers=["DOC001"],
+        "admin",
+        OperationType.ASSIGN_WORKER,
+        "assign",
+        {},
+        {},
+        affected_workers=["DOC001"],
     )
     tracker.record_change(
-        "admin", OperationType.ASSIGN_WORKER, "assign other",
-        {}, {}, affected_workers=["DOC002"],
+        "admin",
+        OperationType.ASSIGN_WORKER,
+        "assign other",
+        {},
+        {},
+        affected_workers=["DOC002"],
     )
 
     trail = tracker.get_audit_trail(worker_id="DOC001")
@@ -156,8 +163,12 @@ def test_audit_trail_by_worker(tracker):
 
 def test_audit_trail_by_date(tracker):
     tracker.record_change(
-        "admin", OperationType.ASSIGN_WORKER, "assign",
-        {}, {}, affected_dates=["2026-03-15"],
+        "admin",
+        OperationType.ASSIGN_WORKER,
+        "assign",
+        {},
+        {},
+        affected_dates=["2026-03-15"],
     )
 
     trail = tracker.get_audit_trail(date="2026-03-15")

@@ -1,6 +1,7 @@
 """Tests for saldo27.balance_validator — schedule balance checking."""
 
 import pytest
+
 from saldo27.balance_validator import BalanceValidator
 
 
@@ -82,7 +83,10 @@ def test_rebalancing_recommendations_structure(validator, sample_workers_data):
 
 def test_check_transfer_validity(validator, sample_schedule, sample_workers_data):
     is_valid, reason = validator.check_transfer_validity(
-        "DOC001", "DOC002", sample_schedule, sample_workers_data,
+        "DOC001",
+        "DOC002",
+        sample_schedule,
+        sample_workers_data,
     )
     assert isinstance(is_valid, bool)
     assert isinstance(reason, str)

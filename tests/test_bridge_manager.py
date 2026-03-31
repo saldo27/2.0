@@ -1,7 +1,9 @@
 """Tests for saldo27.bridge_manager — bridge day detection."""
 
-import pytest
 from datetime import datetime
+
+import pytest
+
 from saldo27.bridge_manager import BridgeManager
 
 

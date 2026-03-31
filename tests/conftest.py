@@ -1,7 +1,8 @@
 """Shared test fixtures for saldo27."""
 
-import pytest
 from datetime import datetime, timedelta
+
+import pytest
 
 
 @pytest.fixture

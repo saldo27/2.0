@@ -22,23 +22,19 @@ The exported JSON format (produced by scheduler.export_schedule_json) is:
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Set, Optional, Any
+from typing import Any
 
 
-def _is_weekend_or_holiday(date: datetime, holidays: Set[datetime]) -> bool:
+def _is_weekend_or_holiday(date: datetime, holidays: set[datetime]) -> bool:
     """Return True if date is Fri/Sat/Sun, a holiday, or the day before a holiday."""
-    return (
-        date.weekday() >= 4
-        or date in holidays
-        or (date + timedelta(days=1)) in holidays
-    )
+    return date.weekday() >= 4 or date in holidays or (date + timedelta(days=1)) in holidays
 
 
 def load_prior_schedule(
     json_source,
     new_period_start: datetime,
-    new_period_holidays: Optional[Set[datetime]] = None,
-) -> Dict[str, Any]:
+    new_period_holidays: set[datetime] | None = None,
+) -> dict[str, Any]:
     """
     Parse a prior-period schedule JSON and return a dict with per-worker stats.
 
@@ -68,11 +64,11 @@ def load_prior_schedule(
       "holidays"           : set of datetime (prior-period holidays from JSON)
       "error"              : str or None  — set if parsing failed
     """
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "prior_assignments": {},
         "prior_weekends": {},
         "prior_shift_counts": {},
-        "prior_target_shifts": {},   # configured/computed target per worker in prior period
+        "prior_target_shifts": {},  # configured/computed target per worker in prior period
         "prior_last_date": {},
         "prior_period_start": None,
         "prior_period_end": None,
@@ -85,7 +81,7 @@ def load_prior_schedule(
         if isinstance(json_source, dict):
             data = json_source
         elif isinstance(json_source, str):
-            with open(json_source, "r", encoding="utf-8") as fh:
+            with open(json_source, encoding="utf-8") as fh:
                 data = json.load(fh)
         else:
             # file-like (e.g. BytesIO from Streamlit uploader)
@@ -103,7 +99,7 @@ def load_prior_schedule(
         return result
 
     # Accept both the full export format and the simpler config+schedule format
-    worker_assignments_raw: Dict[str, list] = {}
+    worker_assignments_raw: dict[str, list] = {}
 
     if "worker_assignments" in data:
         # Full export format: worker_assignments is already per-worker list of dates
@@ -140,7 +136,7 @@ def load_prior_schedule(
         logging.warning(f"[PriorSchedule] Error parsing period dates: {exc}")
 
     # ── 4. Extract prior holidays ─────────────────────────────────────────────
-    prior_holidays: Set[datetime] = set()
+    prior_holidays: set[datetime] = set()
     raw_holidays = data.get("holidays", [])
     for h in raw_holidays:
         try:
@@ -154,7 +150,7 @@ def load_prior_schedule(
 
     # ── 5. Build per-worker stats ──────────────────────────────────────────────
     for worker_id, date_list in worker_assignments_raw.items():
-        dates: Set[datetime] = set()
+        dates: set[datetime] = set()
         for d_raw in date_list:
             try:
                 dates.add(datetime.fromisoformat(str(d_raw).split("T")[0]))
@@ -164,9 +160,7 @@ def load_prior_schedule(
         result["prior_assignments"][worker_id] = dates
         result["prior_shift_counts"][worker_id] = len(dates)
         result["prior_last_date"][worker_id] = max(dates) if dates else None
-        result["prior_weekends"][worker_id] = sum(
-            1 for d in dates if _is_weekend_or_holiday(d, all_holidays)
-        )
+        result["prior_weekends"][worker_id] = sum(1 for d in dates if _is_weekend_or_holiday(d, all_holidays))
 
     # ── 6. Extract prior targets per worker from workers_data ──────────────────
     #   Use _raw_target (pre-mandatory-adjustment) so that delta calculation
@@ -189,7 +183,7 @@ def load_prior_schedule(
     return result
 
 
-def summarize_prior_schedule(prior_data: Dict[str, Any]) -> Dict[str, Dict]:
+def summarize_prior_schedule(prior_data: dict[str, Any]) -> dict[str, dict]:
     """
     Return a human-readable summary dict: {worker_id: {shifts, weekends, last_date}}.
     Used by the UI to show what was loaded.

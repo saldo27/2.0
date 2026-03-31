@@ -1,9 +1,10 @@
 """Tests for saldo27.utilities — DateTimeUtils and helpers."""
 
-import pytest
-from datetime import datetime, timedelta
-from saldo27.utilities import DateTimeUtils, numeric_sort_key
+from datetime import datetime
 
+import pytest
+
+from saldo27.utilities import DateTimeUtils, numeric_sort_key
 
 # ── DateTimeUtils construction ──────────────────────────────────────
 

@@ -72,14 +72,30 @@ uv sync
 # Run the app locally
 uv run streamlit run src/saldo27/app_streamlit.py
 
+# Lint and format
+uv run ruff check src/ tests/        # lint (auto-fix with --fix)
+uv run ruff format src/ tests/       # format
+
+# Type check
+uv run ty check                      # type checking with ty
+
+# Check for dependency issues
+uv run deptry src/                   # unused/missing dependencies
+
 # Run tests before committing
 uv run pytest tests/ -m "not e2e" -q
 ```
 
+## Code quality tools
+
+- **ruff** — linter and formatter. Config in `pyproject.toml` under `[tool.ruff]`. Run `ruff check --fix` for auto-fixes. Spanish unicode characters are intentionally allowed (RUF001/002/003 ignored).
+- **ty** — type checker. Expect diagnostics on the existing codebase; focus on keeping new code clean.
+- **deptry** — dependency checker. Verifies all declared deps are used and all imports are declared.
+
 ## Dependency management
 
 - All dependencies are declared in `pyproject.toml`.
-- Dev dependencies (pytest, playwright) live in `[dependency-groups] dev`.
+- Dev dependencies (pytest, playwright, ruff, ty, deptry) live in `[dependency-groups] dev`.
 - Lock file (`uv.lock`) is committed — always run `uv sync` after pulling.
 - Do not use `pip install` directly; always go through `uv`.
 

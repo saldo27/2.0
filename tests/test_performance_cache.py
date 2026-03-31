@@ -1,9 +1,10 @@
 """Tests for saldo27.performance_cache — caching and monitoring."""
 
 import time
-import pytest
-from saldo27.performance_cache import PerformanceCache, PerformanceMonitor, cached, memoize
 
+import pytest
+
+from saldo27.performance_cache import PerformanceCache, PerformanceMonitor, cached, memoize
 
 # ── PerformanceCache ───────────────────────────────────────────────
 

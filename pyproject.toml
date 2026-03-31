@@ -38,6 +38,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-playwright>=0.6.2",
+    "ruff>=0.11",
+    "ty>=0.0.1a7",
+    "deptry>=0.22",
 ]
 
 [project.scripts]
@@ -55,3 +58,56 @@ testpaths = ["tests"]
 markers = [
     "e2e: end-to-end browser tests (require playwright)",
 ]
+
+# ── Ruff ────────────────────────────────────────────────────────────
+
+[tool.ruff]
+target-version = "py310"
+src = ["src", "tests"]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "TCH",   # flake8-type-checking
+    "RUF",   # ruff-specific rules
+]
+ignore = [
+    "E501",    # line too long — handled by formatter
+    "E402",    # module-import-not-at-top — used for conditional/lazy imports
+    "B905",    # zip-without-strict — too noisy for existing code
+    "SIM102",  # collapsible-if — readability preference in complex scheduling logic
+    "SIM105",  # suppressible-exception — contextlib.suppress not always clearer
+    "SIM108",  # ternary — readability preference
+    "UP007",   # X | Y union syntax — keep Optional[] for 3.10 compat
+    "RUF001",  # ambiguous unicode — Spanish text is intentional
+    "RUF002",  # ambiguous unicode docstring — Spanish text
+    "RUF003",  # ambiguous unicode comment — Spanish text
+    "RUF013",  # implicit-optional — too noisy for existing signatures
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["saldo27"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ── ty ──────────────────────────────────────────────────────────────
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+# ── deptry ──────────────────────────────────────────────────────────
+
+[tool.deptry]
+[tool.deptry.per_rule_ignores]
+# altair is a transitive streamlit dep we pin explicitly for compatibility
+# matplotlib is imported conditionally inside functions
+# python-dateutil is used by pandas and dateutil.parser at runtime
+DEP002 = ["altair", "matplotlib", "python-dateutil"]
