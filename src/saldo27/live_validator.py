@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
-from event_bus import get_event_bus, EventType
+from saldo27.event_bus import get_event_bus, EventType
 
 
 class ValidationSeverity(Enum):

@@ -11,7 +11,7 @@ from threading import Lock, RLock
 from dataclasses import dataclass, field
 import json
 from collections import deque
-from performance_cache import time_function, monitor_performance
+from saldo27.performance_cache import time_function, monitor_performance
 
 
 class EventType(Enum):

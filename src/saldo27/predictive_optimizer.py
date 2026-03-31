@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Set
 import copy
 
-from exceptions import SchedulerError
+from saldo27.exceptions import SchedulerError
 
 
 class PredictiveOptimizer:

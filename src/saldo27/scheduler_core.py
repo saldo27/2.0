@@ -12,16 +12,16 @@ import random
 from datetime import datetime, timedelta
 from typing import Dict, List, Set, Optional, Tuple, Any
 
-from scheduler_config import SchedulerConfig
-from exceptions import SchedulerError, ConstraintViolationError
-from optimization_metrics import OptimizationMetrics
-from operation_prioritizer import OperationPrioritizer
-from progress_monitor import ProgressMonitor
-from iterative_optimizer import IterativeOptimizer
-from shift_tolerance_validator import ShiftToleranceValidator
-from adaptive_iterations import AdaptiveIterationManager
-from advanced_distribution_engine import AdvancedDistributionEngine
-from strict_balance_optimizer import StrictBalanceOptimizer
+from saldo27.scheduler_config import SchedulerConfig
+from saldo27.exceptions import SchedulerError, ConstraintViolationError
+from saldo27.optimization_metrics import OptimizationMetrics
+from saldo27.operation_prioritizer import OperationPrioritizer
+from saldo27.progress_monitor import ProgressMonitor
+from saldo27.iterative_optimizer import IterativeOptimizer
+from saldo27.shift_tolerance_validator import ShiftToleranceValidator
+from saldo27.adaptive_iterations import AdaptiveIterationManager
+from saldo27.advanced_distribution_engine import AdvancedDistributionEngine
+from saldo27.strict_balance_optimizer import StrictBalanceOptimizer
 
 
 class SchedulerCore:
@@ -261,7 +261,7 @@ class SchedulerCore:
             self.scheduler._initialize_schedule_with_variable_shifts()
             
             # Create schedule builder
-            from schedule_builder import ScheduleBuilder
+            from saldo27.schedule_builder import ScheduleBuilder
             self.scheduler.schedule_builder = ScheduleBuilder(self.scheduler)
             
             logging.info(f"Schedule structure initialized with {len(self.scheduler.schedule)} dates")
@@ -1298,7 +1298,7 @@ class SchedulerCore:
             logging.info(f"  Fill rate: {(filled_shifts/total_shifts*100):.1f}%")
             
             # Import PDF exporter
-            from pdf_exporter import PDFExporter
+            from saldo27.pdf_exporter import PDFExporter
             
             # Prepare configuration for PDF exporter
             schedule_config = {

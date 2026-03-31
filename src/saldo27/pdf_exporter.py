@@ -5,8 +5,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch, cm # Use cm for better control maybe
 from calendar import monthcalendar
 from datetime import datetime, timedelta
-from utilities import numeric_sort_key
-from performance_cache import cached, time_function, monitor_performance
+from saldo27.utilities import numeric_sort_key
+from saldo27.performance_cache import cached, time_function, monitor_performance
 from collections import defaultdict
 import logging
 

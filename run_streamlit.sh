@@ -24,7 +24,7 @@ echo ""
 
 # Iniciar Streamlit con locale configurado
 echo "📡 Lanzando aplicación web en puerto 8501..."
-streamlit run app_streamlit.py --server.port 8501 --server.headless true --server.address 0.0.0.0
+streamlit run src/saldo27/app_streamlit.py --server.port 8501 --server.headless true --server.address 0.0.0.0
 
 echo ""
 echo "🌐 La aplicación está disponible en: http://localhost:8501"
