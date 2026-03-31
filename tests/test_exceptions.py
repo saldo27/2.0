@@ -1,11 +1,12 @@
 """Tests for saldo27.exceptions — exception hierarchy."""
 
 import pytest
+
 from saldo27.exceptions import (
-    SchedulerError,
     ConfigurationError,
     ConstraintViolationError,
     DataIntegrityError,
+    SchedulerError,
 )
 
 

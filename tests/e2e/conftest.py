@@ -1,8 +1,8 @@
 """Playwright fixtures for Streamlit e2e tests."""
 
+import socket
 import subprocess
 import time
-import socket
 
 import pytest
 
@@ -34,7 +34,10 @@ def streamlit_app(app_port):
     """Start the Streamlit app for the test session, tear down when done."""
     proc = subprocess.Popen(
         [
-            "uv", "run", "streamlit", "run",
+            "uv",
+            "run",
+            "streamlit",
+            "run",
             "src/saldo27/app_streamlit.py",
             f"--server.port={app_port}",
             "--server.headless=true",

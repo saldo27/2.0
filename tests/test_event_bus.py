@@ -1,8 +1,10 @@
 """Tests for saldo27.event_bus — pub/sub event system."""
 
+from datetime import datetime
+
 import pytest
-from datetime import datetime, timedelta
-from saldo27.event_bus import EventType, ScheduleEvent, EventBus, reset_event_bus
+
+from saldo27.event_bus import EventBus, EventType, ScheduleEvent, reset_event_bus
 
 
 @pytest.fixture(autouse=True)

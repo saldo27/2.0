@@ -1,9 +1,8 @@
 """Tests for saldo27.scheduler_config — configuration and logging."""
 
 import os
-import pytest
-from saldo27.scheduler_config import SchedulerConfig, setup_logging
 
+from saldo27.scheduler_config import SchedulerConfig, setup_logging
 
 # ── SchedulerConfig defaults ───────────────────────────────────────
 
