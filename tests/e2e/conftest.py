@@ -55,7 +55,11 @@ def streamlit_app(app_port):
     yield f"http://localhost:{app_port}"
 
     proc.terminate()
-    proc.wait(timeout=10)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
 
 
 @pytest.fixture
