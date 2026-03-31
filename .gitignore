@@ -119,6 +119,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# uv
+.python-version
+
 # Logs
 logs/
 
