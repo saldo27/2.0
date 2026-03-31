@@ -637,9 +637,12 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
                 pass
             
             if summary_lines:
-                _log_ph.code("\n".join(summary_lines), language=None)
+                log_text = "\n".join(summary_lines)
+                _log_ph.code(log_text, language=None)
+                st.session_state._sidebar_log_content = ('code', log_text)
         elif _log_ph and not success:
             _log_ph.warning("❌ Fallo en la generación")
+            st.session_state._sidebar_log_content = ('warning', "❌ Fallo en la generación")
         
         if success:
             if limitations['mode'] == 'DEMO':
@@ -1434,7 +1437,16 @@ with st.sidebar:
     st.markdown("---")
     sidebar_progress_container = st.container()
     sidebar_progress_container.caption("📋 **Log de Progreso**")
-    st.session_state._sidebar_log_placeholder = sidebar_progress_container.empty()
+    _new_log_ph = sidebar_progress_container.empty()
+    st.session_state._sidebar_log_placeholder = _new_log_ph
+    # Re-display persisted log content after a rerun
+    _saved_log = st.session_state.get('_sidebar_log_content')
+    if isinstance(_saved_log, tuple) and len(_saved_log) == 2:
+        _log_type, _log_text = _saved_log
+        if _log_type == 'code':
+            _new_log_ph.code(_log_text, language=None)
+        elif _log_type == 'warning':
+            _new_log_ph.warning(_log_text)
 
 # Tabs principales
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
