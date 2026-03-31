@@ -92,6 +92,27 @@ ignore = [
     "RUF013",  # implicit-optional — too noisy for existing signatures
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Existing source code — suppress noisy rules until incrementally cleaned up
+"src/saldo27/*.py" = [
+    "B007",    # unused-loop-control-variable — pervasive in scheduling loops
+    "B023",    # function-uses-loop-variable — closures in builder callbacks
+    "B904",    # raise-without-from — existing exception chains
+    "E722",    # bare-except — existing broad exception handlers
+    "E731",    # lambda-assignment — one instance, harmless
+    "E741",    # ambiguous-variable-name — single 'l' variable
+    "F401",    # unused-import — try/except availability checks
+    "F811",    # redefined-while-unused — duplicate method in schedule_builder
+    "F841",    # unused-variable — pervasive in existing code
+    "SIM103",  # needless-bool — readability preference
+    "SIM109",  # compare-with-tuple — minor style
+    "SIM110",  # reimplemented-builtin — one any() candidate
+    "SIM115",  # open-file-with-context-handler — existing pattern
+    "SIM118",  # in-dict-keys — .keys() calls
+    "RUF005",  # collection-literal-concatenation
+    "RUF059",  # unused-unpacked-variable
+]
+
 [tool.ruff.lint.isort]
 known-first-party = ["saldo27"]
 

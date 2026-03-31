@@ -19,7 +19,7 @@ def test_perfectly_balanced_schedule(validator, sample_schedule, sample_workers_
     schedule = {}
     day = 1
     for w in sample_workers_data:
-        for s in range(w["target_shifts"]):
+        for _s in range(w["target_shifts"]):
             date_key = f"2026-03-{day:02d}"
             if date_key not in schedule:
                 schedule[date_key] = {}

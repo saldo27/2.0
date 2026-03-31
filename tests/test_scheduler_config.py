@@ -39,7 +39,7 @@ def test_validate_default_config():
 
 
 def test_validate_empty_config():
-    is_valid, error = SchedulerConfig.validate_config({})
+    is_valid, _error = SchedulerConfig.validate_config({})
     # Empty config should either be invalid or use defaults
     assert isinstance(is_valid, bool)
 
