@@ -62,6 +62,8 @@ def streamlit_app(app_port):
 def app_page(page, streamlit_app):
     """Navigate to the running Streamlit app and wait for it to render."""
     page.goto(streamlit_app, wait_until="networkidle")
-    # Wait for the Streamlit app frame to be ready
-    page.wait_for_selector("[data-testid='stAppViewContainer']", timeout=15000)
+    # Wait for the Streamlit app to fully render (not just the container shell)
+    page.wait_for_selector("[data-testid='stAppViewContainer']", timeout=30000)
+    # Give Streamlit time to hydrate — in CI the first render is slow
+    page.wait_for_timeout(3000)
     return page
