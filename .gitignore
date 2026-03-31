@@ -133,8 +133,6 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Test files
-test_*.py
+# Debug/scratch files
 debug_*.py
 simple_*.py
-*_test.py

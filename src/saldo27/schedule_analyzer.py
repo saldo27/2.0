@@ -40,7 +40,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle  # type: ig
 from reportlab.lib.units import inch  # type: ignore
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image  # type: ignore
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT  # type: ignore
-from utilities import DateTimeUtils
+from .utilities import DateTimeUtils
 
 logger = logging.getLogger(__name__)
 

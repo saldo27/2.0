@@ -9,8 +9,8 @@ import logging
 from dataclasses import dataclass
 from copy import deepcopy
 
-from event_bus import get_event_bus, EventType, ScheduleEvent
-from exceptions import SchedulerError
+from .event_bus import get_event_bus, EventType, ScheduleEvent
+from .exceptions import SchedulerError
 
 
 @dataclass
@@ -395,7 +395,7 @@ class IncrementalUpdater:
         
         # CRITICAL: Check if either assignment is mandatory - mandatory assignments cannot be swapped
         if worker1:
-            from schedule_builder import ScheduleBuilder
+            from .schedule_builder import ScheduleBuilder
             # We need to check if worker1 has a mandatory assignment on shift_date1
             if hasattr(self.scheduler, 'schedule_builder') and self.scheduler.schedule_builder:
                 if self.scheduler.schedule_builder._is_mandatory(worker1, shift_date1):
