@@ -2,11 +2,11 @@
 from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Set, Optional, Tuple, Any, TYPE_CHECKING
-from .exceptions import SchedulerError
-from .bridge_manager import BridgeManager
+from saldo27.exceptions import SchedulerError
+from saldo27.bridge_manager import BridgeManager
 
 if TYPE_CHECKING:
-    from .scheduler import Scheduler
+    from saldo27.scheduler import Scheduler
 
 class DataManager:
     """Enhanced data management and tracking with performance optimizations"""
@@ -474,7 +474,7 @@ class DataManager:
                 mandatory_str = worker_data.get('mandatory_days', '')
                 if mandatory_str.strip():
                     try:
-                        from .utilities import DateTimeUtils
+                        from saldo27.utilities import DateTimeUtils
                         date_utils = DateTimeUtils()
                         mandatory_dates = date_utils.parse_dates(mandatory_str)
                         

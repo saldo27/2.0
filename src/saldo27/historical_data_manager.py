@@ -13,7 +13,7 @@ from typing import Dict, List, Set, Optional, Tuple, Any, Iterator
 from pathlib import Path
 import os
 from collections import defaultdict
-from .performance_cache import cached, time_function, monitor_performance, memoize
+from saldo27.performance_cache import cached, time_function, monitor_performance, memoize
 
 try:
     import pandas as pd
@@ -23,7 +23,7 @@ except ImportError:
     PANDAS_AVAILABLE = False
     logging.warning("Pandas not available. Historical data will use basic storage.")
 
-from .exceptions import SchedulerError
+from saldo27.exceptions import SchedulerError
 
 
 class HistoricalDataManager:
@@ -207,7 +207,7 @@ class HistoricalDataManager:
     def _get_cached_result(self, cache_key: str):
         """Get result from cache"""
         try:
-            from .performance_cache import get_cache
+            from saldo27.performance_cache import get_cache
             cache = get_cache()
             return cache.get(cache_key)
         except Exception as e:
@@ -217,7 +217,7 @@ class HistoricalDataManager:
     def _cache_result(self, cache_key: str, result, ttl: int = 1800):
         """Store result in cache"""
         try:
-            from .performance_cache import get_cache
+            from saldo27.performance_cache import get_cache
             cache = get_cache()
             cache.set(cache_key, result, ttl)
         except Exception as e:

@@ -11,9 +11,9 @@ from typing import Dict, List, Optional, Tuple, Any
 import json
 from pathlib import Path
 
-from .exceptions import SchedulerError
-from .historical_data_manager import HistoricalDataManager
-from .demand_forecaster import DemandForecaster
+from saldo27.exceptions import SchedulerError
+from saldo27.historical_data_manager import HistoricalDataManager
+from saldo27.demand_forecaster import DemandForecaster
 
 
 class PredictiveAnalyticsEngine:

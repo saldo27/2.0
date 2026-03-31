@@ -2,10 +2,10 @@
 from datetime import datetime, timedelta
 import logging
 from typing import Dict, Set, Optional, Tuple, Any, TYPE_CHECKING
-from .exceptions import SchedulerError
+from saldo27.exceptions import SchedulerError
 
 if TYPE_CHECKING:
-    from .scheduler import Scheduler
+    from saldo27.scheduler import Scheduler
 
 class ConstraintChecker:
     """Enhanced constraint checking logic with performance optimizations"""

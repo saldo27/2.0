@@ -6,7 +6,7 @@ import requests
 from zoneinfo import ZoneInfo
 from typing import List, Tuple, Optional, Set
 from functools import lru_cache
-from .performance_cache import cached, memoize
+from saldo27.performance_cache import cached, memoize
 
 def numeric_sort_key(item):
     """

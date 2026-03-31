@@ -9,11 +9,11 @@ import random
 _DEBUG = logging.getLogger().isEnabledFor(logging.DEBUG)
 import math
 from typing import Dict, List, Set, Optional, Tuple, Any, TYPE_CHECKING
-from .exceptions import SchedulerError
-from .adaptive_iterations import AdaptiveIterationManager
+from saldo27.exceptions import SchedulerError
+from saldo27.adaptive_iterations import AdaptiveIterationManager
 
 if TYPE_CHECKING:
-    from .scheduler import Scheduler
+    from saldo27.scheduler import Scheduler
 
 class ScheduleBuilder:
     """Enhanced schedule generation and improvement with performance optimizations"""

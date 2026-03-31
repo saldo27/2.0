@@ -6,14 +6,14 @@ import copy
 import json
 from typing import Dict, List, Set, Optional, Tuple, Any
 
-from .scheduler_config import setup_logging, SchedulerConfig
-from .constraint_checker import ConstraintChecker
-from .schedule_builder import ScheduleBuilder
-from .data_manager import DataManager
-from .utilities import DateTimeUtils
-from .statistics_calculator import StatisticsCalculator
-from .exceptions import SchedulerError, ConfigurationError, DataIntegrityError
-from .worker_eligibility import WorkerEligibilityTracker
+from saldo27.scheduler_config import setup_logging, SchedulerConfig
+from saldo27.constraint_checker import ConstraintChecker
+from saldo27.schedule_builder import ScheduleBuilder
+from saldo27.data_manager import DataManager
+from saldo27.utilities import DateTimeUtils
+from saldo27.statistics_calculator import StatisticsCalculator
+from saldo27.exceptions import SchedulerError, ConfigurationError, DataIntegrityError
+from saldo27.worker_eligibility import WorkerEligibilityTracker
 
 # Initialize logging using the configuration module
 setup_logging()
@@ -170,7 +170,7 @@ class Scheduler:
         self.real_time_engine = None
         if config.get('enable_real_time', False):
             try:
-                from .real_time_engine import RealTimeEngine
+                from saldo27.real_time_engine import RealTimeEngine
                 self.real_time_engine = RealTimeEngine(self)
                 logging.info("Real-time engine initialized")
             except ImportError:
@@ -181,8 +181,8 @@ class Scheduler:
         self.predictive_optimizer = None
         if config.get('enable_predictive_analytics', True):
             try:
-                from .predictive_analytics import PredictiveAnalyticsEngine
-                from .predictive_optimizer import PredictiveOptimizer
+                from saldo27.predictive_analytics import PredictiveAnalyticsEngine
+                from saldo27.predictive_optimizer import PredictiveOptimizer
                 
                 predictive_config = config.get('predictive_analytics_config', {})
                 self.predictive_analytics = PredictiveAnalyticsEngine(self, predictive_config)
@@ -231,7 +231,7 @@ class Scheduler:
         -------
         dict with keys "error" (str or None) and "summary" (per-worker stats).
         """
-        from .prior_schedule_handler import load_prior_schedule, summarize_prior_schedule
+        from saldo27.prior_schedule_handler import load_prior_schedule, summarize_prior_schedule
 
         holidays_set = set(self.holidays)
         prior_data = load_prior_schedule(
@@ -1888,7 +1888,7 @@ class Scheduler:
         Returns:
             bool: True if schedule generation was successful
         """
-        from .scheduler_core import SchedulerCore
+        from saldo27.scheduler_core import SchedulerCore
         
         # Create scheduler core for orchestration
         scheduler_core = SchedulerCore(self)
@@ -2757,7 +2757,7 @@ class Scheduler:
             
             # Publish event to notify that real-time features are fully active
             if hasattr(self.real_time_engine, 'event_bus'):
-                from .event_bus import EventType, ScheduleEvent
+                from saldo27.event_bus import EventType, ScheduleEvent
                 event = ScheduleEvent(
                     event_type=EventType.REAL_TIME_ACTIVATED,
                     data={'message': 'Real-time features fully activated', 'user_id': self.current_user}

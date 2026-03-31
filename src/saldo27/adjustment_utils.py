@@ -189,7 +189,7 @@ class TurnAdjustmentManager:
         if mandatory_str.strip():
             try:
                 # Usar el mismo método que el resto del código para parsear fechas
-                from .utilities import DateTimeUtils
+                from saldo27.utilities import DateTimeUtils
                 date_utils = DateTimeUtils()
                 mandatory_dates = date_utils.parse_dates(mandatory_str)
                 

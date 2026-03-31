@@ -3,10 +3,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, List, Set, Any, Optional
 from collections import defaultdict, Counter
-from .exceptions import SchedulerError
-from .performance_cache import cached, memoize, time_function, monitor_performance
+from saldo27.exceptions import SchedulerError
+from saldo27.performance_cache import cached, memoize, time_function, monitor_performance
 if TYPE_CHECKING:
-    from .scheduler import Scheduler
+    from saldo27.scheduler import Scheduler
 
 class StatisticsCalculator:
     """Calculates statistics and metrics for schedules"""

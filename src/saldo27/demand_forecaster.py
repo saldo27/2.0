@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Union
 import json
 import numpy as np
-from .performance_cache import cached, memoize, time_function, monitor_performance
+from saldo27.performance_cache import cached, memoize, time_function, monitor_performance
 
 # ML Dependencies with graceful fallback
 try:
@@ -27,7 +27,7 @@ except ImportError as e:
     ML_AVAILABLE = False
     logging.warning(f"ML libraries not available: {e}. Falling back to basic forecasting.")
 
-from .exceptions import SchedulerError
+from saldo27.exceptions import SchedulerError
 
 
 class DemandForecaster:

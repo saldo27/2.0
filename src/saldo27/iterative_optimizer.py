@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass
 
-from .shift_tolerance_validator import ShiftToleranceValidator
-from .balance_validator import BalanceValidator
-from .performance_cache import cached, time_function
+from saldo27.shift_tolerance_validator import ShiftToleranceValidator
+from saldo27.balance_validator import BalanceValidator
+from saldo27.performance_cache import cached, time_function
 
 @dataclass
 class OptimizationResult:

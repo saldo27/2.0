@@ -23,10 +23,10 @@ import logging
 import io
 from pathlib import Path
 import traceback
-from .license_manager import license_manager
-from .scheduler import Scheduler
-from .scheduler_config import SchedulerConfig, setup_logging
-from .utilities import DateTimeUtils
+from saldo27.license_manager import license_manager
+from saldo27.scheduler import Scheduler
+from saldo27.scheduler_config import SchedulerConfig, setup_logging
+from saldo27.utilities import DateTimeUtils
 
 # Suprimir debug output de librerías externas
 logging.getLogger('pdfplumber').setLevel(logging.WARNING)
@@ -68,13 +68,13 @@ APP_VERSION = "2.8"
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
 # pero PyInstaller necesita verlos explícitamente aquí
-from . import scheduler_core
-from . import iterative_optimizer
-from . import predictive_optimizer
-from . import balance_validator
-from . import adjustment_utils
-from . import pdf_exporter
-from .schedule_analyzer import CalendarFileProcessor, ScheduleAnalyzer, PDFReportGenerator
+from saldo27 import scheduler_core
+from saldo27 import iterative_optimizer
+from saldo27 import predictive_optimizer
+from saldo27 import balance_validator
+from saldo27 import adjustment_utils
+from saldo27 import pdf_exporter
+from saldo27.schedule_analyzer import CalendarFileProcessor, ScheduleAnalyzer, PDFReportGenerator
 print("✓ Módulos críticos importados explícitamente")
 # ==============================================
 
@@ -1955,7 +1955,7 @@ with tab2:
 
             # Importar PDFExporter de forma segura
             try:
-                from .pdf_exporter import PDFExporter
+                from saldo27.pdf_exporter import PDFExporter
             except ImportError:
                 st.error("Error: No se encontró el módulo pdf_exporter.py")
                 PDFExporter = None
