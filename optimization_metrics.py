@@ -367,30 +367,47 @@ class OptimizationMetrics:
             return 0.0
 
     def calculate_weekend_imbalance(self) -> float:
-        """Calcular el desbalance de fines de semana"""
+        """Calcular el desbalance de fines de semana.
+
+        Uses the same definition as the score component: Fri+Sat+Sun + holidays
+        + pre-holidays, normalised by work_percentage.
+        """
         try:
             if not self.scheduler.workers_data:
                 return 0.0
 
-            weekend_counts = []
+            holidays = getattr(self.scheduler, "holidays", set())
+            weekend_counts: list[float] = []
 
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
+                work_percentage = worker.get("work_percentage", 100)
                 assignments = self.scheduler.worker_assignments.get(worker_id, set())
 
-                weekend_count = sum(1 for date in assignments if hasattr(date, "weekday") and date.weekday() >= 5)
-                weekend_counts.append(weekend_count)
+                weekend_count = sum(
+                    1
+                    for date in assignments
+                    if hasattr(date, "weekday")
+                    and (
+                        date.weekday() >= 4  # Viernes, Sábado, Domingo
+                        or date in holidays  # Festivos
+                        or (date + timedelta(days=1)) in holidays  # Prefestivos
+                    )
+                )
+
+                if work_percentage > 0:
+                    weekend_counts.append(weekend_count * 100 / work_percentage)
 
             if not weekend_counts:
                 return 0.0
 
-            max_weekends = max(weekend_counts)
-            min_weekends = min(weekend_counts)
-
-            if max_weekends == 0:
+            mean_val = sum(weekend_counts) / len(weekend_counts)
+            if mean_val == 0:
                 return 0.0
 
-            return (max_weekends - min_weekends) / max_weekends
+            variance = sum((c - mean_val) ** 2 for c in weekend_counts) / len(weekend_counts)
+            cv = (variance ** 0.5) / mean_val
+            return cv
 
         except Exception as e:
             logging.error(f"Error calculating weekend imbalance: {e}")

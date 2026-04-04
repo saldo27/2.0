@@ -620,6 +620,9 @@ class SchedulerCore:
             best_loop_score = current_overall_score
             best_loop_state = None
 
+            # Track operations that were reverted so we skip them in later loops
+            reverted_ops: set[str] = set()
+
             while overall_improvement_made and improvement_loop_count < max_improvement_loops:
                 loop_start_time = datetime.now()
                 improvement_loop_count += 1
@@ -645,6 +648,16 @@ class SchedulerCore:
 
                 for operation_name, operation_func, priority in prioritized_operations:
                     try:
+                        # Skip operations that were reverted in a previous loop
+                        if operation_name in reverted_ops:
+                            logging.debug(f"Skipping {operation_name}: reverted in previous loop")
+                            operation_results[operation_name] = {
+                                "improved": False,
+                                "skipped": True,
+                                "reason": "reverted in previous loop",
+                            }
+                            continue
+
                         # Check if operation should be skipped
                         should_skip, skip_reason = self.prioritizer.should_skip_operation(operation_name, current_state)
 
@@ -708,6 +721,7 @@ class SchedulerCore:
                                 "improved": False,
                                 "reverted": True,
                             }
+                            reverted_ops.add(operation_name)
                             continue
 
                         if operation_made_change and operation_name != "synchronize_tracking_data":
@@ -721,6 +735,8 @@ class SchedulerCore:
                                     f"({improvement_ratio:.4f}, +{after_score - before_score:.2f})"
                                 )
                                 cycle_improvement_made = True
+                                # Clear reverted memory: state changed, operations may work now
+                                reverted_ops.clear()
                             else:
                                 logging.debug(f"⚠️  {operation_name}: mejora marginal ({improvement_ratio:.4f})")
 

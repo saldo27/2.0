@@ -121,9 +121,13 @@ class OperationPrioritizer:
                     ]
                 )
 
+            # Collect names of urgent ops already added
+            urgent_op_names = {name for name, _, _ in prioritized_operations}
+
             # Operaciones estándar con prioridades ajustadas
             standard_operations = self._get_standard_operations_with_adjusted_priority(
-                empty_shifts_count, workload_imbalance, weekend_imbalance
+                empty_shifts_count, workload_imbalance, weekend_imbalance,
+                urgent_op_names=urgent_op_names,
             )
 
             prioritized_operations.extend(standard_operations)
@@ -143,10 +147,12 @@ class OperationPrioritizer:
             return self._get_fallback_operations()
 
     def _get_standard_operations_with_adjusted_priority(
-        self, empty_shifts: int, workload_imbalance: float, weekend_imbalance: float
+        self, empty_shifts: int, workload_imbalance: float, weekend_imbalance: float,
+        urgent_op_names: set[str] | None = None,
     ) -> list[tuple[str, Callable, int]]:
         """Obtener operaciones estándar con prioridades ajustadas"""
 
+        urgent_op_names = urgent_op_names or set()
         operations = []
 
         # Ajustar prioridad de llenado de turnos vacíos
@@ -217,40 +223,48 @@ class OperationPrioritizer:
         elif weekend_imbalance > 0.10:
             weekend_priority += 1
 
-        operations.extend(
-            [
-                (
-                    "improve_weekend_distribution_1",
-                    self.scheduler.schedule_builder._improve_weekend_distribution,
-                    weekend_priority,
-                ),
-                (
-                    "distribute_holiday_shifts_proportionally",
-                    self.scheduler.schedule_builder.distribute_holiday_shifts_proportionally,
-                    self.base_priorities["distribute_holiday_shifts_proportionally"],
-                ),
-                (
-                    "distribute_bridge_shifts_proportionally",
-                    self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally,
-                    self.base_priorities["distribute_bridge_shifts_proportionally"],
-                ),
-                (
-                    "rebalance_weekend_distribution",
-                    self.scheduler.schedule_builder.rebalance_weekend_distribution,
-                    self.base_priorities["rebalance_weekend_distribution"],
-                ),
-                (
-                    "synchronize_tracking_data",
-                    self.scheduler.schedule_builder._synchronize_tracking_data,
-                    self.base_priorities["synchronize_tracking_data"],
-                ),
-                (
-                    "adjust_last_post_distribution",
-                    self.scheduler.schedule_builder._adjust_last_post_distribution,
-                    self.base_priorities["adjust_last_post_distribution"],
-                ),
-            ]
-        )
+        # Skip weekend ops already covered by improve_weekend_distribution_aggressive
+        has_aggressive_weekend = "improve_weekend_distribution_aggressive" in urgent_op_names
+        # Skip standard bridge op when urgent bridge ops are active
+        has_urgent_bridge = any(n.startswith("distribute_bridge_shifts_urgent") for n in urgent_op_names)
+
+        if not has_aggressive_weekend:
+            operations.append((
+                "improve_weekend_distribution_1",
+                self.scheduler.schedule_builder._improve_weekend_distribution,
+                weekend_priority,
+            ))
+
+        operations.append((
+            "distribute_holiday_shifts_proportionally",
+            self.scheduler.schedule_builder.distribute_holiday_shifts_proportionally,
+            self.base_priorities["distribute_holiday_shifts_proportionally"],
+        ))
+
+        if not has_urgent_bridge:
+            operations.append((
+                "distribute_bridge_shifts_proportionally",
+                self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally,
+                self.base_priorities["distribute_bridge_shifts_proportionally"],
+            ))
+
+        if not has_aggressive_weekend:
+            operations.append((
+                "rebalance_weekend_distribution",
+                self.scheduler.schedule_builder.rebalance_weekend_distribution,
+                self.base_priorities["rebalance_weekend_distribution"],
+            ))
+
+        operations.append((
+            "synchronize_tracking_data",
+            self.scheduler.schedule_builder._synchronize_tracking_data,
+            self.base_priorities["synchronize_tracking_data"],
+        ))
+        operations.append((
+            "adjust_last_post_distribution",
+            self.scheduler.schedule_builder._adjust_last_post_distribution,
+            self.base_priorities["adjust_last_post_distribution"],
+        ))
 
         return operations
 
