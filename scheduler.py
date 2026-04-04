@@ -1064,13 +1064,14 @@ class Scheduler:
     def _calculate_target_shifts(self):
         """
         Recalculate each worker's target_shifts by:
-          1) For workers with auto_calculate_shifts=True:
+          1) For workers with auto_calculate_shifts=False (manual):
+             - Use target_shifts as "guardias/mes" and multiply by number of months in period
+             - Calculated FIRST so their slots are reserved before auto distribution
+
+          2) For workers with auto_calculate_shifts=True:
              - Count slots they can work (based on work_periods & days_off)
              - Weight those slots by their work_percentage
-             - Allocate all schedule slots proportionally (largest‐remainder rounding)
-
-          2) For workers with auto_calculate_shifts=False:
-             - Use target_shifts as "guardias/mes" and multiply by number of months in period
+             - Allocate REMAINING slots (total - manual) proportionally (largest‐remainder rounding)
         """
         try:
             logging.info("Calculating target shifts based on availability and percentage")
@@ -1079,13 +1080,32 @@ class Scheduler:
             auto_calc_workers = [w for w in self.workers_data if w.get("auto_calculate_shifts", True)]
             manual_workers = [w for w in self.workers_data if not w.get("auto_calculate_shifts", True)]
 
-            # 1) AUTOMATIC CALCULATION for auto_calc_workers
+            # 1) MANUAL CALCULATION FIRST — reserve their slots before auto distribution
+            manual_slots_reserved = 0
+            if manual_workers:
+                manual_slots_reserved = self._calculate_manual_targets(manual_workers)
+
+            # 2) AUTOMATIC CALCULATION for auto_calc_workers (using remaining slots)
             if auto_calc_workers:
                 # Total open slots in the schedule (variable shifts considered)
                 total_slots = sum(len(slots) for slots in self.schedule.values())
                 if total_slots <= 0:
                     logging.warning("No slots in schedule; skipping allocation")
                 else:
+                    # Reserve slots for manual workers
+                    slots_for_auto = total_slots - manual_slots_reserved
+                    if slots_for_auto < 0:
+                        logging.error(
+                            f"Manual targets ({manual_slots_reserved}) exceed total slots ({total_slots})! "
+                            f"Clamping to 0 for auto workers."
+                        )
+                        slots_for_auto = 0
+                    elif manual_slots_reserved > 0:
+                        logging.info(
+                            f"Reserving {manual_slots_reserved} slots for manual workers. "
+                            f"Auto workers share {slots_for_auto}/{total_slots} slots."
+                        )
+
                     # Compute available_slots per worker
                     available_slots = {}
                     for w in auto_calc_workers:
@@ -1119,12 +1139,12 @@ class Scheduler:
 
                     total_weight = sum(weights) or 1.0
 
-                    # Compute exact fractional targets
-                    exact_targets = [wgt / total_weight * total_slots for wgt in weights]
+                    # Compute exact fractional targets using slots available for auto workers
+                    exact_targets = [wgt / total_weight * slots_for_auto for wgt in weights]
 
                     # Largest-remainder rounding
                     floors = [int(x) for x in exact_targets]
-                    remainder = int(total_slots - sum(floors))
+                    remainder = int(slots_for_auto - sum(floors))
                     fracs = sorted(
                         enumerate(exact_targets), key=lambda ix: exact_targets[ix[0]] - floors[ix[0]], reverse=True
                     )
@@ -1156,70 +1176,71 @@ class Scheduler:
                         else:
                             logging.info(f"Worker {w['id']} (AUTO): target_shifts={adjusted}")
 
-            # 2) MANUAL CALCULATION for manual_workers (guardias/mes)
-            if manual_workers:
-                # Calculate proportional months: only count full-month
-                # fractions based on the actual days of each calendar month
-                # that fall within the period.
-                import calendar
-
-                proportional_months = 0.0
-                cur_year, cur_month = self.start_date.year, self.start_date.month
-                end_year, end_month = self.end_date.year, self.end_date.month
-                while (cur_year, cur_month) <= (end_year, end_month):
-                    days_in_month = calendar.monthrange(cur_year, cur_month)[1]
-                    month_start = datetime(cur_year, cur_month, 1)
-                    month_end = datetime(cur_year, cur_month, days_in_month)
-                    effective_start = max(month_start, self.start_date)
-                    effective_end = min(month_end, self.end_date)
-                    days_covered = (effective_end - effective_start).days + 1
-                    fraction = days_covered / days_in_month
-                    proportional_months += fraction
-                    logging.debug(
-                        f"Manual month calc: {cur_year}-{cur_month:02d} → "
-                        f"{days_covered}/{days_in_month} days = {fraction:.3f} months"
-                    )
-                    cur_month += 1
-                    if cur_month > 12:
-                        cur_month = 1
-                        cur_year += 1
-
-                logging.info(f"Manual target calculation: {proportional_months:.2f} proportional months in period")
-
-                for w in manual_workers:
-                    wid = w["id"]
-                    # CRITICAL: Use _original_target_shifts if available (re-call safety)
-                    # On first call, store the original guardias/mes value so re-calls
-                    # don't read the already-overwritten target_shifts.
-                    if "_original_target_shifts" not in w:
-                        w["_original_target_shifts"] = w.get("target_shifts", 0)
-                    guardias_per_mes = w["_original_target_shifts"]
-                    raw_target = round(guardias_per_mes * proportional_months)
-
-                    mand_count = 0
-                    mand_str = w.get("mandatory_days", "").strip()
-                    if mand_str:
-                        try:
-                            mand_dates = self.date_utils.parse_dates(mand_str)
-                            mand_count = sum(1 for d in mand_dates if self.start_date <= d <= self.end_date)
-                        except Exception as e:
-                            logging.error(f"Failed to parse mandatory_days for {wid}: {e}")
-
-                    adjusted = max(0, raw_target - mand_count)
-                    w["target_shifts"] = adjusted
-                    w["_raw_target"] = raw_target
-                    w["_mandatory_count"] = mand_count
-
-                    logging.info(
-                        f"Worker {wid} (MANUAL): {guardias_per_mes} guardias/mes * {proportional_months:.2f} meses = {raw_target}, "
-                        f"Mandatory={mand_count}, Adjusted target_shifts={adjusted}"
-                    )
-
             return True
 
         except Exception as e:
-            logging.error(f"Error in target calculation: {e}", exc_info=True)
+            logging.error(f"Error calculating target shifts: {e}")
             return False
+
+    def _calculate_manual_targets(self, manual_workers: list) -> int:
+        """
+        Calculate targets for manual workers (guardias/mes) and return the
+        total number of slots they need (raw targets including mandatory).
+        """
+        import calendar
+
+        proportional_months = 0.0
+        cur_year, cur_month = self.start_date.year, self.start_date.month
+        end_year, end_month = self.end_date.year, self.end_date.month
+        while (cur_year, cur_month) <= (end_year, end_month):
+            days_in_month = calendar.monthrange(cur_year, cur_month)[1]
+            month_start = datetime(cur_year, cur_month, 1)
+            month_end = datetime(cur_year, cur_month, days_in_month)
+            effective_start = max(month_start, self.start_date)
+            effective_end = min(month_end, self.end_date)
+            days_covered = (effective_end - effective_start).days + 1
+            fraction = days_covered / days_in_month
+            proportional_months += fraction
+            logging.debug(
+                f"Manual month calc: {cur_year}-{cur_month:02d} → "
+                f"{days_covered}/{days_in_month} days = {fraction:.3f} months"
+            )
+            cur_month += 1
+            if cur_month > 12:
+                cur_month = 1
+                cur_year += 1
+
+        logging.info(f"Manual target calculation: {proportional_months:.2f} proportional months in period")
+
+        total_manual_slots = 0
+        for w in manual_workers:
+            wid = w["id"]
+            if "_original_target_shifts" not in w:
+                w["_original_target_shifts"] = w.get("target_shifts", 0)
+            guardias_per_mes = w["_original_target_shifts"]
+            raw_target = round(guardias_per_mes * proportional_months)
+
+            mand_count = 0
+            mand_str = w.get("mandatory_days", "").strip()
+            if mand_str:
+                try:
+                    mand_dates = self.date_utils.parse_dates(mand_str)
+                    mand_count = sum(1 for d in mand_dates if self.start_date <= d <= self.end_date)
+                except Exception as e:
+                    logging.error(f"Failed to parse mandatory_days for {wid}: {e}")
+
+            adjusted = max(0, raw_target - mand_count)
+            w["target_shifts"] = adjusted
+            w["_raw_target"] = raw_target
+            w["_mandatory_count"] = mand_count
+            total_manual_slots += raw_target
+
+            logging.info(
+                f"Worker {wid} (MANUAL): {guardias_per_mes} guardias/mes * {proportional_months:.2f} meses = {raw_target}, "
+                f"Mandatory={mand_count}, Adjusted target_shifts={adjusted}"
+            )
+
+        return total_manual_slots
 
     def _calculate_monthly_targets(self):
         """
