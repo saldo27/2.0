@@ -786,7 +786,14 @@ class SchedulerCore:
                 )
 
                 # Record iteration for trend analysis
-                self.metrics.record_iteration_result(improvement_loop_count, operation_results, current_overall_score)
+                sa_accepts_in_loop = sum(
+                    1 for r in operation_results.values()
+                    if isinstance(r, dict) and r.get("sa_accepted")
+                )
+                self.metrics.record_iteration_result(
+                    improvement_loop_count, operation_results, current_overall_score,
+                    sa_accepts=sa_accepts_in_loop, best_score=best_loop_score,
+                )
 
                 # Check if should continue with smart early stopping
                 should_continue, reason = self.metrics.should_continue_optimization(improvement_loop_count)

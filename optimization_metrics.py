@@ -423,13 +423,23 @@ class OptimizationMetrics:
             logging.error(f"Error calculating weekend imbalance: {e}")
             return 0.0
 
-    def record_iteration_result(self, iteration: int, operation_results: dict[str, Any], overall_score: float) -> None:
+    def record_iteration_result(
+        self,
+        iteration: int,
+        operation_results: dict[str, Any],
+        overall_score: float,
+        *,
+        sa_accepts: int = 0,
+        best_score: float | None = None,
+    ) -> None:
         """Registrar resultados de una iteración para análisis de tendencias"""
         try:
             iteration_data = {
                 "iteration": iteration,
                 "timestamp": datetime.now(),
                 "overall_score": overall_score,
+                "best_score": best_score if best_score is not None else overall_score,
+                "sa_accepts": sa_accepts,
                 "operations": operation_results.copy(),
                 "improvements_count": sum(
                     1
@@ -449,7 +459,10 @@ class OptimizationMetrics:
 
     def should_continue_optimization(self, current_iteration: int) -> tuple[bool, str]:
         """
-        Determinar si debe continuar la optimización basándose en tendencias
+        Determinar si debe continuar la optimización basándose en tendencias.
+
+        Usa best_score (checkpoint) en vez de overall_score para evaluar progreso,
+        ya que SA puede aceptar caídas temporales que no representan estancamiento real.
 
         Returns:
             Tuple[bool, str]: (should_continue, reason)
@@ -461,35 +474,46 @@ class OptimizationMetrics:
             # Analizar últimas 3 iteraciones
             recent_iterations = self.iteration_history[-3:]
 
+            # Count SA accepts in the window — SA is actively exploring
+            sa_accepts_in_window = sum(it.get("sa_accepts", 0) for it in recent_iterations)
+
             # Verificar si hay mejoras en las últimas 3 iteraciones
             recent_improvements = [iteration["improvements_count"] for iteration in recent_iterations]
 
-            if sum(recent_improvements) == 0:
+            # If SA accepted drops, count those as "exploration activity"
+            if sum(recent_improvements) == 0 and sa_accepts_in_window == 0:
                 return False, "Sin mejoras en las últimas 3 iteraciones"
 
-            # Analizar tendencia de scores
-            recent_scores = [iteration["overall_score"] for iteration in recent_iterations]
+            # Use best_score (checkpoint) for trend analysis — immune to SA drops
+            recent_best_scores = [it.get("best_score", it["overall_score"]) for it in recent_iterations]
 
-            # Calcular mejora promedio
+            # Calcular mejora promedio sobre best scores
             score_improvements = []
-            for i in range(1, len(recent_scores)):
-                if recent_scores[i - 1] > 0:
-                    improvement = (recent_scores[i] - recent_scores[i - 1]) / recent_scores[i - 1]
+            for i in range(1, len(recent_best_scores)):
+                if recent_best_scores[i - 1] > 0:
+                    improvement = (recent_best_scores[i] - recent_best_scores[i - 1]) / recent_best_scores[i - 1]
                     score_improvements.append(improvement)
 
             if score_improvements:
                 avg_improvement = sum(score_improvements) / len(score_improvements)
 
-                # Si la mejora promedio es muy pequeña, considerar parar
-                if avg_improvement < 0.001:  # 0.1% mejora promedio
+                # Si la mejora promedio es muy pequeña y SA no está explorando, parar
+                if avg_improvement < 0.001 and sa_accepts_in_window == 0:
                     return False, f"Mejoras marginales detectadas (avg: {avg_improvement:.4f})"
 
-            # Verificar si se alcanzó un score excelente
-            current_score = recent_scores[-1]
-            if current_score >= 95.0:
-                return False, f"Score excelente alcanzado: {current_score:.2f}"
+                # Even with SA active, stop if best_score is completely flat for 3 iterations
+                if avg_improvement < 0.0001:
+                    return False, (
+                        f"Best score estancado (avg: {avg_improvement:.4f}, "
+                        f"SA accepts: {sa_accepts_in_window})"
+                    )
 
-            return True, f"Continuando optimización (score actual: {current_score:.2f})"
+            # Verificar si se alcanzó un score excelente
+            current_best = recent_best_scores[-1]
+            if current_best >= 95.0:
+                return False, f"Score excelente alcanzado: {current_best:.2f}"
+
+            return True, f"Continuando optimización (best: {current_best:.2f}, SA accepts: {sa_accepts_in_window})"
 
         except Exception as e:
             logging.error(f"Error in should_continue_optimization: {e}")
