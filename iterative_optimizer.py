@@ -538,51 +538,11 @@ class IterativeOptimizer:
                         optimized_schedule, workers_data, schedule_config, scheduler_core
                     )
 
-        # Strategy 3: Apply random perturbations based on intensity - more aggressive for persistent violations
-        total_violations = len(general_violations) + len(weekend_violations)
-        if total_violations > 4 or self.stagnation_counter > 0 or self.no_change_counter > 0:  # Active from iteration 1
-            # Scale perturbation intensity based on violation count and stagnation
-            base_intensity = intensity * 1.0  # Increased from 0.8
-            violation_multiplier = min(3.0, 1.0 + (total_violations / 6.0))  # More aggressive scaling
-            stagnation_multiplier = 1.0 + (self.stagnation_counter * 0.4)  # Increased from 0.3
-
-            perturbation_intensity = min(
-                base_intensity * violation_multiplier * stagnation_multiplier, 0.8
-            )  # Higher max from 0.6 to 0.8
-
-            logging.info(
-                f"   🎲 Enhanced perturbations - violations: {total_violations}, stagnation: {self.stagnation_counter}, intensity: {perturbation_intensity:.3f}"
-            )
-
-            optimized_schedule = self._apply_random_perturbations(
-                optimized_schedule, workers_data, schedule_config, intensity=perturbation_intensity
-            )
-
-        # Strategy 4: Forced redistribution for high stagnation - MORE AGGRESSIVE
-        if self.stagnation_counter >= 1 and total_violations > 4:
-            # Re-validate to get fresh violation data for forced redistribution
-            if validator:
-                fresh_report = self._create_validation_report(validator, optimized_schedule)
-                fresh_general = fresh_report.get("general_shift_violations", [])
-                fresh_weekend = fresh_report.get("weekend_shift_violations", [])
-                all_violations = fresh_general + fresh_weekend
-                total_violations = len(all_violations)
-                logging.info(
-                    f"   🚨 Applying forced redistribution ({total_violations} current violations after strategies)"
-                )
-            else:
-                all_violations = general_violations + weekend_violations
-
-            optimized_schedule = self._apply_forced_redistribution(
-                optimized_schedule, all_violations, workers_data, schedule_config
-            )
-
-            # Strategy 4B: Double-pass for persistent violations
-            if self.stagnation_counter >= 3 and total_violations > 2:
-                logging.info("   🔥 Double-pass forced redistribution for persistent violations")
-                optimized_schedule = self._apply_forced_redistribution(
-                    optimized_schedule, general_violations + weekend_violations, workers_data, schedule_config
-                )
+        # Strategy 3 & 4 (SA perturbations + forced redistribution) DISABLED.
+        # These massive random swaps destroy the carefully balanced schedule
+        # built by Phase 3 (scheduler_core). The targeted strategies above
+        # (redistribution, weekend swaps, rotation, chain, ejection-chain)
+        # are sufficient and much more surgical.
 
         return optimized_schedule
 

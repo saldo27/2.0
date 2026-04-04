@@ -3995,17 +3995,26 @@ class ScheduleBuilder:
 
                         if score_fn is not None:
                             new_score = score_fn()
-                            if new_score <= best_score + 1e-9:
-                                # Revert — not strictly better
+                            # Strict improvement → accept and raise the bar
+                            if new_score > best_score + 1e-9:
+                                best_score = new_score
+                            elif new_score >= best_score - 0.05:
+                                # Near-neutral: the swap improves weekend balance
+                                # (by design) with at most a tiny composite drop.
+                                # Accept it but keep the bar unchanged so we don't
+                                # accumulate degradation across many swaps.
+                                pass
+                            else:
+                                # Drop too large — revert
                                 self._execute_worker_swap(light_wk, d_h, p_h, heavy_wk, d_l, p_l)
                                 continue
-                            best_score = new_score
 
                         total_swaps += 1
+                        cur_score = new_score if score_fn is not None else best_score
                         logging.info(
                             f"Multi-obj swap: {heavy_wk}({d_h.strftime('%Y-%m-%d')} wknd) "
                             f"↔ {light_wk}({d_l.strftime('%Y-%m-%d')} wday) "
-                            f"score={best_score:.2f}"
+                            f"score={cur_score:.2f}"
                         )
                         swapped = True
                         # Refresh stats for these workers
