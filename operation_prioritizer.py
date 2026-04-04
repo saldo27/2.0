@@ -173,6 +173,14 @@ class OperationPrioritizer:
 
         operations.append(("balance_workloads", self.scheduler.schedule_builder._balance_workloads, workload_priority))
 
+        # Workload refinement via two-way swaps (score-aware)
+        _score_fn_wl = self.metrics.calculate_overall_schedule_score
+        operations.append((
+            "refine_workload_balance",
+            lambda: self.scheduler.schedule_builder.refine_workload_balance(score_fn=_score_fn_wl),
+            workload_priority - 1,  # Run right after main balance
+        ))
+
         # Balance de días de semana
         operations.append(
             (
@@ -249,16 +257,34 @@ class OperationPrioritizer:
             ))
 
         if not has_aggressive_weekend:
+            _score_fn = self.metrics.calculate_overall_schedule_score
             operations.append((
                 "rebalance_weekend_distribution",
-                self.scheduler.schedule_builder.rebalance_weekend_distribution,
+                lambda: self.scheduler.schedule_builder.rebalance_weekend_distribution(score_fn=_score_fn),
                 self.base_priorities["rebalance_weekend_distribution"],
+            ))
+            operations.append((
+                "swap_weekday_weekend",
+                lambda: self.scheduler.schedule_builder.swap_weekday_weekend_between_workers(score_fn=_score_fn),
+                self.base_priorities["rebalance_weekend_distribution"] + 1,  # Run right before rebalance
             ))
 
         operations.append((
             "synchronize_tracking_data",
             self.scheduler.schedule_builder._synchronize_tracking_data,
             self.base_priorities["synchronize_tracking_data"],
+        ))
+        # Multi-objective swaps: cross-worker date swaps improving 2+ components
+        _score_fn_mo = self.metrics.calculate_overall_schedule_score
+        operations.append((
+            "multi_objective_swap",
+            lambda: self.scheduler.schedule_builder.multi_objective_swap(score_fn=_score_fn_mo),
+            9,  # High priority — runs before post-rotation refinement
+        ))
+        operations.append((
+            "optimize_post_rotation",
+            self.scheduler.schedule_builder.optimize_post_rotation,
+            8,  # Run after balance ops, before last-post adjustment
         ))
         operations.append((
             "adjust_last_post_distribution",
@@ -275,7 +301,9 @@ class OperationPrioritizer:
             # Run the standard method first
             result1 = self.scheduler.schedule_builder._improve_weekend_distribution()
             # Then run the proportional rebalancing (uses weekend_tolerance from config)
-            result2 = self.scheduler.schedule_builder.rebalance_weekend_distribution()
+            result2 = self.scheduler.schedule_builder.rebalance_weekend_distribution(
+                score_fn=self.metrics.calculate_overall_schedule_score
+            )
             return result1 or result2
         except Exception as e:
             logging.error(f"Error en improve_weekend_distribution_aggressive: {e}")
@@ -293,7 +321,7 @@ class OperationPrioritizer:
                 self.scheduler.schedule_builder.distribute_holiday_shifts_proportionally,
                 4,
             ),
-            ("rebalance_weekend_distribution", self.scheduler.schedule_builder.rebalance_weekend_distribution, 3),
+            ("rebalance_weekend_distribution", lambda: self.scheduler.schedule_builder.rebalance_weekend_distribution(score_fn=self.metrics.calculate_overall_schedule_score), 3),
             ("synchronize_tracking_data", self.scheduler.schedule_builder._synchronize_tracking_data, 2),
             ("adjust_last_post_distribution", self.scheduler.schedule_builder._adjust_last_post_distribution, 1),
         ]

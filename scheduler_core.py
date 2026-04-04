@@ -8,6 +8,7 @@ extracted from the original Scheduler class to improve maintainability and separ
 import copy
 import hashlib
 import logging
+import math
 import random
 from datetime import datetime
 from typing import Any
@@ -613,7 +614,7 @@ class SchedulerCore:
                 max_improvement_loops = 120
 
             # Calculate initial score for comparison
-            current_overall_score = self.metrics.calculate_overall_schedule_score()
+            current_overall_score = self.metrics.calculate_overall_schedule_score(log_components=True)
             logging.info(f"Score inicial: {current_overall_score:.2f}")
 
             # Checkpoint: track best score seen during the loop so we can rollback
@@ -622,6 +623,11 @@ class SchedulerCore:
 
             # Track operations that were reverted so we skip them in later loops
             reverted_ops: set[str] = set()
+
+            # Simulated Annealing parameters
+            sa_temperature_start = 1.0
+            sa_cooling_rate = 0.7
+            sa_max_drop = -2.0  # never accept a drop worse than this
 
             while overall_improvement_made and improvement_loop_count < max_improvement_loops:
                 loop_start_time = datetime.now()
@@ -702,8 +708,30 @@ class SchedulerCore:
                         # Evaluate improvement quality
                         after_score = self.metrics.calculate_overall_schedule_score()
 
-                        # Per-operation rollback: revert if operation worsened the score
+                        # Per-operation rollback with Simulated Annealing
                         if op_checkpoint and operation_made_change and after_score < before_score - 0.001:
+                            delta = after_score - before_score  # negative
+                            sa_temp = sa_temperature_start * (sa_cooling_rate ** (improvement_loop_count - 1))
+                            # SA: probabilistically accept small drops to escape local optima
+                            sa_accept = (
+                                delta >= sa_max_drop
+                                and sa_temp > 0.01
+                                and random.random() < math.exp(delta / sa_temp)
+                            )
+                            if sa_accept:
+                                logging.info(
+                                    f"🎲 SA accepted {operation_name}: "
+                                    f"{before_score:.2f} → {after_score:.2f} "
+                                    f"(Δ={delta:.2f}, T={sa_temp:.3f})"
+                                )
+                                # Don't add to reverted_ops — allow re-execution
+                                cycle_improvement_made = True  # keep loop alive
+                                operation_results[operation_name] = {
+                                    "improved": False,
+                                    "sa_accepted": True,
+                                }
+                                continue
+                            # Revert: SA rejected or drop too large
                             self.scheduler.schedule = op_checkpoint["schedule"]
                             self.scheduler.worker_assignments = op_checkpoint["assignments"]
                             self.scheduler.worker_shift_counts = op_checkpoint["counts"]
@@ -750,7 +778,7 @@ class SchedulerCore:
                         operation_results[operation_name] = {"improved": False, "error": str(e)}
 
                 # Update current score after all operations
-                current_overall_score = self.metrics.calculate_overall_schedule_score()
+                current_overall_score = self.metrics.calculate_overall_schedule_score(log_components=True)
 
                 # Track iteration progress with enhanced monitoring
                 progress_data = self.progress_monitor.track_iteration_progress(

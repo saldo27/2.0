@@ -42,11 +42,11 @@ class OptimizationMetrics:
             logging.warning(f"Error generating schedule hash: {e}")
             return datetime.now().isoformat()  # Fallback
 
-    def calculate_overall_schedule_score(self) -> float:
+    def calculate_overall_schedule_score(self, log_components: bool = False) -> float:
         """Calcular un score general del schedule actual"""
         try:
             current_hash = self.get_schedule_hash()
-            if current_hash == self.schedule_hash and "overall_score" in self.cached_metrics:
+            if not log_components and current_hash == self.schedule_hash and "overall_score" in self.cached_metrics:
                 return self.cached_metrics["overall_score"]
 
             # Componentes del score
@@ -72,6 +72,16 @@ class OptimizationMetrics:
                 + post_rotation_score * weights["post_rotation"]
                 - constraint_violations_penalty * weights["constraint_penalty"]
             )
+
+            if log_components:
+                logging.info(
+                    f"📊 Score components: "
+                    f"fill={fill_rate_score:.1f}(×.35={fill_rate_score * 0.35:.1f}) "
+                    f"workload={workload_balance_score:.1f}(×.25={workload_balance_score * 0.25:.1f}) "
+                    f"weekend={weekend_balance_score:.1f}(×.15={weekend_balance_score * 0.15:.1f}) "
+                    f"post_rot={post_rotation_score:.1f}(×.15={post_rotation_score * 0.15:.1f}) "
+                    f"penalty={constraint_violations_penalty:.1f}(×.10={constraint_violations_penalty * 0.10:.1f})"
+                )
 
             # Cachear resultado
             self.schedule_hash = current_hash

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 def _DEBUG() -> bool:
     return logging.getLogger().isEnabledFor(logging.DEBUG)
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from saldo27.adaptive_iterations import AdaptiveIterationManager
@@ -961,31 +962,22 @@ class ScheduleBuilder:
         Worker2 moves from (date2, post2) to (date1, post1)
         """
         try:
-            # Remove both workers from their original positions (update tracking)
-            self.scheduler._update_tracking_data(worker1_id, date1, post1, removing=True)
-            self.scheduler._update_tracking_data(worker2_id, date2, post2, removing=True)
-
+            # 1. Clear schedule slots FIRST so sync checks inside
+            #    _update_tracking_data see the worker already gone.
             self.schedule[date1][post1] = None
             self.schedule[date2][post2] = None
 
-            if worker1_id in self.worker_assignments and date1 in self.worker_assignments[worker1_id]:
-                self.worker_assignments[worker1_id].remove(date1)
-            if worker2_id in self.worker_assignments and date2 in self.worker_assignments[worker2_id]:
-                self.worker_assignments[worker2_id].remove(date2)
+            # 2. Remove both workers from tracking
+            #    (_update_tracking_data also removes from worker_assignments)
+            self.scheduler._update_tracking_data(worker1_id, date1, post1, removing=True)
+            self.scheduler._update_tracking_data(worker2_id, date2, post2, removing=True)
 
-            # Place them in their new positions
+            # 3. Place them in their new schedule positions
             self.schedule[date1][post1] = worker2_id
             self.schedule[date2][post2] = worker1_id
 
-            if worker1_id not in self.worker_assignments:
-                self.worker_assignments[worker1_id] = set()
-            if worker2_id not in self.worker_assignments:
-                self.worker_assignments[worker2_id] = set()
-
-            self.worker_assignments[worker1_id].add(date2)
-            self.worker_assignments[worker2_id].add(date1)
-
-            # Update tracking data for the new positions
+            # 4. Update tracking data for the new positions
+            #    (_update_tracking_data also adds to worker_assignments)
             self.scheduler._update_tracking_data(worker2_id, date1, post1, removing=False)
             self.scheduler._update_tracking_data(worker1_id, date2, post2, removing=False)
 
@@ -2923,17 +2915,12 @@ class ScheduleBuilder:
                         others_now = [
                             w for i, w in enumerate(self.schedule.get(date_val, [])) if i != post_val and w is not None
                         ]
-                        if not self._check_incompatibility_with_list(worker_id_to_assign, others_now):
-                            pass
-                        # CRITICAL FIX: Add comprehensive constraint check before assignment
-                        elif not self._can_assign_worker(worker_id_to_assign, date_val, post_val):
-                            pass
-                        # CRITICAL: Check tolerance before assignment
-                        # Phase 1 (relax 0-1): ±10% objective - NEVER violate
-                        # Phase 2 (relax 2+): ±12% limit - NEVER violate (absolute limit)
-                        # NO relaxation beyond ±12%, that's the absolute maximum
-                        elif self._would_violate_tolerance(
-                            worker_id_to_assign, date_val, allow_relaxation=(relax_lvl_attempt >= 2)
+                        if (
+                            not self._check_incompatibility_with_list(worker_id_to_assign, others_now)
+                            or not self._can_assign_worker(worker_id_to_assign, date_val, post_val)
+                            or self._would_violate_tolerance(
+                                worker_id_to_assign, date_val, allow_relaxation=(relax_lvl_attempt >= 2)
+                            )
                         ):
                             pass
                         else:
@@ -3715,6 +3702,330 @@ class ScheduleBuilder:
         if changes_made > 0:
             self._save_current_as_best()
         return changes_made > 0
+
+    def refine_workload_balance(self, score_fn: Callable[[], float] | None = None) -> bool:
+        """Fine-tune workload balance via two-way swaps between workers.
+
+        Unlike ``_balance_workloads`` (which does one-way moves and requires
+        ±1.0 normalized deviation), this targets smaller imbalances by swapping
+        a shift from a slightly-over worker with a shift from a slightly-under
+        worker.  Both keep the same total count, but the normalized balance
+        improves because their ``work_percentage`` differs.
+
+        Only accepts swaps that pass all constraints AND (optionally) improve
+        the composite score.
+        """
+        self._ensure_data_integrity()
+
+        # ── Build normalized counts ──
+        worker_norm: dict[str, float] = {}
+        worker_pct: dict[str, float] = {}
+        for w in self.workers_data:
+            wid = w["id"]
+            pct = w.get("work_percentage", 100)
+            count = len(self.worker_assignments.get(wid, set()))
+            worker_pct[wid] = pct
+            worker_norm[wid] = (count * 100 / pct) if pct > 0 else 0.0
+
+        if not worker_norm:
+            return False
+
+        avg_norm = sum(worker_norm.values()) / len(worker_norm)
+
+        # Workers above and below average (any amount)
+        over = [(wid, worker_norm[wid] - avg_norm)
+                for wid in worker_norm if worker_norm[wid] > avg_norm + 0.3]
+        under = [(wid, avg_norm - worker_norm[wid])
+                 for wid in worker_norm if worker_norm[wid] < avg_norm - 0.3]
+
+        if not over or not under:
+            logging.info("Workload refinement: already balanced within 0.3")
+            return False
+
+        over.sort(key=lambda x: x[1], reverse=True)
+        under.sort(key=lambda x: x[1], reverse=True)
+
+        schedule = self.scheduler.schedule
+        best_score = score_fn() if score_fn else None
+        total_swaps = 0
+        reverted = 0
+        max_swaps = 20
+
+        for over_id, _ in over:
+            if total_swaps >= max_swaps:
+                break
+
+            over_dates = sorted(self.worker_assignments.get(over_id, set()))
+            # Shuffle to avoid bias
+            random.shuffle(over_dates)
+
+            for under_id, _ in under:
+                if total_swaps >= max_swaps:
+                    break
+                # Only useful if they have different work_percentage
+                if worker_pct[over_id] == worker_pct[under_id]:
+                    continue
+
+                under_dates = sorted(self.worker_assignments.get(under_id, set()))
+                random.shuffle(under_dates)
+
+                swapped = False
+                for d_over in over_dates[:15]:  # limit search breadth
+                    if swapped:
+                        break
+                    if not self._can_modify_assignment(over_id, d_over, "workload_refine"):
+                        continue
+                    if d_over not in schedule or over_id not in schedule[d_over]:
+                        continue
+                    p_over = schedule[d_over].index(over_id)
+
+                    for d_under in under_dates[:15]:
+                        if d_under == d_over:
+                            continue  # Same-date swap only trades posts, not useful
+                        if not self._can_modify_assignment(under_id, d_under, "workload_refine"):
+                            continue
+                        if d_under not in schedule or under_id not in schedule[d_under]:
+                            continue
+                        p_under = schedule[d_under].index(under_id)
+
+                        if not self._can_worker_swap(over_id, d_over, p_over, under_id, d_under, p_under):
+                            continue
+
+                        # Verify the swap actually improves normalized balance
+                        # After swap: over_id loses d_over, gains d_under (count unchanged)
+                        # But we're doing worker-worker swap so both keep same count
+                        # The value comes from the score_fn checking composite improvement
+
+                        self._execute_worker_swap(over_id, d_over, p_over, under_id, d_under, p_under)
+
+                        if score_fn is not None:
+                            new_score = score_fn()
+                            if new_score < best_score - 1e-9:
+                                self._execute_worker_swap(under_id, d_over, p_over, over_id, d_under, p_under)
+                                reverted += 1
+                                continue
+                            best_score = new_score
+
+                        total_swaps += 1
+                        logging.info(
+                            f"Workload refine swap: {over_id}({d_over.strftime('%Y-%m-%d')}) "
+                            f"↔ {under_id}({d_under.strftime('%Y-%m-%d')})"
+                        )
+                        swapped = True
+                        break
+
+        logging.info(
+            f"Workload refinement completed: {total_swaps} swaps"
+            + (f", {reverted} reverted by score gate" if reverted else "")
+        )
+
+        if total_swaps > 0:
+            self._synchronize_tracking_data()
+
+        return total_swaps > 0
+
+    # ------------------------------------------------------------------
+    # Multi-objective swap optimizer
+    # ------------------------------------------------------------------
+    def multi_objective_swap(self, score_fn: Callable[[], float] | None = None) -> bool:
+        """Cross-worker date swaps that must improve the composite score.
+
+        Unlike single-objective operations (which target one metric and hope
+        the score gate allows it), this searches for swaps whose net effect
+        across *all* score components is positive.
+
+        Strategy:
+        1. For each worker pair (A, B) where at least one metric can improve:
+           - A has more weekends than B → swapping a weekend from A with a
+             weekday from B improves weekend balance.
+           - The post indices differ → post rotation may also improve.
+           - Normalised workload differs → workload balance may shift.
+        2. Simulate the swap, compute composite score delta, accept if > 0.
+
+        To keep runtime reasonable, only consider worker pairs that are
+        "interesting" (deviate from average on at least one dimension).
+        """
+        self._ensure_data_integrity()
+
+        scheduler = self.scheduler
+        schedule = scheduler.schedule
+        holidays = getattr(scheduler, "holidays", set())
+        num_shifts = scheduler.num_shifts
+
+        def _is_wknd(d: datetime) -> bool:
+            return d.weekday() >= 4 or d in holidays or (d + timedelta(days=1)) in holidays
+
+        # ── Per-worker stats ──
+        worker_stats: dict[str, dict] = {}
+        for w in self.workers_data:
+            wid = w["id"]
+            pct = w.get("work_percentage", 100)
+            dates = self.worker_assignments.get(wid, set())
+            count = len(dates)
+            wk_count = sum(1 for d in dates if _is_wknd(d))
+            norm = (count * 100 / pct) if pct > 0 else 0.0
+            wk_norm = (wk_count * 100 / pct) if pct > 0 else 0.0
+
+            # Post counts
+            post_counts: dict[int, int] = {}
+            for d in dates:
+                posts = schedule.get(d)
+                if not posts:
+                    continue
+                for idx, assigned in enumerate(posts):
+                    if assigned == wid:
+                        post_counts[idx] = post_counts.get(idx, 0) + 1
+
+            expected_post = count / num_shifts if num_shifts > 0 and count > 0 else 0
+            post_var = (
+                sum((c - expected_post) ** 2 for c in post_counts.values()) / len(post_counts)
+                if post_counts
+                else 0.0
+            )
+
+            worker_stats[wid] = {
+                "pct": pct,
+                "count": count,
+                "norm": norm,
+                "wk_count": wk_count,
+                "wk_norm": wk_norm,
+                "post_var": post_var,
+                "post_counts": post_counts,
+            }
+
+        if not worker_stats:
+            return False
+
+        avg_norm = sum(s["norm"] for s in worker_stats.values()) / len(worker_stats)
+        avg_wk = sum(s["wk_norm"] for s in worker_stats.values()) / len(worker_stats)
+
+        # Workers that deviate on any axis
+        interesting = [
+            wid
+            for wid, s in worker_stats.items()
+            if abs(s["norm"] - avg_norm) > 0.2
+            or abs(s["wk_norm"] - avg_wk) > 0.3
+            or s["post_var"] > 1.0
+        ]
+
+        if len(interesting) < 2:
+            logging.info("Multi-objective swap: no interesting worker pairs found")
+            return False
+
+        best_score = score_fn() if score_fn else None
+        total_swaps = 0
+        max_swaps = 30
+        max_pairs_checked = 200  # cap runtime
+        pairs_checked = 0
+
+        # Sort by combined deviation (most deviant first for early wins)
+        interesting.sort(
+            key=lambda wid: (
+                abs(worker_stats[wid]["norm"] - avg_norm)
+                + abs(worker_stats[wid]["wk_norm"] - avg_wk)
+                + worker_stats[wid]["post_var"] * 0.5
+            ),
+            reverse=True,
+        )
+
+        for idx_a, wid_a in enumerate(interesting):
+            if total_swaps >= max_swaps or pairs_checked >= max_pairs_checked:
+                break
+            for wid_b in interesting[idx_a + 1 :]:
+                if total_swaps >= max_swaps or pairs_checked >= max_pairs_checked:
+                    break
+                pairs_checked += 1
+
+                sa = worker_stats[wid_a]
+                sb = worker_stats[wid_b]
+
+                # Quick heuristic: skip pairs where both are close to average
+                # on all metrics — unlikely to yield improvement
+                if (
+                    abs(sa["wk_norm"] - sb["wk_norm"]) < 0.3
+                    and abs(sa["norm"] - sb["norm"]) < 0.2
+                    and sa["post_var"] < 0.5
+                    and sb["post_var"] < 0.5
+                ):
+                    continue
+
+                # Determine which dates to try:
+                # Prefer swapping a weekend day from the weekend-heavy worker
+                # with a weekday from the weekend-light worker.
+                if sa["wk_norm"] >= sb["wk_norm"]:
+                    heavy_wk, light_wk = wid_a, wid_b
+                else:
+                    heavy_wk, light_wk = wid_b, wid_a
+
+                heavy_dates = sorted(self.worker_assignments.get(heavy_wk, set()))
+                light_dates = sorted(self.worker_assignments.get(light_wk, set()))
+
+                # From heavy: prefer weekend dates; from light: prefer weekday dates
+                heavy_wk_dates = [d for d in heavy_dates if _is_wknd(d)]
+                light_wd_dates = [d for d in light_dates if not _is_wknd(d)]
+
+                # Shuffle to avoid bias, limit breadth
+                random.shuffle(heavy_wk_dates)
+                random.shuffle(light_wd_dates)
+
+                swapped = False
+                for d_h in heavy_wk_dates[:10]:
+                    if swapped:
+                        break
+                    if not self._can_modify_assignment(heavy_wk, d_h, "multi_obj"):
+                        continue
+                    if d_h not in schedule or heavy_wk not in schedule[d_h]:
+                        continue
+                    p_h = schedule[d_h].index(heavy_wk)
+
+                    for d_l in light_wd_dates[:10]:
+                        if d_l == d_h:
+                            continue
+                        if not self._can_modify_assignment(light_wk, d_l, "multi_obj"):
+                            continue
+                        if d_l not in schedule or light_wk not in schedule[d_l]:
+                            continue
+                        p_l = schedule[d_l].index(light_wk)
+
+                        if not self._can_worker_swap(heavy_wk, d_h, p_h, light_wk, d_l, p_l):
+                            continue
+
+                        # Execute and check composite score
+                        self._execute_worker_swap(heavy_wk, d_h, p_h, light_wk, d_l, p_l)
+
+                        if score_fn is not None:
+                            new_score = score_fn()
+                            if new_score <= best_score + 1e-9:
+                                # Revert — not strictly better
+                                self._execute_worker_swap(light_wk, d_h, p_h, heavy_wk, d_l, p_l)
+                                continue
+                            best_score = new_score
+
+                        total_swaps += 1
+                        logging.info(
+                            f"Multi-obj swap: {heavy_wk}({d_h.strftime('%Y-%m-%d')} wknd) "
+                            f"↔ {light_wk}({d_l.strftime('%Y-%m-%d')} wday) "
+                            f"score={best_score:.2f}"
+                        )
+                        swapped = True
+                        # Refresh stats for these workers
+                        for refresh_wid in (heavy_wk, light_wk):
+                            dates_r = self.worker_assignments.get(refresh_wid, set())
+                            pct_r = worker_stats[refresh_wid]["pct"]
+                            cnt_r = len(dates_r)
+                            wkc_r = sum(1 for dr in dates_r if _is_wknd(dr))
+                            worker_stats[refresh_wid]["count"] = cnt_r
+                            worker_stats[refresh_wid]["norm"] = (cnt_r * 100 / pct_r) if pct_r > 0 else 0
+                            worker_stats[refresh_wid]["wk_count"] = wkc_r
+                            worker_stats[refresh_wid]["wk_norm"] = (wkc_r * 100 / pct_r) if pct_r > 0 else 0
+                        break
+
+        logging.info(f"Multi-objective swap completed: {total_swaps} swaps, {pairs_checked} pairs checked")
+
+        if total_swaps > 0:
+            self._synchronize_tracking_data()
+
+        return total_swaps > 0
 
     def _balance_weekday_distribution(self):
         """
@@ -5469,12 +5780,17 @@ class ScheduleBuilder:
 
         return effective_percentage
 
-    def rebalance_weekend_distribution(self):
+    def rebalance_weekend_distribution(self, score_fn: Callable[[], float] | None = None):
         """
         Rebalance weekend shifts to ensure fair proportional distribution.
 
         Uses weekend_tolerance from config to determine allowed deviation.
         Target for each worker = total_worker_shifts * weekend_ratio ± tolerance
+
+        If *score_fn* is provided it is called after every individual swap.
+        When the composite score drops the swap is immediately reverted so that
+        weekend improvements never come at the expense of other score
+        components (e.g. workload balance).
         """
         logging.info("=" * 60)
         logging.info("Starting proportional weekend distribution rebalancing...")
@@ -5551,7 +5867,11 @@ class ScheduleBuilder:
         logging.info(f"Found {len(overloaded)} overloaded and {len(underloaded)} underloaded workers")
 
         changes_made = 0
+        reverted_swaps = 0
         max_iterations = 150
+
+        # Baseline composite score for per-swap verification
+        best_score = score_fn() if score_fn else None
 
         for iteration in range(max_iterations):
             if not overloaded or not underloaded:
@@ -5624,6 +5944,20 @@ class ScheduleBuilder:
                         self.scheduler._update_tracking_data(over_id, date, post, removing=True)
                         self.scheduler._update_tracking_data(under_id, date, post)
 
+                        # ── Score gate: revert if composite score dropped ──
+                        if score_fn is not None:
+                            new_score = score_fn()
+                            if new_score < best_score - 1e-9:
+                                # Revert swap
+                                self.schedule[date][post] = over_id
+                                self.worker_assignments[under_id].discard(date)
+                                self.worker_assignments[over_id].add(date)
+                                self.scheduler._update_tracking_data(under_id, date, post, removing=True)
+                                self.scheduler._update_tracking_data(over_id, date, post)
+                                reverted_swaps += 1
+                                continue
+                            best_score = new_score
+
                         changes_made += 1
                         progress_made = True
 
@@ -5657,13 +5991,157 @@ class ScheduleBuilder:
             if not progress_made:
                 break
 
-        logging.info(f"Proportional weekend rebalancing completed: {changes_made} changes")
+        logging.info(
+            f"Proportional weekend rebalancing completed: {changes_made} changes"
+            + (f", {reverted_swaps} reverted by score gate" if reverted_swaps else "")
+        )
 
         if changes_made > 0:
             self._synchronize_tracking_data()
             self._save_current_as_best()
 
         return changes_made > 0
+
+    def swap_weekday_weekend_between_workers(self, score_fn: Callable[[], float] | None = None) -> bool:
+        """Swap weekend shifts for weekday shifts between worker pairs.
+
+        Finds workers with too many weekends ("weekend-heavy") and workers with
+        too few ("weekend-light").  For each pair, tries to swap one of A's
+        weekend assignments with one of B's weekday assignments.  Both workers
+        keep the same total shift count, but weekend distribution improves.
+
+        Uses the existing ``_can_worker_swap`` / ``_execute_worker_swap``
+        infrastructure so all constraints are validated before committing.
+
+        If *score_fn* is provided, each swap is verified against the composite
+        score and reverted if it drops.
+        """
+        scheduler = self.scheduler
+        schedule = scheduler.schedule
+        holidays = self.holidays
+
+        def is_special(d):
+            return d.weekday() >= 4 or d in holidays or (d + timedelta(days=1)) in holidays
+
+        # ── Compute per-worker weekend stats ──
+        total_schedule_days = (self.end_date - self.start_date).days + 1
+        total_weekend_days = sum(
+            1 for i in range(total_schedule_days) if is_special(self.start_date + timedelta(days=i))
+        )
+        if total_schedule_days == 0 or total_weekend_days == 0:
+            return False
+        weekend_ratio = total_weekend_days / total_schedule_days
+
+        tolerance = getattr(scheduler, "weekend_tolerance", 1)
+
+        heavy: list[tuple[str, float, list]] = []   # (worker_id, deviation, [(date, post)])
+        light: list[tuple[str, float, list]] = []
+
+        for worker in self.workers_data:
+            wid = worker["id"]
+            assignments = self.worker_assignments.get(wid, set())
+            total = len(assignments)
+            if total == 0:
+                continue
+            weekend_count = sum(1 for d in assignments if is_special(d))
+            target = total * weekend_ratio
+            dev = weekend_count - target
+
+            if dev > tolerance:
+                # Collect this worker's weekend shifts (candidates to give away)
+                weekend_shifts = []
+                for d in assignments:
+                    if not is_special(d):
+                        continue
+                    if not self._can_modify_assignment(wid, d, "weekend_swap"):
+                        continue
+                    if d not in schedule or wid not in schedule[d]:
+                        continue
+                    post = schedule[d].index(wid)
+                    weekend_shifts.append((d, post))
+                if weekend_shifts:
+                    heavy.append((wid, dev, weekend_shifts))
+
+            elif dev < -tolerance:
+                # Collect this worker's weekday shifts (candidates to trade)
+                weekday_shifts = []
+                for d in assignments:
+                    if is_special(d):
+                        continue
+                    if not self._can_modify_assignment(wid, d, "weekend_swap"):
+                        continue
+                    if d not in schedule or wid not in schedule[d]:
+                        continue
+                    post = schedule[d].index(wid)
+                    weekday_shifts.append((d, post))
+                if weekday_shifts:
+                    light.append((wid, dev, weekday_shifts))
+
+        if not heavy or not light:
+            logging.info("Weekend↔Weekday swap: no imbalanced worker pairs found")
+            return False
+
+        heavy.sort(key=lambda x: x[1], reverse=True)
+        light.sort(key=lambda x: abs(x[1]), reverse=True)
+
+        best_score = score_fn() if score_fn else None
+        total_swaps = 0
+        reverted = 0
+        max_swaps = 30
+
+        for h_id, h_dev, h_shifts in heavy:
+            if total_swaps >= max_swaps:
+                break
+            random.shuffle(h_shifts)
+
+            for l_id, l_dev, l_shifts in light:
+                if total_swaps >= max_swaps:
+                    break
+                random.shuffle(l_shifts)
+
+                for wk_date, wk_post in h_shifts:
+                    if total_swaps >= max_swaps:
+                        break
+                    swapped = False
+
+                    for wd_date, wd_post in l_shifts:
+                        # Validate the swap with full constraint checks
+                        if not self._can_worker_swap(h_id, wk_date, wk_post, l_id, wd_date, wd_post):
+                            continue
+
+                        # Execute
+                        self._execute_worker_swap(h_id, wk_date, wk_post, l_id, wd_date, wd_post)
+
+                        # Score gate
+                        if score_fn is not None:
+                            new_score = score_fn()
+                            if new_score < best_score - 1e-9:
+                                # Revert: swap back
+                                self._execute_worker_swap(l_id, wk_date, wk_post, h_id, wd_date, wd_post)
+                                reverted += 1
+                                continue
+                            best_score = new_score
+
+                        total_swaps += 1
+                        logging.info(
+                            f"Weekend↔Weekday swap: {h_id}({wk_date.strftime('%Y-%m-%d')}) "
+                            f"↔ {l_id}({wd_date.strftime('%Y-%m-%d')})"
+                        )
+                        swapped = True
+                        break
+
+                    if swapped:
+                        break
+
+        logging.info(
+            f"Weekend↔Weekday swaps completed: {total_swaps} swaps"
+            + (f", {reverted} reverted by score gate" if reverted else "")
+        )
+
+        if total_swaps > 0:
+            self._synchronize_tracking_data()
+
+        return total_swaps > 0
 
     def _is_weekend_day(self, date):
         """Check if a date is a weekend day (Friday, Saturday, Sunday) or holiday/pre-holiday"""
@@ -6571,6 +7049,99 @@ class ScheduleBuilder:
         underassigned_simple = [(p, c) for p, c, d_val in underassigned]  # Renamed d to d_val
 
         return overassigned_simple, underassigned_simple
+
+    def optimize_post_rotation(self, max_passes: int = 5) -> bool:
+        """Optimise post-rotation balance by swapping posts between workers on the same day.
+
+        For every date in the schedule, try all pairwise post swaps among
+        assigned workers.  Accept a swap when it strictly reduces the global
+        post-rotation variance (sum of per-worker variance).  Because only
+        posts change — not which dates a worker is assigned to — no scheduling
+        constraint can be violated.
+
+        Returns True if at least one swap was made.
+        """
+        scheduler = self.scheduler
+        schedule = scheduler.schedule
+        num_shifts = scheduler.num_shifts
+
+        if num_shifts <= 1:
+            return False
+
+        def _post_counts_for_worker(worker_id: str) -> dict[int, int]:
+            counts: dict[int, int] = {}
+            for d in scheduler.worker_assignments.get(worker_id, set()):
+                posts = schedule.get(d)
+                if not posts:
+                    continue
+                for idx, wid in enumerate(posts):
+                    if wid == worker_id:
+                        counts[idx] = counts.get(idx, 0) + 1
+            return counts
+
+        def _worker_variance(worker_id: str, counts: dict[int, int]) -> float:
+            n_assigned = sum(counts.values())
+            if n_assigned == 0:
+                return 0.0
+            expected = n_assigned / num_shifts
+            return sum((c - expected) ** 2 for c in counts.values()) / len(counts)
+
+        total_swaps = 0
+        dates = sorted(schedule.keys())
+
+        for pass_num in range(1, max_passes + 1):
+            swaps_this_pass = 0
+
+            for date in dates:
+                posts = schedule[date]
+                n = len(posts)
+                if n < 2:
+                    continue
+
+                # Try all pairwise swaps on this date
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        w_i = posts[i]
+                        w_j = posts[j]
+                        if w_i is None or w_j is None or w_i == w_j:
+                            continue
+
+                        # Current variance contribution of both workers
+                        counts_i = _post_counts_for_worker(w_i)
+                        counts_j = _post_counts_for_worker(w_j)
+                        var_before = _worker_variance(w_i, counts_i) + _worker_variance(w_j, counts_j)
+
+                        # Simulate swap
+                        counts_i_new = dict(counts_i)
+                        counts_i_new[i] = counts_i_new.get(i, 0) - 1
+                        counts_i_new[j] = counts_i_new.get(j, 0) + 1
+                        # clean up zero
+                        if counts_i_new[i] == 0:
+                            del counts_i_new[i]
+
+                        counts_j_new = dict(counts_j)
+                        counts_j_new[j] = counts_j_new.get(j, 0) - 1
+                        counts_j_new[i] = counts_j_new.get(i, 0) + 1
+                        if counts_j_new[j] == 0:
+                            del counts_j_new[j]
+
+                        var_after = _worker_variance(w_i, counts_i_new) + _worker_variance(w_j, counts_j_new)
+
+                        if var_after < var_before - 1e-9:
+                            # Commit swap
+                            posts[i], posts[j] = w_j, w_i
+                            swaps_this_pass += 1
+
+            total_swaps += swaps_this_pass
+            if swaps_this_pass == 0:
+                break
+
+        if total_swaps > 0:
+            logging.info(f"Post-rotation optimizer: {total_swaps} swaps in {pass_num} passes")
+            # Resync tracking
+            self._synchronize_tracking_data()
+
+        return total_swaps > 0
 
     def _adjust_last_post_distribution(
         self, balance_tolerance=1.0, max_iterations=20
