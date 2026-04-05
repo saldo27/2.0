@@ -1814,14 +1814,18 @@ class ScheduleBuilder:
         work_percentage = worker.get("work_percentage", 100)
         base_min_gap = self.gap_between_shifts + 2 if work_percentage < 70 else self.gap_between_shifts + 1
 
+        # Minimum floor: gap_between_shifts for auto workers at 100%, strict otherwise
+        is_auto = worker.get("auto_calculate_shifts", True)
+        is_full_time = work_percentage >= 100
+        hard_floor = self.gap_between_shifts if (is_auto and is_full_time) else self.gap_between_shifts + 1
+
         # STRICT MODE: No gap reduction allowed
         if self.use_strict_mode:
             min_gap = base_min_gap
         else:
-            # RELAXED MODE: Allow gap-1 ONLY (never more than -1)
-            # Only if worker has significant deficit
+            # RELAXED MODE: Allow gap-1, never below hard_floor
             if relaxation_level >= 1 and target_deficit >= 3:
-                min_gap = max(1, base_min_gap - 1)  # Reduce gap by 1 ONLY, minimum 1
+                min_gap = max(hard_floor, base_min_gap - 1)
                 if _DEBUG():
                     logging.debug(
                         f"RELAXED: Worker {worker_id} gap reduced by 1 to {min_gap} (deficit: {target_deficit})"

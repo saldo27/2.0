@@ -991,25 +991,21 @@ class IterativeOptimizer:
                     )
                     return False
 
-                # Check minimum gap constraint - VERY FLEXIBLE for redistribution
-                gap_between_shifts = getattr(self, "gap_between_shifts", 3)  # Default gap
+                # Check minimum gap constraint
+                gap_between_shifts = getattr(self, "gap_between_shifts", 3)
+                strict_min = gap_between_shifts + 1  # Normal hard constraint
 
-                # SUPER FLEXIBLE GAP: For redistribution, allow much more flexibility
-                # This gives maximum flexibility when redistributing to balance workload
-                min_gap_redistribution = max(1, gap_between_shifts - 2)  # Even more flexible: gap - 2, minimum 1
+                # Allow gap_between_shifts (one less rest day) ONLY for
+                # auto-calculated workers at 100% work percentage.
+                is_auto = worker_data.get("auto_calculate_shifts", True) if worker_data else True
+                is_full_time = (worker_data.get("work_percentage", 100) if worker_data else 100) >= 100
+                min_days_between = gap_between_shifts if (is_auto and is_full_time) else strict_min
 
-                # Apply very flexible gap constraint
-                if 0 < days_between < min_gap_redistribution:
+                if 0 < days_between < min_days_between:
                     logging.debug(
-                        f"❌ {worker_name} blocked: Min redistribution gap violation - {days_between} days < {min_gap_redistribution} required"
+                        f"❌ {worker_name} blocked: gap violation - {days_between} days < {min_days_between} required"
                     )
                     return False
-                elif min_gap_redistribution <= days_between < gap_between_shifts:
-                    # In the super flexible zone - allow and log it
-                    logging.debug(
-                        f"⚠️ {worker_name} super flexible gap: {days_between} days (below normal {gap_between_shifts} but allowed for redistribution)"
-                    )
-                    # Continue - allow this assignment
 
             # CRITICAL: Check tolerance limit (±12% absolute maximum during optimization)
             # This prevents swaps from violating tolerance limits
@@ -3422,6 +3418,12 @@ class IterativeOptimizer:
             # Check basic gap constraint (simplified - just check adjacent days)
             if hasattr(scheduler_core, "scheduler") and hasattr(scheduler_core.scheduler, "gap_between_shifts"):
                 gap = scheduler_core.scheduler.gap_between_shifts
+                strict_min = gap + 1
+
+                # Allow gap (one less rest day) for auto workers at 100%
+                is_auto = worker_data.get("auto_calculate_shifts", True) if worker_data else True
+                is_full_time = (worker_data.get("work_percentage", 100) if worker_data else 100) >= 100
+                min_days_between = gap if (is_auto and is_full_time) else strict_min
 
                 # Get worker's assignments
                 worker_dates = []
@@ -3439,7 +3441,7 @@ class IterativeOptimizer:
                     try:
                         if hasattr(date, "date") and hasattr(worker_date, "date"):
                             days_diff = abs((date - worker_date).days)
-                            if days_diff < gap and days_diff > 0:
+                            if 0 < days_diff < min_days_between:
                                 return False
                     except (ValueError, AttributeError):
                         pass  # Skip date comparison errors
