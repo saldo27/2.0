@@ -1,0 +1,5 @@
+uv sync
+
+uv run streamlit run src/saldo27/app_streamlit.py
+
+
