@@ -3,6 +3,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from saldo27.utilities import get_effective_min_gap
+
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
 
@@ -154,19 +156,10 @@ class ConstraintChecker:
         worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
         if not worker:
             return False  # Should not happen
-        work_percentage = worker.get("work_percentage", 100)
-
-        # Determine base minimum days required *between* shifts
-        # if gap_between_shifts = 1, then 2 days must be between assignments.
-        # if gap_between_shifts = 3, then 4 days must be between assignments.
-        # So, days_between must be >= self.scheduler.gap_between_shifts + 1
-        min_required_days_between = self.scheduler.gap_between_shifts + 1
-
-        # Part-time workers might need a larger gap
-        if work_percentage < 70:  # Using a common threshold from ScheduleBuilder
-            min_required_days_between = max(
-                min_required_days_between, self.scheduler.gap_between_shifts + 2
-            )  # e.g. at least +1 more day
+        # Determine minimum gap (calendar days) per worker type
+        min_required_days_between = get_effective_min_gap(
+            worker, self.scheduler.gap_between_shifts
+        )
 
         assignments = sorted(
             list(
@@ -189,10 +182,9 @@ class ConstraintChecker:
                     )
                 return False
 
-            # Friday-Monday rule: typically only if base gap is small (e.g., allows for 3-day difference)
-            # This rule means a worker doing Fri cannot do Mon, creating a 3-day diff.
-            # If min_required_days_between is already > 3, this rule is implicitly covered.
-            if self.scheduler.gap_between_shifts <= 1:  # Only apply if basic gap could allow a 3-day span
+            # Friday-Monday rule: only block if the worker's effective gap > 3
+            # (if effective gap <= 3, a 3-day Fri-Mon span is permitted)
+            if min_required_days_between > 3:
                 if days_between == 3:
                     if (prev_date.weekday() == 4 and date.weekday() == 0) or (
                         date.weekday() == 4 and prev_date.weekday() == 0

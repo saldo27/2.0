@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 from saldo27.balance_validator import BalanceValidator
 from saldo27.performance_cache import time_function
+from saldo27.utilities import get_effective_min_gap
 
 
 @dataclass
@@ -954,6 +955,41 @@ class IterativeOptimizer:
                     # For now, be more permissive in list format during redistribution
                     pass  # Allow reassignments in list format
 
+            # CRITICAL: Check incompatibilities with other workers on the same date
+            if date_key in schedule:
+                assignments_on_date = schedule[date_key]
+                others_on_date = []
+                if isinstance(assignments_on_date, list):
+                    others_on_date = [w for w in assignments_on_date if w is not None and w != worker_name]
+                elif isinstance(assignments_on_date, dict):
+                    for shift_workers in assignments_on_date.values():
+                        if isinstance(shift_workers, list):
+                            others_on_date.extend(w for w in shift_workers if w is not None and w != worker_name)
+                if others_on_date and worker_data:
+                    my_incomp = set(worker_data.get("incompatible_with", []))
+                    if my_incomp:
+                        for other in others_on_date:
+                            # other is worker_name (e.g. "KIKO"); look up by id
+                            other_id = other
+                            if other_id in my_incomp:
+                                logging.debug(
+                                    f"\u274c {worker_name} blocked: incompatible with {other_id} on {date_key}"
+                                )
+                                return False
+                    # Also check the reverse direction
+                    for other in others_on_date:
+                        other_data = next(
+                            (w for w in workers_data if str(w.get("id", "")) == str(other)
+                             or w.get("id") == other), None
+                        )
+                        if other_data:
+                            other_incomp = set(other_data.get("incompatible_with", []))
+                            if worker_name in other_incomp or (worker_data and worker_data.get("id") in other_incomp):
+                                logging.debug(
+                                    f"\u274c {worker_name} blocked: {other} lists incompatibility on {date_key}"
+                                )
+                                return False
+
             # CRITICAL: Check 7/14 day pattern constraint
             # This is the key constraint that prevents same-weekday assignments 7 or 14 days apart
             worker_assignments = set()
@@ -993,13 +1029,7 @@ class IterativeOptimizer:
 
                 # Check minimum gap constraint
                 gap_between_shifts = getattr(self, "gap_between_shifts", 3)
-                strict_min = gap_between_shifts + 1  # Normal hard constraint
-
-                # Allow gap_between_shifts (one less rest day) ONLY for
-                # auto-calculated workers at 100% work percentage.
-                is_auto = worker_data.get("auto_calculate_shifts", True) if worker_data else True
-                is_full_time = (worker_data.get("work_percentage", 100) if worker_data else 100) >= 100
-                min_days_between = gap_between_shifts if (is_auto and is_full_time) else strict_min
+                min_days_between = get_effective_min_gap(worker_data, gap_between_shifts)
 
                 if 0 < days_between < min_days_between:
                     logging.debug(
@@ -3340,6 +3370,30 @@ class IterativeOptimizer:
                     if isinstance(shift_workers, list) and worker_name in shift_workers:
                         return False
 
+            # CRITICAL: Check incompatibilities with other workers on the same date
+            assignments_on_date = schedule.get(date)
+            if assignments_on_date is not None:
+                others_on_date = []
+                if isinstance(assignments_on_date, list):
+                    others_on_date = [w for w in assignments_on_date if w is not None and w != worker_name]
+                elif isinstance(assignments_on_date, dict):
+                    for shift_workers in assignments_on_date.values():
+                        if isinstance(shift_workers, list):
+                            others_on_date.extend(w for w in shift_workers if w is not None and w != worker_name)
+                if others_on_date:
+                    worker_data_compat = next((w for w in workers_data if w.get("id") == worker_id), None)
+                    my_incomp = set(worker_data_compat.get("incompatible_with", [])) if worker_data_compat else set()
+                    for other in others_on_date:
+                        if other in my_incomp:
+                            return False
+                        other_data = next(
+                            (w for w in workers_data if str(w.get("id", "")) == str(other)
+                             or w.get("id") == other), None
+                        )
+                        if other_data and (worker_name in set(other_data.get("incompatible_with", []))
+                                           or worker_id in set(other_data.get("incompatible_with", []))):
+                            return False
+
             # CRITICAL: Check tolerance limit (±12% absolute maximum during optimization)
             # This prevents optimization from violating tolerance limits
             if hasattr(scheduler_core, "builder") and scheduler_core.builder:
@@ -3418,12 +3472,7 @@ class IterativeOptimizer:
             # Check basic gap constraint (simplified - just check adjacent days)
             if hasattr(scheduler_core, "scheduler") and hasattr(scheduler_core.scheduler, "gap_between_shifts"):
                 gap = scheduler_core.scheduler.gap_between_shifts
-                strict_min = gap + 1
-
-                # Allow gap (one less rest day) for auto workers at 100%
-                is_auto = worker_data.get("auto_calculate_shifts", True) if worker_data else True
-                is_full_time = (worker_data.get("work_percentage", 100) if worker_data else 100) >= 100
-                min_days_between = gap if (is_auto and is_full_time) else strict_min
+                min_days_between = get_effective_min_gap(worker_data, gap)
 
                 # Get worker's assignments
                 worker_dates = []

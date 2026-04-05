@@ -4,6 +4,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
+from saldo27.utilities import get_effective_min_gap
+
 
 class AdaptiveIterationManager:
     """Manages iteration counts for scheduling optimization based on problem complexity"""
@@ -488,12 +490,16 @@ class AdaptiveIterationManager:
         """Count violations of gap between shifts constraint"""
         violations = 0
         gap_days = getattr(scheduler_instance, "gap_between_shifts", 1)
+        workers_data = getattr(scheduler_instance, "workers_data", [])
+        workers_map = {w["id"]: w for w in workers_data}
 
         for worker_id, assignments in scheduler_instance.worker_assignments.items():
+            worker_data = workers_map.get(worker_id)
+            effective_gap = get_effective_min_gap(worker_data, gap_days)
             sorted_dates = sorted(assignments)
             for i in range(1, len(sorted_dates)):
                 days_between = (sorted_dates[i] - sorted_dates[i - 1]).days
-                if days_between <= gap_days:
+                if days_between < effective_gap:
                     violations += 1
 
         return violations

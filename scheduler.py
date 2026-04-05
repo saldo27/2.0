@@ -9,7 +9,7 @@ from saldo27.data_manager import DataManager
 from saldo27.exceptions import ConfigurationError, SchedulerError
 from saldo27.scheduler_config import SchedulerConfig, setup_logging
 from saldo27.statistics_calculator import StatisticsCalculator
-from saldo27.utilities import DateTimeUtils
+from saldo27.utilities import DateTimeUtils, get_effective_min_gap
 from saldo27.worker_eligibility import WorkerEligibilityTracker
 
 # Initialize logging using the configuration module
@@ -1466,9 +1466,7 @@ class Scheduler:
 
             # Get work percentage once for efficiency
             work_percentage = worker.get("work_percentage", 100)
-            min_days_required_between = self.gap_between_shifts + 1
-            if work_percentage < 70:  # Part-time threshold
-                min_days_required_between = max(min_days_required_between, self.gap_between_shifts + 2)
+            min_days_required_between = get_effective_min_gap(worker, self.gap_between_shifts)
 
             # Optimized constraint checking loop
             for assigned_date in worker_assignments_set:
@@ -1486,8 +1484,8 @@ class Scheduler:
                     self._set_cached_result(cache_key, result)
                     return result
 
-                # 2. Special case for Friday-Monday (if base gap allows 3-day span)
-                if self.gap_between_shifts <= 1 and days_difference == 3:
+                # 2. Special case for Friday-Monday — only if effective gap > 3
+                if min_days_required_between > 3 and days_difference == 3:
                     assigned_weekday = assigned_date.weekday()
                     date_weekday = date.weekday()
                     if (assigned_weekday == 4 and date_weekday == 0) or (assigned_weekday == 0 and date_weekday == 4):
@@ -1592,14 +1590,14 @@ class Scheduler:
                     for assigned_date in self.worker_assignments.get(worker_id, set()):
                         days_difference = abs((date - assigned_date).days)
 
-                        # We need at least gap_between_shifts days off, so (gap+1)+ days between assignments
-                        min_days_between = self.gap_between_shifts + 1
+                        # Minimum gap (calendar days) per worker type
+                        min_days_between = get_effective_min_gap(worker, self.gap_between_shifts)
                         if days_difference < min_days_between:
                             too_close = True
                             break
 
-                        # Special case: Friday-Monday (needs 3 days off, so 4+ days between)
-                        if days_difference == 3:
+                        # Special case: Friday-Monday — only block if effective gap > 3
+                        if days_difference == 3 and min_days_between > 3:
                             if (date.weekday() == 0 and assigned_date.weekday() == 4) or (
                                 date.weekday() == 4 and assigned_date.weekday() == 0
                             ):
@@ -1721,8 +1719,12 @@ class Scheduler:
 
                         days_between = abs((date2 - date1).days)
 
+                        # Per-worker minimum gap (calendar days)
+                        worker_data = next((w for w in self.workers_data if w["id"] == worker_id), None)
+                        effective_gap = get_effective_min_gap(worker_data, self.gap_between_shifts)
+
                         # When checking for insufficient rest periods
-                        if 0 < days_between < self.gap_between_shifts + 1:
+                        if 0 < days_between < effective_gap:
                             violations.append(
                                 {
                                     "type": "min_rest_days",
@@ -1730,12 +1732,14 @@ class Scheduler:
                                     "date1": date1,
                                     "date2": date2,
                                     "days_between": days_between,
-                                    "min_required": self.gap_between_shifts,
+                                    "min_required": effective_gap,
                                 }
                             )
 
-                        # Check for Friday-Monday assignments (special case requiring 3 days)
-                        if days_between == 3:
+                        # Check for Friday-Monday assignments
+                        # Only flag if 3 < effective_gap (otherwise already caught by gap check
+                        # or permitted by the worker's effective gap)
+                        if days_between == 3 and 3 < effective_gap:
                             if (date1.weekday() == 4 and date2.weekday() == 0) or (
                                 date1.weekday() == 0 and date2.weekday() == 4
                             ):
@@ -2484,8 +2488,8 @@ class Scheduler:
                 date2 = assignments[i + 1]
                 days_between = (date2 - date1).days
 
-                min_days_between = self.gap_between_shifts + 1
-                # Add specific part-time logic if needed here, e.g., based on worker data
+                worker_data = next((w for w in self.workers_data if w["id"] == worker_id), None)
+                min_days_between = get_effective_min_gap(worker_data, self.gap_between_shifts)
 
                 if days_between < min_days_between:
                     gap_issues += 1

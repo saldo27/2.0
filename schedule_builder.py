@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from saldo27.adaptive_iterations import AdaptiveIterationManager
+from saldo27.utilities import get_effective_min_gap
 
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
@@ -753,8 +754,8 @@ class ScheduleBuilder:
                 for prev_date in assignments:
                     days_between = abs((date - prev_date).days)
 
-                    # Check minimum gap
-                    if 0 < days_between < self.gap_between_shifts + 1:
+                    # Check minimum gap (calendar days, per-worker)
+                    if 0 < days_between < get_effective_min_gap(worker, self.gap_between_shifts):
                         return False
 
                     # Check for 7-14 day pattern (same weekday in consecutive weeks)
@@ -766,8 +767,9 @@ class ScheduleBuilder:
                         )
                         return False
 
-            # Special case: Friday-Monday check if gap is only 1 day
-            if self.gap_between_shifts == 1:
+            # Special case: Friday-Monday — only if effective gap > 3
+            effective_gap = get_effective_min_gap(worker, self.gap_between_shifts)
+            if effective_gap > 3:
                 for prev_date in assignments:
                     days_between = abs((date - prev_date).days)
                     if days_between == 3:
@@ -780,14 +782,8 @@ class ScheduleBuilder:
             if self.constraint_checker._would_exceed_weekend_limit(worker_id, date):
                 return False
 
-            # Part-time workers need more days between shifts
-            work_percentage = worker.get("work_percentage", 100)
-            if work_percentage < 70:
-                part_time_gap = max(3, self.gap_between_shifts + 2)
-                for prev_date in assignments:
-                    days_between = abs((date - prev_date).days)
-                    if days_between < part_time_gap:
-                        return False
+            # Part-time / strict-gap workers already handled by get_effective_min_gap above
+            # No separate part-time block needed
 
             # CRITICAL: Check tolerance constraint (±12% absolute limit)
             # This is the FINAL check to ensure we NEVER exceed tolerance
@@ -1045,9 +1041,10 @@ class ScheduleBuilder:
                 _sim_prior = {d for d in _sim_prior if d >= _sim_cutoff}
             sorted_sim_assignments = sorted(list(_sim_current | _sim_prior))
 
-            # 7. Friday-Monday Check (Only if gap constraint allows 3 days, i.e., gap_between_shifts == 1)
-            # Apply strictly during simulation checks
-            if self.scheduler.gap_between_shifts == 1:
+            # 7. Friday-Monday Check — only if effective gap > 3
+            _fm_worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
+            _fm_effective_gap = get_effective_min_gap(_fm_worker_data, self.scheduler.gap_between_shifts)
+            if _fm_effective_gap > 3:
                 for prev_date in sorted_sim_assignments:
                     if prev_date == date:
                         continue
@@ -1139,13 +1136,9 @@ class ScheduleBuilder:
 
     def _check_gap_constraint_simulated(self, worker_id, date, simulated_assignments):
         """Check gap constraint using simulated assignments."""
-        # Use scheduler's gap config
-        min_days_between = self.scheduler.gap_between_shifts + 1
-        # Add part-time adjustment if needed
+        # Use per-worker gap based on calendar days
         worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
-        work_percentage = worker_data.get("work_percentage", 100) if worker_data else 100
-        if work_percentage < 70:  # Example threshold for part-time adjustment
-            min_days_between = max(min_days_between, self.scheduler.gap_between_shifts + 2)
+        min_days_between = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
 
         # Merge prior-period assignments so gap/7-14 pattern constraints span the boundary.
         _current = simulated_assignments.get(worker_id, set())
@@ -1161,10 +1154,8 @@ class ScheduleBuilder:
             days_between = abs((date - prev_date).days)
             if days_between < min_days_between:
                 return False
-            # Add Friday-Monday / 7-14 day checks if needed here too, using relaxation_level=0 logic
-            if (
-                self.scheduler.gap_between_shifts == 1 and work_percentage >= 20
-            ):  # Corrected: work_percentage from worker_data
+            # Friday-Monday check — only if effective gap > 3
+            if min_days_between > 3:
                 if days_between == 3:
                     if (prev_date.weekday() == 4 and date.weekday() == 0) or (
                         date.weekday() == 4 and prev_date.weekday() == 0
@@ -1812,12 +1803,8 @@ class ScheduleBuilder:
         high_deficit = target_deficit >= 2  # Worker needs 2+ more shifts
 
         work_percentage = worker.get("work_percentage", 100)
-        base_min_gap = self.gap_between_shifts + 2 if work_percentage < 70 else self.gap_between_shifts + 1
-
-        # Minimum floor: gap_between_shifts for auto workers at 100%, strict otherwise
-        is_auto = worker.get("auto_calculate_shifts", True)
-        is_full_time = work_percentage >= 100
-        hard_floor = self.gap_between_shifts if (is_auto and is_full_time) else self.gap_between_shifts + 1
+        hard_floor = get_effective_min_gap(worker, self.gap_between_shifts)
+        base_min_gap = hard_floor + 1  # scoring prefers 1 more than the hard minimum
 
         # STRICT MODE: No gap reduction allowed
         if self.use_strict_mode:
@@ -1840,8 +1827,8 @@ class ScheduleBuilder:
             if days_between < min_gap:
                 return False
 
-            # Special rule: No Friday + Monday (3-day gap)
-            if relaxation_level == 0 and self.gap_between_shifts == 1:
+            # Special rule: No Friday + Monday (3-day gap) — only if effective gap > 3
+            if relaxation_level == 0 and hard_floor > 3:
                 if (prev_date.weekday() == 4 and date.weekday() == 0) or (
                     date.weekday() == 4 and prev_date.weekday() == 0
                 ):
@@ -2096,7 +2083,10 @@ class ScheduleBuilder:
         if assignments:
             most_recent = max(assignments)
             days_since_last = (date - most_recent).days
-            min_gap = self.gap_between_shifts + 1
+            min_gap = get_effective_min_gap(
+                next((w for w in self.workers_data if w["id"] == worker_id), None),
+                self.gap_between_shifts,
+            )
 
             # Minimal LINEAR bonus: 10 points per day of gap
             # This ensures workers with any valid gap are secondary to ratio
@@ -5620,19 +5610,17 @@ class ScheduleBuilder:
         if not worker:
             return False
         work_percentage = worker.get("work_percentage", 100)
-        min_gap = self.gap_between_shifts
-        if work_percentage < 70:
-            min_gap = max(3, min_gap + 2)
+        min_gap = get_effective_min_gap(worker, self.gap_between_shifts)
 
         for prev_date in assignments:
             days_between = abs((date - prev_date).days)
             if days_between == 0:
                 continue
-            if days_between < min_gap + 1:
+            if days_between < min_gap:
                 return False
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
                 return False
-            if min_gap == 1 and days_between == 3:
+            if min_gap > 3 and days_between == 3:
                 if (prev_date.weekday() == 4 and date.weekday() == 0) or (
                     date.weekday() == 4 and prev_date.weekday() == 0
                 ):
@@ -5690,22 +5678,20 @@ class ScheduleBuilder:
             return False
 
         work_percentage = worker.get("work_percentage", 100)
-        min_gap = self.gap_between_shifts
-        if work_percentage < 70:
-            min_gap = max(3, min_gap + 2)
+        min_gap = get_effective_min_gap(worker, self.gap_between_shifts)
 
         for prev_date in current_assignments:
             days_between = abs((date - prev_date).days)
             if days_between == 0:
                 continue  # Same date handled above
             # Minimum gap (hard)
-            if days_between < min_gap + 1:
+            if days_between < min_gap:
                 return False
             # 7/14-day same-weekday pattern (hard)
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
                 return False
-            # Friday-Monday 3-day special case
-            if min_gap == 1 and days_between == 3:
+            # Friday-Monday 3-day special case — only if effective gap > 3
+            if min_gap > 3 and days_between == 3:
                 if (prev_date.weekday() == 4 and date.weekday() == 0) or (
                     date.weekday() == 4 and prev_date.weekday() == 0
                 ):

@@ -3,6 +3,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
+from saldo27.utilities import get_effective_min_gap
+
 
 class OptimizationMetrics:
     """
@@ -254,7 +256,6 @@ class OptimizationMetrics:
         try:
             violation_count = 0
             scheduler = self.scheduler
-            gap_min = scheduler.gap_between_shifts + 1
 
             # --- Gap violations (fast: O(total_assignments) per worker) ---
             for worker in scheduler.workers_data:
@@ -262,8 +263,7 @@ class OptimizationMetrics:
                 assignments = sorted(scheduler.worker_assignments.get(worker_id, set()))
                 if len(assignments) < 2:
                     continue
-                work_pct = worker.get("work_percentage", 100)
-                min_days = max(gap_min, gap_min + 1) if work_pct < 70 else gap_min
+                min_days = get_effective_min_gap(worker, scheduler.gap_between_shifts)
 
                 for i in range(1, len(assignments)):
                     diff = (assignments[i] - assignments[i - 1]).days
