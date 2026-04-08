@@ -8,6 +8,42 @@ import requests
 from saldo27.performance_cache import cached
 
 
+def get_effective_min_gap(worker_data: dict | None, gap_between_shifts: int) -> int:
+    """Return the effective minimum gap (calendar days) between shifts for a worker.
+
+    Three tiers based on worker type:
+    - Auto workers at 100%+ work: gap_between_shifts - 1 (relaxed)
+    - Manual workers with ≤3 guardias/mes OR any worker with <60% work: gap_between_shifts + 1 (strict)
+    - Everyone else: gap_between_shifts (standard)
+
+    Returns at least 1 (minimum 1 calendar day between shifts).
+    """
+    if not worker_data:
+        return gap_between_shifts
+
+    work_percentage = worker_data.get("work_percentage", 100)
+    is_auto = worker_data.get("auto_calculate_shifts", True)
+
+    # Rule B (strict): work <60% — applies to ALL workers
+    if work_percentage < 60:
+        return gap_between_shifts + 1
+
+    # Rule B (strict): manual workers with ≤3 guardias/mes
+    if not is_auto:
+        guardias_mes = worker_data.get(
+            "_original_target_shifts", worker_data.get("target_shifts", 0)
+        )
+        if guardias_mes <= 3:
+            return gap_between_shifts + 1
+
+    # Rule A (relaxed): auto workers at 100%+
+    if is_auto and work_percentage >= 100:
+        return max(1, gap_between_shifts - 1)
+
+    # Standard
+    return gap_between_shifts
+
+
 def numeric_sort_key(item):
     """
     Attempts to convert the first element of a tuple (the key) to an integer
