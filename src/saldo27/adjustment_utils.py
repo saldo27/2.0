@@ -6,6 +6,8 @@ Permite calcular desviaciones y generar intercambios sugeridos
 import logging
 from datetime import datetime
 
+from saldo27.utilities import get_effective_min_gap
+
 
 class TurnAdjustmentManager:
     """Maneja el cálculo de desviaciones y las correcciones de turnos"""
@@ -241,7 +243,8 @@ class TurnAdjustmentManager:
 
         # Verificar restricciones de días mínimos entre turnos
         gap_between_shifts = self.schedule_config.get("gap_between_shifts", 3)
-        if not self._check_minimum_gap(worker_id, date, gap_between_shifts):
+        effective_gap = get_effective_min_gap(worker_data, gap_between_shifts)
+        if not self._check_minimum_gap(worker_id, date, effective_gap):
             return False
 
         return True
