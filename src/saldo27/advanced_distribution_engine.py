@@ -17,6 +17,8 @@ import logging
 import random
 from datetime import datetime, timedelta
 
+from saldo27.utilities import get_effective_min_gap
+
 
 class AdvancedDistributionEngine:
     """Motor avanzado de distribución de turnos"""
@@ -398,7 +400,10 @@ class AdvancedDistributionEngine:
             closest_gap = min(closest_gap, gap)
 
         # Bonus exponencial por gaps grandes
-        min_gap = self.scheduler.gap_between_shifts + 1
+        worker_data = next(
+            (w for w in self.scheduler.workers_data if w["id"] == worker_id), None
+        )
+        min_gap = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
 
         if closest_gap > min_gap:
             extra_days = closest_gap - min_gap
