@@ -1,6 +1,6 @@
 ================================================================================
                     GuardiasApp - Aplicación para Distribución de Guardias
-                                  Versión 2.8
+                                  Versión 2.9
 ================================================================================
 
 DESCRIPCIÓN:
@@ -140,8 +140,8 @@ issues en GitHub o contactar por email.
 CRÉDITOS:
 ---------
 Desarrollado por:  Luis Herrera Para
-Versión: 2.8
-Fecha:  Marzo 2026
+Versión: 2.9
+Fecha:  Abril 2026
 
 COPYRIGHT:
 ----------
@@ -167,7 +167,9 @@ Qué hace el sistema con el calendario previo:
   de período (si un trabajador hizo guardia el último lunes del mes anterior,
   no se le asignará el primer lunes del mes siguiente).
 - Viernes-Lunes: la regla de no asignar viernes+lunes consecutivos se aplica
-  respetando el fin del período anterior.
+  solo cuando el gap efectivo del trabajador es > 3 días; si el gap efectivo
+  permite la separación viernes-lunes (3 días naturales), se permite.
+  Se respeta el fin del período anterior.
 - Fines de semana consecutivos: la cuenta de fines de semana consecutivos
   continúa desde el último fin de semana del período anterior.
 - Cuota proporcional de fines de semana: el cap de fines de semana del nuevo
@@ -186,6 +188,32 @@ las restricciones.
 
 HISTORIAL DE VERSIONES:
 ------------------------
+v2.9 (Abril 2026):
+- NUEVO: Semántica unificada de gap mínimo entre guardias — el hueco se
+  mide en días naturales (no días de descanso) con tres niveles:
+  * Trabajadores AUTO + jornada 100%: gap efectivo = gap - 1 (relajado)
+  * Trabajadores MANUALES con ≤3 guardias/mes O jornada < 60%:
+    gap efectivo = gap + 1 (estricto)
+  * Resto de trabajadores: gap efectivo = gap (estándar)
+  Función centralizada get_effective_min_gap() en utilities.py, aplicada
+  en los ~22 puntos de comprobación de hueco del motor (constraint_checker,
+  scheduler, schedule_builder, iterative_optimizer, live_validator,
+  worker_eligibility, optimization_metrics, adjustment_utils,
+  adaptive_iterations, advanced_distribution_engine)
+- Corrección: regla viernes-lunes ahora condicional — solo se bloquea
+  el patrón viernes+lunes (3 días naturales) cuando el gap efectivo del
+  trabajador es > 3; para trabajadores con gap efectivo ≤ 3, la propia
+  comprobación de gap ya lo cubre. Eliminadas 11 violaciones falsas
+  (scheduler.py, constraint_checker.py, schedule_builder.py,
+  worker_eligibility.py, live_validator.py)
+- Corrección: estadística "Total Asignado" coincide ahora con
+  "Guardias cubiertas" — se usaba un set por trabajador que
+  deduplicaba cuando un trabajador ocupaba 2 puestos el mismo día;
+  reemplazado por contador entero (statistics_calculator.py)
+- Corrección: variable work_percentage no definida en
+  _check_gap_constraint_simulated (schedule_builder.py) — bug
+  preexistente que podía causar NameError en rutas de simulación
+
 v2.8 (Marzo 2026):
 - Limpieza de sidebar: eliminados controles inactivos que no tenían
   efecto en la generación:
