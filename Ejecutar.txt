@@ -1,5 +1,6 @@
 uv sync
 
 uv run streamlit run src/saldo27/app_streamlit.py
+uv run python -m streamlit run src/saldo27/app_streamlit.py
 
 
