@@ -1,6 +1,8 @@
 import logging
 from datetime import timedelta
 
+from saldo27.utilities import get_effective_min_gap
+
 
 class WorkerEligibilityTracker:
     """Helper class to track and manage worker eligibility for assignments"""
@@ -103,13 +105,18 @@ class WorkerEligibilityTracker:
         if last_worked:
             days_between = (date - last_worked).days
 
-            # Basic minimum gap check - need configured gap days off
-            min_days_between = self.gap_between_shifts + 1  # +1 because we need days_between > gap
+            # Per-worker minimum gap (calendar days)
+            worker_data = next(
+                (w for w in self.workers_data if w["id"] == worker_id), None
+            )
+            min_days_between = get_effective_min_gap(
+                worker_data, self.gap_between_shifts
+            )
             if days_between < min_days_between:
                 return False
 
-            # Special case for Friday-Monday
-            if days_between == 3 and (
+            # Special case for Friday-Monday — only if effective gap > 3
+            if min_days_between > 3 and days_between == 3 and (
                 (date.weekday() == 0 and last_worked.weekday() == 4)
                 or (date.weekday() == 4 and last_worked.weekday() == 0)
             ):
