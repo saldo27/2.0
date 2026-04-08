@@ -378,11 +378,14 @@ class StatisticsCalculator:
 
         # CRITICAL: Build actual assignments directly from schedule (single source of truth)
         # This ensures we count what's REALLY in the schedule, not what's tracked
+        # Use a set of dates for date-based queries AND a slot counter for total shifts
         actual_assignments = defaultdict(set)
+        actual_slot_count = defaultdict(int)
         for date, shifts in schedule.items():
             for post_idx, worker_id in enumerate(shifts):
                 if worker_id is not None:
                     actual_assignments[worker_id].add(date)
+                    actual_slot_count[worker_id] += 1
 
         # Calculate stats for each worker efficiently
         for worker in self.scheduler.workers_data:
@@ -392,7 +395,8 @@ class StatisticsCalculator:
             # CRITICAL: Use actual assignments from schedule, not worker_assignments
             # This ensures accurate count even if tracking is out of sync
             assignments = actual_assignments.get(worker_id, set())
-            total_shifts_count = len(assignments)
+            # Use slot count (not set length) so double-post on same day counts twice
+            total_shifts_count = actual_slot_count.get(worker_id, 0)
 
             # Get target shifts
             target_shifts = worker.get("target_shifts", 0)
