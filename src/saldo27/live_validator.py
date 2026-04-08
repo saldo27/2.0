@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 from saldo27.event_bus import EventType, get_event_bus
+from saldo27.utilities import get_effective_min_gap
 
 
 class ValidationSeverity(Enum):
@@ -425,15 +426,10 @@ class LiveValidator:
 
         work_percentage = worker_data.get("work_percentage", 100)
 
-        # Determine minimum days required between shifts
-        # FIXED: gap_between_shifts is the actual minimum days between shifts
-        # If gap_between_shifts=0, workers can work consecutive days (days_between=1 is OK)
-        # If gap_between_shifts=1, workers need at least 1 day gap (days_between=2 minimum)
-        min_required_days_between = self.scheduler.gap_between_shifts + 1
-
-        # Part-time workers might need a larger gap
-        if work_percentage < 70:
-            min_required_days_between = max(min_required_days_between, self.scheduler.gap_between_shifts + 2)
+        # Determine minimum days required between shifts (calendar days, per-worker)
+        min_required_days_between = get_effective_min_gap(
+            worker_data, self.scheduler.gap_between_shifts
+        )
 
         # If gap_between_shifts is 0, allow consecutive work (no gap validation needed)
         if self.scheduler.gap_between_shifts == 0:
@@ -457,8 +453,8 @@ class LiveValidator:
                     affected_items=[assigned_date.strftime("%Y-%m-%d")],
                 )
 
-            # Friday-Monday rule: only apply if base gap allows for 3-day difference
-            if self.scheduler.gap_between_shifts <= 1:
+            # Friday-Monday rule: only apply if effective gap > 3
+            if min_required_days_between > 3:
                 if days_between == 3:
                     if (assigned_date.weekday() == 4 and shift_date.weekday() == 0) or (
                         shift_date.weekday() == 4 and assigned_date.weekday() == 0
@@ -808,14 +804,20 @@ class LiveValidator:
 
         for worker_id, assignments in self.scheduler.worker_assignments.items():
             assignments_list = sorted(list(assignments))
+            worker_data = next(
+                (w for w in self.scheduler.workers_data if w["id"] == worker_id), None
+            )
+            effective_gap = get_effective_min_gap(
+                worker_data, self.scheduler.gap_between_shifts
+            )
 
             for i in range(len(assignments_list) - 1):
                 gap = (assignments_list[i + 1] - assignments_list[i]).days
-                if 0 < gap < self.scheduler.gap_between_shifts:
+                if 0 < gap < effective_gap:
                     conflicts.append(
                         ConflictInfo(
                             conflict_type="gap_violation",
-                            description=f"Worker {worker_id} has {gap} day gap (minimum: {self.scheduler.gap_between_shifts})",
+                            description=f"Worker {worker_id} has {gap} day gap (minimum: {effective_gap})",
                             severity=ValidationSeverity.ERROR,
                             workers_involved=[worker_id],
                             dates_involved=[assignments_list[i], assignments_list[i + 1]],
