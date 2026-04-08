@@ -1,8 +1,10 @@
 import logging
 import statistics
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+
+from saldo27.utilities import get_effective_min_gap
 
 
 class AdaptiveIterationManager:
@@ -433,7 +435,11 @@ class AdaptiveIterationManager:
         holidays_set = set(scheduler_instance.holidays) if hasattr(scheduler_instance, "holidays") else set()
 
         for date, shifts in scheduler_instance.schedule.items():
-            is_weekend_or_holiday = date.weekday() >= 5 or date in holidays_set
+            is_weekend_or_holiday = (
+                date.weekday() >= 4  # Viernes, Sábado, Domingo
+                or date in holidays_set  # Festivos
+                or (date + timedelta(days=1)) in holidays_set  # Prefestivos
+            )
             if is_weekend_or_holiday:
                 for worker_id in shifts:
                     if worker_id is not None:
@@ -484,12 +490,16 @@ class AdaptiveIterationManager:
         """Count violations of gap between shifts constraint"""
         violations = 0
         gap_days = getattr(scheduler_instance, "gap_between_shifts", 1)
+        workers_data = getattr(scheduler_instance, "workers_data", [])
+        workers_map = {w["id"]: w for w in workers_data}
 
         for worker_id, assignments in scheduler_instance.worker_assignments.items():
+            worker_data = workers_map.get(worker_id)
+            effective_gap = get_effective_min_gap(worker_data, gap_days)
             sorted_dates = sorted(assignments)
             for i in range(1, len(sorted_dates)):
                 days_between = (sorted_dates[i] - sorted_dates[i - 1]).days
-                if days_between <= gap_days:
+                if days_between < effective_gap:
                     violations += 1
 
         return violations
