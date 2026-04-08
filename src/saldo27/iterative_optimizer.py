@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 from saldo27.balance_validator import BalanceValidator
 from saldo27.performance_cache import time_function
+from saldo27.utilities import get_effective_min_gap
 
 
 @dataclass
@@ -538,51 +539,11 @@ class IterativeOptimizer:
                         optimized_schedule, workers_data, schedule_config, scheduler_core
                     )
 
-        # Strategy 3: Apply random perturbations based on intensity - more aggressive for persistent violations
-        total_violations = len(general_violations) + len(weekend_violations)
-        if total_violations > 4 or self.stagnation_counter > 0 or self.no_change_counter > 0:  # Active from iteration 1
-            # Scale perturbation intensity based on violation count and stagnation
-            base_intensity = intensity * 1.0  # Increased from 0.8
-            violation_multiplier = min(3.0, 1.0 + (total_violations / 6.0))  # More aggressive scaling
-            stagnation_multiplier = 1.0 + (self.stagnation_counter * 0.4)  # Increased from 0.3
-
-            perturbation_intensity = min(
-                base_intensity * violation_multiplier * stagnation_multiplier, 0.8
-            )  # Higher max from 0.6 to 0.8
-
-            logging.info(
-                f"   🎲 Enhanced perturbations - violations: {total_violations}, stagnation: {self.stagnation_counter}, intensity: {perturbation_intensity:.3f}"
-            )
-
-            optimized_schedule = self._apply_random_perturbations(
-                optimized_schedule, workers_data, schedule_config, intensity=perturbation_intensity
-            )
-
-        # Strategy 4: Forced redistribution for high stagnation - MORE AGGRESSIVE
-        if self.stagnation_counter >= 1 and total_violations > 4:
-            # Re-validate to get fresh violation data for forced redistribution
-            if validator:
-                fresh_report = self._create_validation_report(validator, optimized_schedule)
-                fresh_general = fresh_report.get("general_shift_violations", [])
-                fresh_weekend = fresh_report.get("weekend_shift_violations", [])
-                all_violations = fresh_general + fresh_weekend
-                total_violations = len(all_violations)
-                logging.info(
-                    f"   🚨 Applying forced redistribution ({total_violations} current violations after strategies)"
-                )
-            else:
-                all_violations = general_violations + weekend_violations
-
-            optimized_schedule = self._apply_forced_redistribution(
-                optimized_schedule, all_violations, workers_data, schedule_config
-            )
-
-            # Strategy 4B: Double-pass for persistent violations
-            if self.stagnation_counter >= 3 and total_violations > 2:
-                logging.info("   🔥 Double-pass forced redistribution for persistent violations")
-                optimized_schedule = self._apply_forced_redistribution(
-                    optimized_schedule, general_violations + weekend_violations, workers_data, schedule_config
-                )
+        # Strategy 3 & 4 (SA perturbations + forced redistribution) DISABLED.
+        # These massive random swaps destroy the carefully balanced schedule
+        # built by Phase 3 (scheduler_core). The targeted strategies above
+        # (redistribution, weekend swaps, rotation, chain, ejection-chain)
+        # are sufficient and much more surgical.
 
         return optimized_schedule
 
@@ -994,6 +955,41 @@ class IterativeOptimizer:
                     # For now, be more permissive in list format during redistribution
                     pass  # Allow reassignments in list format
 
+            # CRITICAL: Check incompatibilities with other workers on the same date
+            if date_key in schedule:
+                assignments_on_date = schedule[date_key]
+                others_on_date = []
+                if isinstance(assignments_on_date, list):
+                    others_on_date = [w for w in assignments_on_date if w is not None and w != worker_name]
+                elif isinstance(assignments_on_date, dict):
+                    for shift_workers in assignments_on_date.values():
+                        if isinstance(shift_workers, list):
+                            others_on_date.extend(w for w in shift_workers if w is not None and w != worker_name)
+                if others_on_date and worker_data:
+                    my_incomp = set(worker_data.get("incompatible_with", []))
+                    if my_incomp:
+                        for other in others_on_date:
+                            # other is worker_name (e.g. "KIKO"); look up by id
+                            other_id = other
+                            if other_id in my_incomp:
+                                logging.debug(
+                                    f"\u274c {worker_name} blocked: incompatible with {other_id} on {date_key}"
+                                )
+                                return False
+                    # Also check the reverse direction
+                    for other in others_on_date:
+                        other_data = next(
+                            (w for w in workers_data if str(w.get("id", "")) == str(other)
+                             or w.get("id") == other), None
+                        )
+                        if other_data:
+                            other_incomp = set(other_data.get("incompatible_with", []))
+                            if worker_name in other_incomp or (worker_data and worker_data.get("id") in other_incomp):
+                                logging.debug(
+                                    f"\u274c {worker_name} blocked: {other} lists incompatibility on {date_key}"
+                                )
+                                return False
+
             # CRITICAL: Check 7/14 day pattern constraint
             # This is the key constraint that prevents same-weekday assignments 7 or 14 days apart
             worker_assignments = set()
@@ -1031,25 +1027,15 @@ class IterativeOptimizer:
                     )
                     return False
 
-                # Check minimum gap constraint - VERY FLEXIBLE for redistribution
-                gap_between_shifts = getattr(self, "gap_between_shifts", 3)  # Default gap
+                # Check minimum gap constraint
+                gap_between_shifts = getattr(self, "gap_between_shifts", 3)
+                min_days_between = get_effective_min_gap(worker_data, gap_between_shifts)
 
-                # SUPER FLEXIBLE GAP: For redistribution, allow much more flexibility
-                # This gives maximum flexibility when redistributing to balance workload
-                min_gap_redistribution = max(1, gap_between_shifts - 2)  # Even more flexible: gap - 2, minimum 1
-
-                # Apply very flexible gap constraint
-                if 0 < days_between < min_gap_redistribution:
+                if 0 < days_between < min_days_between:
                     logging.debug(
-                        f"❌ {worker_name} blocked: Min redistribution gap violation - {days_between} days < {min_gap_redistribution} required"
+                        f"❌ {worker_name} blocked: gap violation - {days_between} days < {min_days_between} required"
                     )
                     return False
-                elif min_gap_redistribution <= days_between < gap_between_shifts:
-                    # In the super flexible zone - allow and log it
-                    logging.debug(
-                        f"⚠️ {worker_name} super flexible gap: {days_between} days (below normal {gap_between_shifts} but allowed for redistribution)"
-                    )
-                    # Continue - allow this assignment
 
             # CRITICAL: Check tolerance limit (±12% absolute maximum during optimization)
             # This prevents swaps from violating tolerance limits
@@ -2996,7 +2982,9 @@ class IterativeOptimizer:
         """
         Determine if optimization should stop based on convergence criteria.
 
-        MODIFIED: Only stop if violations reach 0 - always complete all iterations otherwise
+        Stops when:
+        - violations reach 0 (perfect schedule)
+        - stagnation exceeds convergence_threshold (no improvement for N iterations)
 
         Args:
             iteration: Current iteration number
@@ -3005,14 +2993,19 @@ class IterativeOptimizer:
         Returns:
             bool: True if optimization should stop
         """
-        # ONLY stop if we reach 0 violations (perfect schedule)
+        # Stop if we reach 0 violations (perfect schedule)
         if current_violations == 0:
             logging.info("   ✅ Perfect schedule achieved - stopping optimization")
             return True
 
-        # Otherwise, ALWAYS continue - let all iterations run
-        # This ensures maximum optimization effort for difficult schedules
-        logging.debug(f"   ⏩ Continuing optimization ({current_violations} violations remaining)")
+        # Stop if stagnation exceeds convergence threshold
+        if self.stagnation_counter >= self.convergence_threshold:
+            logging.info(
+                f"   🛑 Stagnation threshold reached ({self.stagnation_counter}/{self.convergence_threshold}) "
+                f"with {current_violations} violations remaining — stopping optimization"
+            )
+            return True
+
         return False
 
     def _calculate_average_improvement(self) -> float:
@@ -3377,6 +3370,30 @@ class IterativeOptimizer:
                     if isinstance(shift_workers, list) and worker_name in shift_workers:
                         return False
 
+            # CRITICAL: Check incompatibilities with other workers on the same date
+            assignments_on_date = schedule.get(date)
+            if assignments_on_date is not None:
+                others_on_date = []
+                if isinstance(assignments_on_date, list):
+                    others_on_date = [w for w in assignments_on_date if w is not None and w != worker_name]
+                elif isinstance(assignments_on_date, dict):
+                    for shift_workers in assignments_on_date.values():
+                        if isinstance(shift_workers, list):
+                            others_on_date.extend(w for w in shift_workers if w is not None and w != worker_name)
+                if others_on_date:
+                    worker_data_compat = next((w for w in workers_data if w.get("id") == worker_id), None)
+                    my_incomp = set(worker_data_compat.get("incompatible_with", [])) if worker_data_compat else set()
+                    for other in others_on_date:
+                        if other in my_incomp:
+                            return False
+                        other_data = next(
+                            (w for w in workers_data if str(w.get("id", "")) == str(other)
+                             or w.get("id") == other), None
+                        )
+                        if other_data and (worker_name in set(other_data.get("incompatible_with", []))
+                                           or worker_id in set(other_data.get("incompatible_with", []))):
+                            return False
+
             # CRITICAL: Check tolerance limit (±12% absolute maximum during optimization)
             # This prevents optimization from violating tolerance limits
             if hasattr(scheduler_core, "builder") and scheduler_core.builder:
@@ -3455,6 +3472,7 @@ class IterativeOptimizer:
             # Check basic gap constraint (simplified - just check adjacent days)
             if hasattr(scheduler_core, "scheduler") and hasattr(scheduler_core.scheduler, "gap_between_shifts"):
                 gap = scheduler_core.scheduler.gap_between_shifts
+                min_days_between = get_effective_min_gap(worker_data, gap)
 
                 # Get worker's assignments
                 worker_dates = []
@@ -3472,7 +3490,7 @@ class IterativeOptimizer:
                     try:
                         if hasattr(date, "date") and hasattr(worker_date, "date"):
                             days_diff = abs((date - worker_date).days)
-                            if days_diff < gap and days_diff > 0:
+                            if 0 < days_diff < min_days_between:
                                 return False
                     except (ValueError, AttributeError):
                         pass  # Skip date comparison errors
