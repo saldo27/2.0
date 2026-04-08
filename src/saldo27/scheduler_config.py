@@ -8,16 +8,17 @@ for the scheduler system to avoid global side effects in the main module.
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 
 
 def setup_logging(
-    log_level: int = logging.DEBUG, log_directory: str = "logs", log_filename: str = "scheduler.log"
+    log_level: int = logging.INFO, log_directory: str = "logs", log_filename: str = "scheduler.log"
 ) -> bool:
     """
     Configure logging for the scheduler system.
 
     Args:
-        log_level: Logging level (default: DEBUG)
+        log_level: Logging level (default: INFO)
         log_directory: Directory for log files (default: "logs")
         log_filename: Name of the log file (default: "scheduler.log")
 
@@ -47,8 +48,10 @@ def setup_logging(
             handler.close()
 
         # Create and add handlers
-        # File handler with UTF-8 encoding
-        file_handler = logging.FileHandler(log_file_path, mode="a", encoding="utf-8", errors="replace")
+        # Rotating file handler with UTF-8 encoding (max 5 MB, keep 3 backups)
+        file_handler = RotatingFileHandler(
+            log_file_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8", errors="replace"
+        )
         file_handler.setLevel(log_level)
         file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         file_handler.setFormatter(file_formatter)
@@ -99,7 +102,7 @@ class SchedulerConfig:
     BATCH_SIZE = 100
 
     # Logging configuration
-    LOG_LEVEL = logging.DEBUG
+    LOG_LEVEL = logging.INFO
     LOG_DIRECTORY = "logs"
     LOG_FILENAME = "scheduler.log"
 
