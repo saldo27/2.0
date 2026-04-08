@@ -3,8 +3,14 @@ import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from saldo27.utilities import get_effective_min_gap
+
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
+
+
+def _debug_enabled() -> bool:
+    return logging.getLogger().isEnabledFor(logging.DEBUG)
 
 
 class ConstraintChecker:
@@ -84,7 +90,7 @@ class ConstraintChecker:
                     worker2_id in worker1_cache["incompatible_with"] or worker1_id in worker2_cache["incompatible_with"]
                 )
 
-                if result:
+                if result and _debug_enabled():
                     logging.debug(f"Workers {worker1_id} and {worker2_id} are incompatible.")
 
             # Cache the result
@@ -127,7 +133,8 @@ class ConstraintChecker:
                 if assigned_id == worker_id:
                     continue  # Skip self
                 if assigned_id in incompatible_with:
-                    logging.debug(f"Incompatibility Violation: {worker_id} cannot work with {assigned_id} on {date}")
+                    if _debug_enabled():
+                        logging.debug(f"Incompatibility Violation: {worker_id} cannot work with {assigned_id} on {date}")
                     return False
 
             return True  # No incompatibilities found
@@ -141,26 +148,18 @@ class ConstraintChecker:
         self._incompatibility_cache.clear()
         self._worker_lookup_cache.clear()
         self._build_worker_cache()
-        logging.debug("ConstraintChecker caches cleared and rebuilt")
+        if _debug_enabled():
+            logging.debug("ConstraintChecker caches cleared and rebuilt")
 
     def _check_gap_constraint(self, worker_id, date):  # Removed min_gap parameter
         """Check minimum gap between assignments, Friday-Monday, and 7/14 day patterns."""
         worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
         if not worker:
             return False  # Should not happen
-        work_percentage = worker.get("work_percentage", 100)
-
-        # Determine base minimum days required *between* shifts
-        # if gap_between_shifts = 1, then 2 days must be between assignments.
-        # if gap_between_shifts = 3, then 4 days must be between assignments.
-        # So, days_between must be >= self.scheduler.gap_between_shifts + 1
-        min_required_days_between = self.scheduler.gap_between_shifts + 1
-
-        # Part-time workers might need a larger gap
-        if work_percentage < 70:  # Using a common threshold from ScheduleBuilder
-            min_required_days_between = max(
-                min_required_days_between, self.scheduler.gap_between_shifts + 2
-            )  # e.g. at least +1 more day
+        # Determine minimum gap (calendar days) per worker type
+        min_required_days_between = get_effective_min_gap(
+            worker, self.scheduler.gap_between_shifts
+        )
 
         assignments = sorted(
             list(
@@ -177,31 +176,33 @@ class ConstraintChecker:
 
             # Basic gap check
             if days_between < min_required_days_between:
-                logging.debug(
-                    f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails basic gap with {prev_date.strftime('%Y-%m-%d')} ({days_between} < {min_required_days_between})"
-                )
+                if _debug_enabled():
+                    logging.debug(
+                        f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails basic gap with {prev_date.strftime('%Y-%m-%d')} ({days_between} < {min_required_days_between})"
+                    )
                 return False
 
-            # Friday-Monday rule: typically only if base gap is small (e.g., allows for 3-day difference)
-            # This rule means a worker doing Fri cannot do Mon, creating a 3-day diff.
-            # If min_required_days_between is already > 3, this rule is implicitly covered.
-            if self.scheduler.gap_between_shifts <= 1:  # Only apply if basic gap could allow a 3-day span
+            # Friday-Monday rule: only block if the worker's effective gap > 3
+            # (if effective gap <= 3, a 3-day Fri-Mon span is permitted)
+            if min_required_days_between > 3:
                 if days_between == 3:
                     if (prev_date.weekday() == 4 and date.weekday() == 0) or (
                         date.weekday() == 4 and prev_date.weekday() == 0
                     ):
-                        logging.debug(
-                            f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails Fri-Mon rule with {prev_date.strftime('%Y-%m-%d')}"
-                        )
+                        if _debug_enabled():
+                            logging.debug(
+                                f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails Fri-Mon rule with {prev_date.strftime('%Y-%m-%d')}"
+                            )
                         return False
 
             # Prevent same day of week in consecutive weeks (7 or 14 day pattern)
             # CRITICAL: This constraint applies to ALL days (weekdays AND weekends)
             # NO exceptions allowed - this is a HARD constraint
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                logging.debug(
-                    f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {prev_date.strftime('%Y-%m-%d')}"
-                )
+                if _debug_enabled():
+                    logging.debug(
+                        f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {prev_date.strftime('%Y-%m-%d')}"
+                    )
                 return False
 
         return True
@@ -407,18 +408,20 @@ class ConstraintChecker:
 
             # Check if assignment would exceed the tolerance limit
             if current_weekend_count > adjusted_max_target:
-                logging.debug(
-                    f"Worker {worker_id}: weekend assignment would exceed proportional limit "
-                    f"(current+prior={current_weekend_count} > {adjusted_max_target}). "
-                    f"Target: {raw_target:.1f}, prior: {prior_weekend}, "
-                    f"tolerance: ±{weekend_tolerance_shifts} shifts, actual ratio: {actual_weekend_ratio:.3f}"
-                )
+                if _debug_enabled():
+                    logging.debug(
+                        f"Worker {worker_id}: weekend assignment would exceed proportional limit "
+                        f"(current+prior={current_weekend_count} > {adjusted_max_target}). "
+                        f"Target: {raw_target:.1f}, prior: {prior_weekend}, "
+                        f"tolerance: ±{weekend_tolerance_shifts} shifts, actual ratio: {actual_weekend_ratio:.3f}"
+                    )
                 return True
 
-            logging.debug(
-                f"Worker {worker_id}: weekend assignment within limits "
-                f"({current_weekend_count} <= {adjusted_max_target}). Target: {raw_target:.1f}"
-            )
+            if _debug_enabled():
+                logging.debug(
+                    f"Worker {worker_id}: weekend assignment within limits "
+                    f"({current_weekend_count} <= {adjusted_max_target}). Target: {raw_target:.1f}"
+                )
             return False
 
         except Exception as e:
@@ -436,21 +439,24 @@ class ConstraintChecker:
             if worker.get("days_off"):
                 off_periods = self.date_utils.parse_date_ranges(worker["days_off"])
                 if any(start <= date <= end for start, end in off_periods):
-                    logging.debug(f"Worker {worker_id} is off on {date}")
+                    if _debug_enabled():
+                        logging.debug(f"Worker {worker_id} is off on {date}")
                     return True
 
             # Check work periods
             if worker.get("work_periods"):
                 work_periods = self.date_utils.parse_date_ranges(worker["work_periods"])
                 if not any(start <= date <= end for start, end in work_periods):
-                    logging.debug(f"Worker {worker_id} is not in work period on {date}")
+                    if _debug_enabled():
+                        logging.debug(f"Worker {worker_id} is not in work period on {date}")
                     return True
 
             # Check if worker is already assigned for this date
             # CRITICAL: Use self.scheduler.worker_assignments to avoid stale references
             # after deepcopy restore or _apply_final_schedule replaces the dict
             if date in self.scheduler.worker_assignments.get(worker_id, []):
-                logging.debug(f"Worker {worker_id} is already assigned on {date}")
+                if _debug_enabled():
+                    logging.debug(f"Worker {worker_id} is already assigned on {date}")
                 return True
 
             # Check weekend constraints (replacing the custom weekend check)
@@ -460,7 +466,8 @@ class ConstraintChecker:
             )
             if is_special_day_for_unavailability_check:
                 if self._would_exceed_weekend_limit(worker_id, date):  # This now calls the consistently defined limit
-                    logging.debug(f"Worker {worker_id} would exceed weekend limit if assigned on {date}")
+                    if _debug_enabled():
+                        logging.debug(f"Worker {worker_id} would exceed weekend limit if assigned on {date}")
                     return True
 
             return False
@@ -474,32 +481,39 @@ class ConstraintChecker:
         Check if a worker can be assigned to a shift
         """
         try:
+            _dbg = _debug_enabled()
             # Log all constraint checks
-            logging.debug(f"\nChecking worker {worker_id} for {date}, post {post}")
+            if _dbg:
+                logging.debug(f"\nChecking worker {worker_id} for {date}, post {post}")
 
             # 1. First check - Incompatibility
             if not self._check_incompatibility(worker_id, date):
-                logging.debug(f"- Failed: Worker {worker_id} is incompatible with assigned workers")
+                if _dbg:
+                    logging.debug(f"- Failed: Worker {worker_id} is incompatible with assigned workers")
                 return False
 
             # 2. Check max shifts
             if len(self.worker_assignments.get(worker_id, [])) >= self.max_shifts_per_worker:
-                logging.debug(f"- Failed: Max shifts reached ({self.max_shifts_per_worker})")
+                if _dbg:
+                    logging.debug(f"- Failed: Max shifts reached ({self.max_shifts_per_worker})")
                 return False
 
             # 3. Check availability
             if self._is_worker_unavailable(worker_id, date):
-                logging.debug("- Failed: Worker unavailable")
+                if _dbg:
+                    logging.debug("- Failed: Worker unavailable")
                 return False
 
             # 4. Check gap constraints (including 7/14 day pattern)
             if not self._check_gap_constraint(worker_id, date):  # This method includes the 7/14 day check
-                logging.debug(f"- Failed: Gap or 7/14 day pattern constraint for worker {worker_id} on {date}")
+                if _dbg:
+                    logging.debug(f"- Failed: Gap or 7/14 day pattern constraint for worker {worker_id} on {date}")
                 return False
 
             # 6. CRITICAL: Check weekend limit - NEVER RELAX THIS
             if self._would_exceed_weekend_limit(worker_id, date):
-                logging.debug("- Failed: Would exceed weekend limit")
+                if _dbg:
+                    logging.debug("- Failed: Would exceed weekend limit")
                 return False
 
             return True
@@ -568,7 +582,8 @@ class ConstraintChecker:
 
         for assigned_worker in self.schedule[date]:
             if assigned_worker is not None and self._are_workers_incompatible(worker_id, assigned_worker):
-                logging.debug(f"Worker {worker_id} is incompatible with assigned worker {assigned_worker}")
+                if _debug_enabled():
+                    logging.debug(f"Worker {worker_id} is incompatible with assigned worker {assigned_worker}")
                 return False
         return True
 
@@ -605,16 +620,18 @@ class ConstraintChecker:
             # Example: counts {Mon:1, Tue:1, Wed:3} -> min=1, max=3, spread=2. (Violates +/-1)
             # Example: counts {Mon:1, Tue:2, Wed:2} -> min=1, max=2, spread=1. (OK for +/-1)
             if spread > 1:  # This means the difference is 2 or more.
-                logging.debug(
-                    f"Constraint Check (Weekday Balance): Worker {worker_id} for date {date_to_assign.strftime('%Y-%m-%d')}. "
-                    f"Hypothetical counts: {hypothetical_weekday_counts}, Spread: {spread}. VIOLATES +/-1 rule."
-                )
+                if _debug_enabled():
+                    logging.debug(
+                        f"Constraint Check (Weekday Balance): Worker {worker_id} for date {date_to_assign.strftime('%Y-%m-%d')}. "
+                        f"Hypothetical counts: {hypothetical_weekday_counts}, Spread: {spread}. VIOLATES +/-1 rule."
+                    )
                 return False
 
-            logging.debug(
-                f"Constraint Check (Weekday Balance): Worker {worker_id} for date {date_to_assign.strftime('%Y-%m-%d')}. "
-                f"Hypothetical counts: {hypothetical_weekday_counts}, Spread: {spread}. OK for +/-1 rule."
-            )
+            if _debug_enabled():
+                logging.debug(
+                    f"Constraint Check (Weekday Balance): Worker {worker_id} for date {date_to_assign.strftime('%Y-%m-%d')}. "
+                    f"Hypothetical counts: {hypothetical_weekday_counts}, Spread: {spread}. OK for +/-1 rule."
+                )
             return True
 
         except Exception as e:
