@@ -3048,6 +3048,13 @@ class ScheduleBuilder:
                             if not self._check_incompatibility_with_list(worker_X_id, others_on_conflict_date):
                                 continue  # Try next date_conflict
 
+                            # Same-date swap: W returns to date_empty == date_conflict at a
+                            # different slot.  X and W will coexist on that date so they must
+                            # be mutually compatible.
+                            if date_conflict == date_empty:
+                                if not self._check_incompatibility_with_list(worker_X_id, [worker_W_id]):
+                                    continue
+
                             logging.info(
                                 f"[Pass 2 Swap Attempt] W:{worker_W_id} ({date_conflict.strftime('%Y-%m-%d')},P{post_conflict}) -> ({date_empty.strftime('%Y-%m-%d')},P{post_empty}); X:{worker_X_id} takes W's original spot."
                             )

@@ -1152,6 +1152,17 @@ class SchedulerCore:
             # Final validation y logging
             self._perform_final_validation()
 
+            # --- ABSOLUTE LAST STEP: Targeted weekend strategies 5 & 6 ---
+            # _perform_final_validation → _apply_tolerance_optimization can
+            # degrade weekend balance.  This corrective pass applies
+            # weekend↔weekday rotations and 3-way chain swaps targeting the
+            # workers with the highest weekend deviation, with full rollback
+            # if the overall weekend balance worsens.
+            try:
+                self._targeted_weekend_balance_pass()
+            except Exception as e:
+                logging.warning(f"Targeted weekend balance pass failed: {e}")
+
             logging.info("Schedule finalization phase completed successfully.")
             return True
 
@@ -1419,6 +1430,582 @@ class SchedulerCore:
         except Exception as e:
             logging.error(f"Error during tolerance optimization: {e}", exc_info=True)
             logging.info("Continuing with original schedule")
+
+    def _targeted_weekend_balance_pass(self) -> bool:
+        """Apply strategies 5 (weekend↔weekday rotation) and 6 (3-way chain)
+        from the IterativeOptimizer as a final corrective pass, targeting
+        the workers with the highest weekend deviation.
+
+        This runs AFTER ``_perform_final_validation`` (which may degrade
+        weekend balance via ``_apply_tolerance_optimization``) and corrects
+        any residual weekend imbalance without touching total shift counts.
+
+        Returns:
+            True if any improvement was made, False otherwise.
+        """
+        try:
+            logging.info("=" * 80)
+            logging.info("🏖️ TARGETED WEEKEND BALANCE PASS (strategies 5 & 6)")
+            logging.info("=" * 80)
+
+            # --- snapshot pre-pass weekend violations for rollback ---
+            self.tolerance_validator.schedule = self.scheduler.schedule
+            pre_violations = self.tolerance_validator.get_workers_outside_tolerance(
+                is_weekend_only=True
+            )
+            pre_total_dev = sum(
+                abs(v.get("deviation_percentage", 0)) for v in pre_violations
+            )
+            pre_count = len(pre_violations)
+            logging.info(
+                f"Pre-pass weekend state: {pre_count} violations, "
+                f"total |deviation|={pre_total_dev:.1f}%"
+            )
+
+            if pre_count == 0:
+                logging.info("✅ No weekend violations — skipping targeted pass")
+                return False
+
+            # Save a deep-copy checkpoint for rollback
+            checkpoint_schedule = copy.deepcopy(self.scheduler.schedule)
+
+            any_improvement = False
+            max_iterations = 8
+
+            for iteration in range(max_iterations):
+                # Build validation_report in the format strategies 5 & 6 expect
+                self.tolerance_validator.schedule = self.scheduler.schedule
+                weekend_outside = self.tolerance_validator.get_workers_outside_tolerance(
+                    is_weekend_only=True
+                )
+
+                if not weekend_outside:
+                    logging.info(
+                        f"🏖️ All weekend violations resolved after {iteration} iteration(s)"
+                    )
+                    break
+
+                # Sort by absolute deviation descending (worst offenders first)
+                weekend_outside.sort(
+                    key=lambda v: abs(v.get("deviation_percentage", 0)),
+                    reverse=True,
+                )
+
+                violations_list = []
+                for w in weekend_outside:
+                    wid = w.get("worker_id", "Unknown")
+                    assigned = w.get("assigned_shifts", 0)
+                    target = w.get("target_shifts", 0)
+                    diff = assigned - target
+                    violations_list.append(
+                        {
+                            "worker": str(wid),
+                            "deviation_percentage": w.get("deviation_percentage", 0),
+                            "shortage": max(0, -diff),
+                            "excess": max(0, diff),
+                        }
+                    )
+
+                validation_report = {
+                    "weekend_shift_violations": violations_list,
+                    "general_shift_violations": [],
+                    "total_violations": len(violations_list),
+                }
+
+                logging.info(
+                    f"🏖️ Iteration {iteration + 1}/{max_iterations}: "
+                    f"{len(violations_list)} weekend violations"
+                )
+
+                schedule_before = copy.deepcopy(self.scheduler.schedule)
+
+                # --- Strategy 5: weekend↔weekday rotation ---
+                modified_schedule = self.iterative_optimizer._apply_weekend_weekday_rotation(
+                    copy.deepcopy(self.scheduler.schedule),
+                    validation_report,
+                    self.workers_data,
+                    self.config,
+                )
+
+                # Rebuild report after strategy 5 for strategy 6
+                self.scheduler.schedule = modified_schedule
+                self.scheduler._synchronize_tracking_data()
+                self.tolerance_validator.schedule = self.scheduler.schedule
+
+                weekend_outside_mid = self.tolerance_validator.get_workers_outside_tolerance(
+                    is_weekend_only=True
+                )
+                mid_violations = []
+                for w in weekend_outside_mid:
+                    wid = w.get("worker_id", "Unknown")
+                    assigned = w.get("assigned_shifts", 0)
+                    target = w.get("target_shifts", 0)
+                    diff = assigned - target
+                    mid_violations.append(
+                        {
+                            "worker": str(wid),
+                            "deviation_percentage": w.get("deviation_percentage", 0),
+                            "shortage": max(0, -diff),
+                            "excess": max(0, diff),
+                        }
+                    )
+                mid_report = {
+                    "weekend_shift_violations": mid_violations,
+                    "general_shift_violations": [],
+                    "total_violations": len(mid_violations),
+                }
+
+                # --- Strategy 6: 3-way chain rotation ---
+                if mid_violations:
+                    modified_schedule = self.iterative_optimizer._apply_chain_weekend_rotation(
+                        copy.deepcopy(self.scheduler.schedule),
+                        mid_report,
+                        self.workers_data,
+                        self.config,
+                    )
+                    self.scheduler.schedule = modified_schedule
+                    self.scheduler._synchronize_tracking_data()
+
+                # --- Strategy 7+: Weekend pull for one-sided under-only ---
+                # When only UNDER workers exist (no OVER), strategies 5 & 6
+                # can't help.  Pull a weekend from any non-violating donor
+                # who can absorb a weekday in return.
+                self.tolerance_validator.schedule = self.scheduler.schedule
+                remaining_outside = self.tolerance_validator.get_workers_outside_tolerance(
+                    is_weekend_only=True
+                )
+                under_only = [
+                    v for v in remaining_outside
+                    if v.get("deviation_percentage", 0) < 0
+                ]
+                over_any = [
+                    v for v in remaining_outside
+                    if v.get("deviation_percentage", 0) > 0
+                ]
+                if under_only and not over_any:
+                    modified_schedule = self._weekend_pull_from_donors(
+                        self.scheduler.schedule, under_only
+                    )
+                    self.scheduler.schedule = modified_schedule
+                    self.scheduler._synchronize_tracking_data()
+
+                # Check if this iteration improved anything
+                if self.scheduler.schedule == schedule_before:
+                    logging.info(
+                        f"🏖️ No changes in iteration {iteration + 1} — converged"
+                    )
+                    # Diagnose remaining blockers if violations persist
+                    self.tolerance_validator.schedule = self.scheduler.schedule
+                    remaining = self.tolerance_validator.get_workers_outside_tolerance(
+                        is_weekend_only=True
+                    )
+                    if remaining:
+                        self._diagnose_weekend_swap_blockers()
+                    break
+
+                any_improvement = True
+
+            # --- Post-pass validation: rollback if weekend balance worsened ---
+            self.tolerance_validator.schedule = self.scheduler.schedule
+            post_violations = self.tolerance_validator.get_workers_outside_tolerance(
+                is_weekend_only=True
+            )
+            post_total_dev = sum(
+                abs(v.get("deviation_percentage", 0)) for v in post_violations
+            )
+            post_count = len(post_violations)
+
+            logging.info(
+                f"Post-pass weekend state: {post_count} violations, "
+                f"total |deviation|={post_total_dev:.1f}%"
+            )
+
+            if post_total_dev > pre_total_dev:
+                logging.warning(
+                    "⚠️ Targeted weekend pass WORSENED balance — rolling back"
+                )
+                self.scheduler.schedule = checkpoint_schedule
+                self.scheduler._synchronize_tracking_data()
+                self._sync_builder_references()
+                return False
+
+            if any_improvement:
+                self._sync_builder_references()
+                logging.info(
+                    f"✅ Targeted weekend pass: {pre_count}→{post_count} violations, "
+                    f"|dev| {pre_total_dev:.1f}%→{post_total_dev:.1f}%"
+                )
+
+            logging.info("=" * 80)
+            return any_improvement
+
+        except Exception as e:
+            logging.error(f"Error during targeted weekend balance pass: {e}", exc_info=True)
+            return False
+
+    # ------------------------------------------------------------------
+    # Diagnostic helper for the targeted weekend balance pass
+    # ------------------------------------------------------------------
+    def _diagnose_weekend_swap_blockers(self) -> None:
+        """Log why strategies 5 & 6 couldn't resolve remaining weekend violations.
+
+        For each over↔under pair, counts candidate shift slots and checks
+        how many combinations pass ``_can_worker_take_shift`` (with the
+        vacated-slot fix applied).  Logs a summary per pair.
+        """
+        try:
+            from datetime import timedelta
+
+            schedule = self.scheduler.schedule
+            workers_data = self.workers_data
+            holidays = (
+                set(getattr(self.scheduler, "holidays", []))
+                if self.scheduler
+                else set()
+            )
+
+            violations = self.tolerance_validator.get_workers_outside_tolerance(
+                is_weekend_only=True
+            )
+            if not violations:
+                return
+
+            over_workers = [
+                v for v in violations if v.get("deviation_percentage", 0) > 0
+            ]
+            under_workers = [
+                v for v in violations if v.get("deviation_percentage", 0) < 0
+            ]
+
+            logging.info("  📊 SWAP BLOCKER DIAGNOSTIC")
+            for v in over_workers:
+                logging.info(
+                    f"     OVER  {v.get('worker_id')}: "
+                    f"assigned={v.get('assigned_shifts')}, "
+                    f"target={v.get('target_shifts')}, "
+                    f"dev={v.get('deviation_percentage', 0):+.1f}%"
+                )
+            for v in under_workers:
+                logging.info(
+                    f"     UNDER {v.get('worker_id')}: "
+                    f"assigned={v.get('assigned_shifts')}, "
+                    f"target={v.get('target_shifts')}, "
+                    f"dev={v.get('deviation_percentage', 0):+.1f}%"
+                )
+
+            if not over_workers or not under_workers:
+                logging.info(
+                    "     ⚠️  One-sided violations only — "
+                    "Strategy 5 requires both over & under workers"
+                )
+                return
+
+            # Classify dates
+            weekend_dates: set = set()
+            weekday_dates: set = set()
+            for dk in schedule:
+                try:
+                    d = (
+                        dk
+                        if isinstance(dk, datetime)
+                        else datetime.strptime(dk, "%Y-%m-%d")
+                    )
+                    if (
+                        d.weekday() >= 4
+                        or d in holidays
+                        or (d + timedelta(days=1)) in holidays
+                    ):
+                        weekend_dates.add(dk)
+                    else:
+                        weekday_dates.add(dk)
+                except (ValueError, AttributeError):
+                    continue
+
+            opt = self.iterative_optimizer
+            can_check = opt._can_worker_take_shift
+            is_mandatory = opt._is_mandatory_shift
+
+            for over_v in over_workers:
+                over_w = str(over_v.get("worker_id", ""))
+                we_slots = []
+                for dk in weekend_dates:
+                    assigns = schedule.get(dk, [])
+                    if isinstance(assigns, list):
+                        for idx, w in enumerate(assigns):
+                            if w == over_w and not is_mandatory(
+                                over_w, dk, workers_data
+                            ):
+                                we_slots.append((dk, idx))
+
+                logging.info(
+                    f"     {over_w}: {len(we_slots)} swappable weekend slots"
+                )
+
+                for under_v in under_workers:
+                    under_w = str(under_v.get("worker_id", ""))
+                    wd_slots = []
+                    for dk in weekday_dates:
+                        assigns = schedule.get(dk, [])
+                        if isinstance(assigns, list):
+                            for idx, w in enumerate(assigns):
+                                if w == under_w and not is_mandatory(
+                                    under_w, dk, workers_data
+                                ):
+                                    wd_slots.append((dk, idx))
+
+                    total = len(we_slots) * len(wd_slots)
+                    both_ok = 0
+                    over_blocked = 0
+                    under_blocked = 0
+                    both_blocked = 0
+                    checked = 0
+                    max_check = 300
+
+                    for we_dk, we_idx in we_slots:
+                        if checked >= max_check:
+                            break
+                        for wd_dk, wd_idx in wd_slots:
+                            if checked >= max_check:
+                                break
+
+                            # Vacate both slots (mirrors the fix in strategy 5)
+                            orig_we = schedule[we_dk][we_idx]
+                            orig_wd = schedule[wd_dk][wd_idx]
+                            schedule[we_dk][we_idx] = None
+                            schedule[wd_dk][wd_idx] = None
+
+                            ok_over = can_check(
+                                over_w,
+                                wd_dk,
+                                f"Post_{wd_idx}",
+                                schedule,
+                                workers_data,
+                            )
+                            ok_under = can_check(
+                                under_w,
+                                we_dk,
+                                f"Post_{we_idx}",
+                                schedule,
+                                workers_data,
+                            )
+
+                            schedule[we_dk][we_idx] = orig_we
+                            schedule[wd_dk][wd_idx] = orig_wd
+
+                            if ok_over and ok_under:
+                                both_ok += 1
+                            elif not ok_over and not ok_under:
+                                both_blocked += 1
+                            elif not ok_over:
+                                over_blocked += 1
+                            else:
+                                under_blocked += 1
+                            checked += 1
+
+                    logging.info(
+                        f"       ↔ {under_w}: {len(wd_slots)} wd-slots, "
+                        f"{checked}/{total} combos checked | "
+                        f"both_ok={both_ok}, "
+                        f"over_blocked={over_blocked}, "
+                        f"under_blocked={under_blocked}, "
+                        f"both_blocked={both_blocked}"
+                    )
+
+        except Exception as e:
+            logging.error(f"Error in swap blocker diagnostic: {e}", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Weekend pull from non-violating donors (one-sided under-only fix)
+    # ------------------------------------------------------------------
+    def _weekend_pull_from_donors(
+        self, schedule: dict, under_violations: list[dict]
+    ) -> dict:
+        """Swap a weekend shift from a non-violating donor to an under-assigned
+        worker, giving the donor the under-worker's weekday shift in return.
+
+        This handles the case where only UNDER workers exist — no one is OVER
+        tolerance, so strategies 5/6 can't pair them.  Any worker whose weekend
+        count is above their target (even within tolerance) is a candidate donor.
+
+        The swap is structurally identical to Strategy 5 but the donor is chosen
+        from the general pool, not from violators.
+        """
+        from datetime import timedelta
+
+        logging.info("   🎯 Weekend pull: recruiting non-violating donors")
+
+        holidays = (
+            set(getattr(self.scheduler, "holidays", []))
+            if self.scheduler
+            else set()
+        )
+        opt = self.iterative_optimizer
+        workers_data = self.workers_data
+        can_check = opt._can_worker_take_shift
+        is_mandatory = opt._is_mandatory_shift
+
+        optimized = copy.deepcopy(schedule)
+
+        # Classify dates
+        weekend_dates: set = set()
+        weekday_dates: set = set()
+        for dk in optimized:
+            try:
+                d = (
+                    dk
+                    if isinstance(dk, datetime)
+                    else datetime.strptime(dk, "%Y-%m-%d")
+                )
+                if (
+                    d.weekday() >= 4
+                    or d in holidays
+                    or (d + timedelta(days=1)) in holidays
+                ):
+                    weekend_dates.add(dk)
+                else:
+                    weekday_dates.add(dk)
+            except (ValueError, AttributeError):
+                continue
+
+        # Build per-worker weekend counts from current schedule
+        worker_we_counts: dict[str, int] = {}
+        for dk in weekend_dates:
+            assigns = optimized.get(dk, [])
+            if isinstance(assigns, list):
+                for w in assigns:
+                    if w is not None:
+                        worker_we_counts[w] = worker_we_counts.get(w, 0) + 1
+
+        # Weekend targets per worker (proportional)
+        total_days = len(optimized)
+        total_we_days = len(weekend_dates)
+        we_ratio = total_we_days / total_days if total_days else 0.0
+
+        worker_we_target: dict[str, float] = {}
+        for wd in workers_data:
+            wname = str(wd.get("id", wd.get("name", "")))
+            raw_target = wd.get("_raw_target", wd.get("target_shifts", 0))
+            worker_we_target[wname] = raw_target * we_ratio
+
+        # Find donors: workers NOT in violation whose weekend count > their target
+        violating_ids = {str(v.get("worker_id", "")) for v in under_violations}
+        donors = []
+        for wname, we_count in worker_we_counts.items():
+            if wname in violating_ids:
+                continue
+            target = worker_we_target.get(wname, 0)
+            if we_count > target:
+                donors.append((wname, we_count - target))
+
+        # Sort donors by surplus descending
+        donors.sort(key=lambda x: x[1], reverse=True)
+
+        if not donors:
+            logging.info("      ℹ️  No donors with weekend surplus found")
+            return optimized
+
+        logging.info(
+            f"      Found {len(donors)} potential donors "
+            f"(top surplus: {donors[0][0]} +{donors[0][1]:.1f})"
+        )
+
+        swaps_made = 0
+        max_swaps = 20
+
+        for v in under_violations:
+            if swaps_made >= max_swaps:
+                break
+            under_w = str(v.get("worker_id", ""))
+            shortage = v.get("target_shifts", 0) - v.get("assigned_shifts", 0)
+            if shortage <= 0:
+                continue
+
+            # Collect under_worker's non-mandatory weekday shifts
+            under_wd_slots = []
+            for dk in weekday_dates:
+                assigns = optimized.get(dk, [])
+                if isinstance(assigns, list):
+                    for idx, w in enumerate(assigns):
+                        if w == under_w and not is_mandatory(under_w, dk, workers_data):
+                            under_wd_slots.append((dk, idx))
+
+            if not under_wd_slots:
+                logging.info(f"      {under_w}: no weekday slots to offer")
+                continue
+
+            import random as _rnd
+            _rnd.shuffle(under_wd_slots)
+
+            for donor_name, _ in donors:
+                if shortage <= 0 or swaps_made >= max_swaps:
+                    break
+
+                # Collect donor's non-mandatory weekend shifts
+                donor_we_slots = []
+                for dk in weekend_dates:
+                    assigns = optimized.get(dk, [])
+                    if isinstance(assigns, list):
+                        for idx, w in enumerate(assigns):
+                            if w == donor_name and not is_mandatory(
+                                donor_name, dk, workers_data
+                            ):
+                                donor_we_slots.append((dk, idx))
+
+                if not donor_we_slots:
+                    continue
+                _rnd.shuffle(donor_we_slots)
+
+                swapped = False
+                for we_dk, we_idx in donor_we_slots:
+                    if swapped:
+                        break
+                    for wd_dk, wd_idx in under_wd_slots:
+                        # Vacate both slots before constraint check
+                        orig_we = optimized[we_dk][we_idx]
+                        orig_wd = optimized[wd_dk][wd_idx]
+                        optimized[we_dk][we_idx] = None
+                        optimized[wd_dk][wd_idx] = None
+
+                        ok_donor = can_check(
+                            donor_name, wd_dk, f"Post_{wd_idx}",
+                            optimized, workers_data,
+                        )
+                        ok_under = can_check(
+                            under_w, we_dk, f"Post_{we_idx}",
+                            optimized, workers_data,
+                        )
+
+                        optimized[we_dk][we_idx] = orig_we
+                        optimized[wd_dk][wd_idx] = orig_wd
+
+                        if not ok_donor or not ok_under:
+                            continue
+
+                        # Execute swap
+                        optimized[we_dk][we_idx] = under_w
+                        optimized[wd_dk][wd_idx] = donor_name
+                        swaps_made += 1
+                        shortage -= 1
+
+                        we_disp = (
+                            we_dk.strftime("%Y-%m-%d")
+                            if isinstance(we_dk, datetime)
+                            else we_dk
+                        )
+                        wd_disp = (
+                            wd_dk.strftime("%Y-%m-%d")
+                            if isinstance(wd_dk, datetime)
+                            else wd_dk
+                        )
+                        logging.info(
+                            f"      🎯 PULL: {donor_name}(we {we_disp})"
+                            f"↔{under_w}(wd {wd_disp})"
+                        )
+                        swapped = True
+                        break
+
+        logging.info(f"   ✅ Weekend pull: {swaps_made} donor swaps")
+        return optimized
 
     def _export_initial_calendar_pdf(self) -> None:
         """

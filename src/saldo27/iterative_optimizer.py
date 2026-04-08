@@ -600,7 +600,10 @@ class IterativeOptimizer:
 
                 logging.info(f"Debug: worker_name='{worker_name}', deviation={deviation}")
 
-                if deviation < -self.tolerance * 100:  # Worker needs more shifts
+                # Workers in the violations list are already outside their
+                # tolerance band (the validator handles manual vs auto thresholds).
+                # Classify by sign only — don't re-filter with self.tolerance.
+                if violation.get("shortage", 0) > 0:  # Worker needs more shifts
                     priority = abs(deviation)  # Higher absolute deviation = higher priority
                     need_more_shifts.append(
                         {
@@ -612,7 +615,7 @@ class IterativeOptimizer:
                         }
                     )
                     logging.info(f"Debug: Added to need_more_shifts: {worker_name} (priority: {priority:.1f})")
-                elif deviation > self.tolerance * 100:  # Worker has excess shifts
+                elif violation.get("excess", 0) > 0:  # Worker has excess shifts
                     priority = abs(deviation)  # Higher absolute deviation = higher priority
                     have_excess_shifts.append(
                         {
@@ -845,6 +848,135 @@ class IterativeOptimizer:
                         logging.debug(
                             f"      ⏭️ Skipped transfer - insufficient improvement ({projected_improvement:.1f})"
                         )
+
+        # ------------------------------------------------------------------
+        # ONE-SIDED DONOR PULL: when workers need shifts but nobody has excess
+        # Find non-violating donors slightly above their target who can give
+        # one shift to the under-worker.
+        # ------------------------------------------------------------------
+        remaining_need = [n for n in need_more_shifts if n["shortage"] > 0]
+        if remaining_need and not have_excess_shifts:
+            logging.info(
+                f"   🎯 One-sided shortage: {len(remaining_need)} workers need shifts, "
+                "no excess workers — recruiting donors from general pool"
+            )
+
+            # Build per-worker shift counts
+            worker_shift_counts: dict[str, int] = {}
+            for dk, assignments in optimized_schedule.items():
+                if isinstance(assignments, list):
+                    for w in assignments:
+                        if w is not None:
+                            worker_shift_counts[w] = worker_shift_counts.get(w, 0) + 1
+                elif isinstance(assignments, dict):
+                    for shift_workers in assignments.values():
+                        if isinstance(shift_workers, list):
+                            for w in shift_workers:
+                                if w is not None:
+                                    worker_shift_counts[w] = worker_shift_counts.get(w, 0) + 1
+
+            # Build target lookup
+            worker_target_map: dict[str, int] = {}
+            for wd in workers_data:
+                wname = str(wd.get("id", wd.get("name", "")))
+                worker_target_map[wname] = wd.get("target_shifts", 0)
+
+            violating_names = {n["worker"] for n in remaining_need}
+
+            # Find donors: non-violating workers with count > target
+            donors = []
+            for wname, count in worker_shift_counts.items():
+                if wname in violating_names:
+                    continue
+                target = worker_target_map.get(wname, 0)
+                if target > 0 and count > target:
+                    donors.append((wname, count - target))
+            donors.sort(key=lambda x: x[1], reverse=True)
+
+            if donors:
+                logging.info(
+                    f"      Found {len(donors)} donors "
+                    f"(top: {donors[0][0]} +{donors[0][1]})"
+                )
+
+            for need_info in remaining_need:
+                if need_info["shortage"] <= 0:
+                    continue
+                need_worker = need_info["worker"]
+
+                for donor_name, surplus in donors:
+                    if need_info["shortage"] <= 0 or surplus <= 0:
+                        break
+
+                    # Find a shift from donor that need_worker can take
+                    donor_shifts_list = []
+                    for dk, assignments in optimized_schedule.items():
+                        if isinstance(assignments, list):
+                            for idx, w in enumerate(assignments):
+                                if w == donor_name and not self._is_mandatory_shift(
+                                    donor_name, dk, workers_data
+                                ):
+                                    donor_shifts_list.append((dk, f"Post_{idx}", idx))
+                        elif isinstance(assignments, dict):
+                            for stype, shift_workers in assignments.items():
+                                if isinstance(shift_workers, list) and donor_name in shift_workers:
+                                    if not self._is_mandatory_shift(donor_name, dk, workers_data):
+                                        donor_shifts_list.append((dk, stype, None))
+
+                    random.shuffle(donor_shifts_list)
+
+                    for dk, stype, list_idx in donor_shifts_list:
+                        if need_info["shortage"] <= 0:
+                            break
+
+                        # Vacate donor slot before checking constraints
+                        assignments = optimized_schedule[dk]
+                        if isinstance(assignments, list) and list_idx is not None:
+                            orig = assignments[list_idx]
+                            assignments[list_idx] = None
+                            can_take = self._can_worker_take_shift(
+                                need_worker, dk, stype, optimized_schedule, workers_data
+                            )
+                            assignments[list_idx] = orig
+                        else:
+                            can_take = self._can_worker_take_shift(
+                                need_worker, dk, stype, optimized_schedule, workers_data
+                            )
+
+                        if not can_take:
+                            continue
+
+                        # Execute transfer
+                        if isinstance(assignments, list) and list_idx is not None:
+                            optimized_schedule[dk][list_idx] = need_worker
+                        elif isinstance(assignments, dict):
+                            shift_workers = assignments[stype]
+                            try:
+                                idx_in_list = shift_workers.index(donor_name)
+                                shift_workers[idx_in_list] = need_worker
+                            except ValueError:
+                                continue
+
+                        need_info["shortage"] -= 1
+                        surplus -= 1
+                        redistributions_made += 1
+                        successful_transfers += 1
+
+                        balance_tracker["shifts_removed"][donor_name] = (
+                            balance_tracker["shifts_removed"].get(donor_name, 0) + 1
+                        )
+                        balance_tracker["shifts_added"][need_worker] = (
+                            balance_tracker["shifts_added"].get(need_worker, 0) + 1
+                        )
+
+                        date_display = (
+                            dk.strftime("%Y-%m-%d") if isinstance(dk, datetime) else str(dk)
+                        )
+                        logging.info(
+                            f"      🎯 DONOR: {donor_name}→{need_worker} "
+                            f"on {date_display} ({stype})"
+                        )
+                        break  # One transfer per donor per round
 
         # Report balance results
         logging.info("   ✅ General shift redistribution complete:")
@@ -1929,17 +2061,30 @@ class IterativeOptimizer:
                     if swapped:
                         break
                     for wd_date, wd_idx in under_wd_shifts:
+                        # Temporarily vacate both slots so constraint checks
+                        # don't see the departing worker's old assignment
+                        # (avoids false-positive gap/pattern rejections).
+                        orig_we = optimized_schedule[we_date][we_idx]
+                        orig_wd = optimized_schedule[wd_date][wd_idx]
+                        optimized_schedule[we_date][we_idx] = None
+                        optimized_schedule[wd_date][wd_idx] = None
+
                         # over_worker takes the weekday slot
                         shift_type_wd = f"Post_{wd_idx}"
-                        if not self._can_worker_take_shift(
+                        can_over = self._can_worker_take_shift(
                             over_worker, wd_date, shift_type_wd, optimized_schedule, workers_data
-                        ):
-                            continue
+                        )
                         # under_worker takes the weekend slot
                         shift_type_we = f"Post_{we_idx}"
-                        if not self._can_worker_take_shift(
+                        can_under = self._can_worker_take_shift(
                             under_worker, we_date, shift_type_we, optimized_schedule, workers_data
-                        ):
+                        )
+
+                        # Restore originals before deciding
+                        optimized_schedule[we_date][we_idx] = orig_we
+                        optimized_schedule[wd_date][wd_idx] = orig_wd
+
+                        if not can_over or not can_under:
                             continue
 
                         # Execute both swaps atomically with verification
@@ -2065,7 +2210,13 @@ class IterativeOptimizer:
                     # Step A: Find a mediator Z who CAN replace X on d_over
                     for mediator in worker_names:
                         st_over = f"Post_{idx_over}"
-                        if not self._can_worker_take_shift(mediator, d_over, st_over, optimized_schedule, workers_data):
+                        # Vacate X from d_over so mediator Z doesn't see
+                        # a false incompatibility/gap conflict with X
+                        orig_d_over = optimized_schedule[d_over][idx_over]
+                        optimized_schedule[d_over][idx_over] = None
+                        can_med = self._can_worker_take_shift(mediator, d_over, st_over, optimized_schedule, workers_data)
+                        optimized_schedule[d_over][idx_over] = orig_d_over
+                        if not can_med:
                             continue
 
                         # Step B: Find a weekend date where mediator Z works, and
@@ -2082,9 +2233,15 @@ class IterativeOptimizer:
                                 if self._is_mandatory_shift(mediator, d_med, workers_data):
                                     continue
                                 st_med = f"Post_{med_idx}"
-                                if not self._can_worker_take_shift(
+                                # Vacate Z from d_med so under_worker Y doesn't
+                                # see a false incompatibility/gap with Z
+                                orig_d_med = optimized_schedule[d_med][med_idx]
+                                optimized_schedule[d_med][med_idx] = None
+                                can_under = self._can_worker_take_shift(
                                     under_worker, d_med, st_med, optimized_schedule, workers_data
-                                ):
+                                )
+                                optimized_schedule[d_med][med_idx] = orig_d_med
+                                if not can_under:
                                     continue
 
                                 # Chain found — execute atomically with verification
