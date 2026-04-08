@@ -8,6 +8,7 @@ extracted from the original Scheduler class to improve maintainability and separ
 import copy
 import hashlib
 import logging
+import math
 import random
 from datetime import datetime
 from typing import Any
@@ -395,6 +396,7 @@ class SchedulerCore:
             )
 
             attempts_results = []
+            no_improve_count = 0  # Track consecutive attempts with no score improvement
 
             # Start adaptive iteration manager timer
             self.adaptive_manager.start_time = datetime.now()
@@ -489,6 +491,7 @@ class SchedulerCore:
                 if score > best_score:
                     best_score = score
                     best_attempt = attempt_num
+                    no_improve_count = 0  # Reset early-stop counter on improvement
                     # Save this as the best attempt
                     best_schedule = copy.deepcopy(self.scheduler.schedule)
                     best_assignments = copy.deepcopy(self.scheduler.worker_assignments)
@@ -499,6 +502,16 @@ class SchedulerCore:
                     best_locked_mandatory = copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory)
 
                     logging.info(f"✨ New best attempt! Score: {score:.2f}")
+                else:
+                    no_improve_count += 1
+
+                # Early stop: if no improvement for 8 consecutive attempts, stop
+                if no_improve_count >= 8 and attempt_num >= 10:
+                    logging.info(
+                        f"⏩ Early stop: no improvement in {no_improve_count} consecutive attempts "
+                        f"(best score: {best_score:.2f} from attempt #{best_attempt})"
+                    )
+                    break
 
             # Summary of all attempts
             logging.info(f"\n{'=' * 80}")
@@ -601,8 +614,20 @@ class SchedulerCore:
                 max_improvement_loops = 120
 
             # Calculate initial score for comparison
-            current_overall_score = self.metrics.calculate_overall_schedule_score()
+            current_overall_score = self.metrics.calculate_overall_schedule_score(log_components=True)
             logging.info(f"Score inicial: {current_overall_score:.2f}")
+
+            # Checkpoint: track best score seen during the loop so we can rollback
+            best_loop_score = current_overall_score
+            best_loop_state = None
+
+            # Track operations that were reverted so we skip them in later loops
+            reverted_ops: set[str] = set()
+
+            # Simulated Annealing parameters
+            sa_temperature_start = 1.0
+            sa_cooling_rate = 0.7
+            sa_max_drop = -2.0  # never accept a drop worse than this
 
             while overall_improvement_made and improvement_loop_count < max_improvement_loops:
                 loop_start_time = datetime.now()
@@ -617,6 +642,9 @@ class SchedulerCore:
                     "weekend_imbalance": self.metrics.calculate_weekend_imbalance(),
                 }
 
+                # Record score at the start of this cycle for aggregate comparison
+                cycle_start_score = self.metrics.calculate_overall_schedule_score()
+
                 # Get dynamically prioritized operations
                 prioritized_operations = self.prioritizer.prioritize_operations_dynamically()
 
@@ -626,6 +654,16 @@ class SchedulerCore:
 
                 for operation_name, operation_func, priority in prioritized_operations:
                     try:
+                        # Skip operations that were reverted in a previous loop
+                        if operation_name in reverted_ops:
+                            logging.debug(f"Skipping {operation_name}: reverted in previous loop")
+                            operation_results[operation_name] = {
+                                "improved": False,
+                                "skipped": True,
+                                "reason": "reverted in previous loop",
+                            }
+                            continue
+
                         # Check if operation should be skipped
                         should_skip, skip_reason = self.prioritizer.should_skip_operation(operation_name, current_state)
 
@@ -637,6 +675,21 @@ class SchedulerCore:
                                 "reason": skip_reason,
                             }
                             continue
+
+                        # Per-operation checkpoint: save state before non-trivial operations
+                        if operation_name != "synchronize_tracking_data":
+                            op_checkpoint = {
+                                "schedule": copy.deepcopy(self.scheduler.schedule),
+                                "assignments": copy.deepcopy(self.scheduler.worker_assignments),
+                                "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
+                                "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
+                                "posts": copy.deepcopy(self.scheduler.worker_posts),
+                                "locked_mandatory": copy.deepcopy(
+                                    self.scheduler.schedule_builder._locked_mandatory
+                                ),
+                            }
+                        else:
+                            op_checkpoint = None
 
                         # Measure performance of operation
                         before_score = self.metrics.calculate_overall_schedule_score()
@@ -655,6 +708,50 @@ class SchedulerCore:
                         # Evaluate improvement quality
                         after_score = self.metrics.calculate_overall_schedule_score()
 
+                        # Per-operation rollback with Simulated Annealing
+                        if op_checkpoint and operation_made_change and after_score < before_score - 0.001:
+                            delta = after_score - before_score  # negative
+                            sa_temp = sa_temperature_start * (sa_cooling_rate ** (improvement_loop_count - 1))
+                            # SA: probabilistically accept small drops to escape local optima
+                            sa_accept = (
+                                delta >= sa_max_drop
+                                and sa_temp > 0.01
+                                and random.random() < math.exp(delta / sa_temp)
+                            )
+                            if sa_accept:
+                                logging.info(
+                                    f"🎲 SA accepted {operation_name}: "
+                                    f"{before_score:.2f} → {after_score:.2f} "
+                                    f"(Δ={delta:.2f}, T={sa_temp:.3f})"
+                                )
+                                # Don't add to reverted_ops — allow re-execution
+                                cycle_improvement_made = True  # keep loop alive
+                                operation_results[operation_name] = {
+                                    "improved": False,
+                                    "sa_accepted": True,
+                                }
+                                continue
+                            # Revert: SA rejected or drop too large
+                            self.scheduler.schedule = op_checkpoint["schedule"]
+                            self.scheduler.worker_assignments = op_checkpoint["assignments"]
+                            self.scheduler.worker_shift_counts = op_checkpoint["counts"]
+                            self.scheduler.worker_weekend_counts = op_checkpoint["weekend_counts"]
+                            self.scheduler.worker_posts = op_checkpoint["posts"]
+                            self.scheduler.schedule_builder._locked_mandatory = op_checkpoint[
+                                "locked_mandatory"
+                            ]
+                            self._sync_builder_references()
+                            logging.info(
+                                f"↩️  {operation_name}: revertido "
+                                f"({before_score:.2f} → {after_score:.2f})"
+                            )
+                            operation_results[operation_name] = {
+                                "improved": False,
+                                "reverted": True,
+                            }
+                            reverted_ops.add(operation_name)
+                            continue
+
                         if operation_made_change and operation_name != "synchronize_tracking_data":
                             is_significant, improvement_ratio = self.metrics.evaluate_improvement_quality(
                                 before_score, after_score, operation_name
@@ -666,6 +763,8 @@ class SchedulerCore:
                                     f"({improvement_ratio:.4f}, +{after_score - before_score:.2f})"
                                 )
                                 cycle_improvement_made = True
+                                # Clear reverted memory: state changed, operations may work now
+                                reverted_ops.clear()
                             else:
                                 logging.debug(f"⚠️  {operation_name}: mejora marginal ({improvement_ratio:.4f})")
 
@@ -679,7 +778,7 @@ class SchedulerCore:
                         operation_results[operation_name] = {"improved": False, "error": str(e)}
 
                 # Update current score after all operations
-                current_overall_score = self.metrics.calculate_overall_schedule_score()
+                current_overall_score = self.metrics.calculate_overall_schedule_score(log_components=True)
 
                 # Track iteration progress with enhanced monitoring
                 progress_data = self.progress_monitor.track_iteration_progress(
@@ -687,7 +786,14 @@ class SchedulerCore:
                 )
 
                 # Record iteration for trend analysis
-                self.metrics.record_iteration_result(improvement_loop_count, operation_results, current_overall_score)
+                sa_accepts_in_loop = sum(
+                    1 for r in operation_results.values()
+                    if isinstance(r, dict) and r.get("sa_accepted")
+                )
+                self.metrics.record_iteration_result(
+                    improvement_loop_count, operation_results, current_overall_score,
+                    sa_accepts=sa_accepts_in_loop, best_score=best_loop_score,
+                )
 
                 # Check if should continue with smart early stopping
                 should_continue, reason = self.metrics.should_continue_optimization(improvement_loop_count)
@@ -695,8 +801,34 @@ class SchedulerCore:
                     logging.info(f"🛑 Parada temprana activada: {reason}")
                     break
 
-                # Traditional improvement check as fallback
-                overall_improvement_made = cycle_improvement_made
+                # Use aggregate cycle score improvement OR per-operation significance as loop guard
+                cycle_end_score = self.metrics.calculate_overall_schedule_score()
+                cycle_delta = cycle_end_score - cycle_start_score
+                overall_improvement_made = cycle_improvement_made or cycle_delta > 0.01
+
+                # Checkpoint: save state if this is the best score so far
+                if cycle_end_score > best_loop_score + 0.001:
+                    best_loop_score = cycle_end_score
+                    best_loop_state = {
+                        "schedule": copy.deepcopy(self.scheduler.schedule),
+                        "assignments": copy.deepcopy(self.scheduler.worker_assignments),
+                        "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
+                        "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
+                        "posts": copy.deepcopy(self.scheduler.worker_posts),
+                        "locked_mandatory": copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory),
+                    }
+                    logging.info(f"💾 Checkpoint guardado: score {best_loop_score:.2f}")
+
+                if cycle_delta > 0.01 and not cycle_improvement_made:
+                    logging.info(
+                        f"📈 Aggregate cycle improvement: +{cycle_delta:.2f} "
+                        f"({cycle_start_score:.2f} → {cycle_end_score:.2f})"
+                    )
+                elif cycle_improvement_made and cycle_delta <= 0.01:
+                    logging.info(
+                        f"📈 Operations improved components but aggregate score flat/down "
+                        f"({cycle_start_score:.2f} → {cycle_end_score:.2f}), continuing..."
+                    )
 
                 # Log cycle summary
                 loop_end_time = datetime.now()
@@ -714,6 +846,21 @@ class SchedulerCore:
 
                 if not overall_improvement_made:
                     logging.info("No se detectaron mejoras adicionales. Finalizando fase de mejora.")
+
+            # Rollback to best checkpoint if final state is worse
+            final_score = self.metrics.calculate_overall_schedule_score()
+            if best_loop_state and final_score < best_loop_score - 0.001:
+                logging.info(
+                    f"🔄 Restaurando mejor checkpoint: {final_score:.2f} → {best_loop_score:.2f} "
+                    f"(+{best_loop_score - final_score:.2f})"
+                )
+                self.scheduler.schedule = best_loop_state["schedule"]
+                self.scheduler.worker_assignments = best_loop_state["assignments"]
+                self.scheduler.worker_shift_counts = best_loop_state["counts"]
+                self.scheduler.worker_weekend_counts = best_loop_state["weekend_counts"]
+                self.scheduler.worker_posts = best_loop_state["posts"]
+                self.scheduler.schedule_builder._locked_mandatory = best_loop_state["locked_mandatory"]
+                self._sync_builder_references()
 
             # Phase 3.5: Advanced distribution engine as final push
             logging.info("\n" + "=" * 80)
