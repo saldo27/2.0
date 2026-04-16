@@ -831,7 +831,11 @@ def get_worker_statistics():
             for date, shifts in scheduler.schedule.items()
             if len(shifts) > last_post_idx and shifts[last_post_idx] == worker_id
         )
-        rosell_target = round(target * rosell_ratio)
+        # Workers with no_last_post=True have rosell target = 0
+        if worker_data and worker_data.get("no_last_post", False):
+            rosell_target = 0
+        else:
+            rosell_target = round(target * rosell_ratio)
         rosell_deviation = rosell_count - rosell_target
         rosell_deviation_pct = (rosell_deviation / rosell_target * 100) if rosell_target > 0 else 0
 

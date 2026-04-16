@@ -65,7 +65,7 @@ class DataManager:
             return
 
         # Verify worker assignments match schedule
-        self.verify_assignment_consistency()
+        self._verify_assignment_consistency()
 
         # Mark data as verified
         self.data_integrity_verified = True
@@ -404,9 +404,9 @@ class DataManager:
         """
         date_str = date.strftime("%Y-%m-%d")
         if constraint_type == "incompatibility" and other_worker_id:
-            self.constraint_skips[worker_id][constraint_type].append((date_str, (worker_id, other_worker_id)))
+            self.scheduler.constraint_skips[worker_id][constraint_type].append((date_str, (worker_id, other_worker_id)))
         else:
-            self.constraint_skips[worker_id][constraint_type].append(date_str)
+            self.scheduler.constraint_skips[worker_id][constraint_type].append(date_str)
 
         logging.warning(f"Constraint skip recorded - Type: {constraint_type}, Worker: {worker_id}, Date: {date_str}")
 
@@ -417,8 +417,8 @@ class DataManager:
         logging.info("Starting schedule cleanup...")
         incomplete_days = []
 
-        current_date = self.start_date
-        while current_date <= self.end_date:
+        current_date = self.scheduler.start_date
+        while current_date <= self.scheduler.end_date:
             if current_date not in self.schedule:
                 incomplete_days.append(current_date)
             else:
@@ -603,7 +603,7 @@ class DataManager:
                 "weekday": self.worker_weekdays[worker_id],
                 "posts": self._get_post_counts(worker_id),
             },
-            "constraint_skips": self.constraint_skips[worker_id],
+            "constraint_skips": self.scheduler.constraint_skips[worker_id],
             "gaps_analysis": self._analyze_gaps(worker_id),
         }
 
@@ -733,6 +733,11 @@ class DataManager:
 
     def _validate_post_rotation(self, worker_id, warnings):
         """Validate post rotation balance for a worker"""
+        # Skip validation for workers with no_last_post
+        worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
+        if worker and worker.get("no_last_post", False):
+            return
+
         post_counts = self._get_post_counts(worker_id)
         total_assignments = sum(post_counts.values())
         last_post = self.num_shifts - 1
@@ -979,16 +984,16 @@ class DataManager:
         """
         try:
             # Run comprehensive validation
-            self.data_manager.validate_final_schedule()
+            self.scheduler._validate_final_schedule()
 
             # Additional verification steps...
 
             return True, {
-                "stats": self.stats.gather_statistics(),
-                "metrics": self.stats.get_schedule_metrics(),
-                "coverage": self.stats.calculate_coverage(),
+                "stats": self.scheduler.stats.gather_statistics(),
+                "metrics": self.scheduler.stats.get_schedule_metrics(),
+                "coverage": self.scheduler.stats._calculate_coverage(),
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "validator": self.current_user,
+                "validator": self.scheduler.current_user,
             }
 
         except SchedulerError as e:

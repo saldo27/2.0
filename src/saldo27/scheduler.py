@@ -1745,9 +1745,9 @@ class Scheduler:
                             )
 
                         # Check for Friday-Monday assignments
-                        # Only flag if 3 < effective_gap (otherwise already caught by gap check
+                        # Only flag if effective_gap > 3 (otherwise already caught by gap check
                         # or permitted by the worker's effective gap)
-                        if days_between == 3 and 3 < effective_gap:
+                        if days_between == 3 and effective_gap > 3:
                             if (date1.weekday() == 4 and date2.weekday() == 0) or (
                                 date1.weekday() == 0 and date2.weekday() == 4
                             ):
