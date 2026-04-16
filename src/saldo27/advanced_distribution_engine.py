@@ -677,6 +677,12 @@ class AdvancedDistributionEngine:
             if self.scheduler.schedule[date][post] is not None:
                 return False
 
+            # CRITICAL: no_last_post workers cannot be assigned to the last post
+            if post == self.scheduler.num_shifts - 1:
+                w_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
+                if w_data and w_data.get("no_last_post", False):
+                    return False
+
             # NEW: Validate monthly balance before assigning
             worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
             if worker_data and hasattr(self.builder, "_get_expected_monthly_target"):

@@ -718,6 +718,10 @@ class ScheduleBuilder:
             if not worker:
                 return False
 
+            # CRITICAL: no_last_post workers cannot be assigned to the last post
+            if post == self.num_shifts - 1 and worker.get("no_last_post", False):
+                return False
+
             # Check worker availability (days off)
             if self._is_worker_unavailable(worker_id, date):
                 return False
@@ -988,6 +992,12 @@ class ScheduleBuilder:
             # Get worker data for percentage check if needed later
             worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
             work_percentage = worker_data.get("work_percentage", 100) if worker_data else 100
+
+            # 0. no_last_post: worker cannot be assigned to the last post
+            if post == self.num_shifts - 1 and worker_data and worker_data.get("no_last_post", False):
+                if _dbg:
+                    logging.debug(f"Sim Check Fail: no_last_post {worker_id} on {date}")
+                return False
 
             # 1. Incompatibility (using simulated_schedule)
             if not self._check_incompatibility_simulated(worker_id, date, simulated_schedule):

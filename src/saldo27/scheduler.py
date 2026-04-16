@@ -1627,6 +1627,10 @@ class Scheduler:
                         if has_conflict:
                             continue
 
+                    # CRITICAL: no_last_post workers cannot be assigned to the last post
+                    if post == self.num_shifts - 1 and worker.get("no_last_post", False):
+                        continue
+
                     # This worker is a good candidate
                     # CRITICAL: Final check - verify tolerance before assigning
                     if hasattr(self, "schedule_builder") and self.schedule_builder:

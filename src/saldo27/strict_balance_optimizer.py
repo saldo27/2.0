@@ -1176,6 +1176,14 @@ class StrictBalanceOptimizer:
         state = self._save_state()
 
         try:
+            # Validate no_last_post before applying any step
+            num_shifts = self.scheduler.num_shifts if hasattr(self.scheduler, "num_shifts") else 0
+            for _from_id, _date, _post, _to_id in chain:
+                if _post == num_shifts - 1 and num_shifts > 0:
+                    to_data = next((w for w in self.workers_data if w["id"] == _to_id), None)
+                    if to_data and to_data.get("no_last_post", False):
+                        return False
+
             # Aplicar cada paso de la cadena
             for from_id, date, post, to_id in chain:
                 # Actualizar schedule
