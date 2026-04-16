@@ -398,6 +398,14 @@ class SchedulerCore:
             attempts_results = []
             no_improve_count = 0  # Track consecutive attempts with no score improvement
 
+            # Initialize best-state variables (will be set when first successful attempt beats best_score)
+            best_schedule = copy.deepcopy(self.scheduler.schedule)
+            best_assignments = copy.deepcopy(self.scheduler.worker_assignments)
+            best_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
+            best_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
+            best_posts = copy.deepcopy(self.scheduler.worker_posts)
+            best_locked_mandatory = copy.deepcopy(mandatory_locked)
+
             # Start adaptive iteration manager timer
             self.adaptive_manager.start_time = datetime.now()
 

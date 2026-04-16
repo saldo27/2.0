@@ -1776,6 +1776,11 @@ class Scheduler:
                             )
 
             # Check for incompatibility violations
+            # Build set of mandatory (worker_id, date) pairs to skip mandatory-caused violations
+            mandatory_pairs: set[tuple[str, Any]] = set()
+            if hasattr(self, "schedule_builder") and self.schedule_builder is not None:
+                mandatory_pairs = getattr(self.schedule_builder, "_locked_mandatory", set())
+
             for date in self.schedule.keys():
                 workers_assigned = [w for w in self.schedule.get(date, []) if w is not None]
 
@@ -1788,6 +1793,16 @@ class Scheduler:
                     incompatible_with = worker.get("incompatible_with", [])
                     for incompatible_id in incompatible_with:
                         if incompatible_id in workers_assigned:
+                            # Skip if BOTH workers are mandatory on this date
+                            both_mandatory = (
+                                (worker_id, date) in mandatory_pairs
+                                and (incompatible_id, date) in mandatory_pairs
+                            )
+                            if both_mandatory:
+                                logging.info(
+                                    f"Incompatible workers {worker_id} and {incompatible_id} on {date} — both MANDATORY, skipping violation"
+                                )
+                                continue
                             violations.append(
                                 {
                                     "type": "incompatibility",

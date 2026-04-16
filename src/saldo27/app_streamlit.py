@@ -311,6 +311,7 @@ def load_workers_from_file(uploaded_file):
                 "days_off": str(item.get("days_off", "")),
                 "work_periods": str(item.get("work_periods", "")),
                 "auto_calculate_shifts": bool(item.get("auto_calculate_shifts", True)),
+                "no_last_post": bool(item.get("no_last_post", False)),
             }
 
             # Compatibilidad con formato antiguo (mandatory_dates lista)
