@@ -5579,6 +5579,11 @@ class ScheduleBuilder:
         instead of the live worker_assignments (for simulating chained swaps)."""
         if self._is_mandatory(swapping_out_worker, date):
             return False
+        # CRITICAL: no_last_post workers cannot be placed on the last post
+        if post == self.num_shifts - 1:
+            worker_cfg = next((w for w in self.workers_data if w["id"] == worker_id), None)
+            if worker_cfg and worker_cfg.get("no_last_post", False):
+                return False
         for p_idx, w in enumerate(self.schedule.get(date, [])):
             if w == worker_id and p_idx != post:
                 return False
@@ -5638,6 +5643,12 @@ class ScheduleBuilder:
         # Mandatory protection: don't displace a mandatory assignment
         if self._is_mandatory(swapping_out_worker, date):
             return False
+
+        # CRITICAL: no_last_post workers cannot be placed on the last post
+        if post == self.num_shifts - 1:
+            worker_cfg = next((w for w in self.workers_data if w["id"] == worker_id), None)
+            if worker_cfg and worker_cfg.get("no_last_post", False):
+                return False
 
         # Worker must not already be working on that date (other post)
         for p_idx, w in enumerate(self.schedule.get(date, [])):
@@ -7213,9 +7224,15 @@ class ScheduleBuilder:
 
             for worker_id, stats in worker_stats.items():
                 if worker_id in no_last_post_workers:
-                    # Workers with no_last_post have target=0; treat as balanced (deviation=0)
+                    # Workers with no_last_post have target=0
                     stats["expected"] = 0
-                    stats["deviation"] = 0
+                    # If they have any last posts, treat them as heavily overloaded
+                    # so they get swapped out
+                    if stats["last_posts"] > 0:
+                        stats["deviation"] = stats["last_posts"] + 10  # High priority to evict
+                        overloaded.append((worker_id, stats["deviation"], stats))
+                    else:
+                        stats["deviation"] = 0
                     continue
                 expected = stats["total_shifts"] / shifts_per_day
                 actual = stats["last_posts"]
@@ -7429,9 +7446,15 @@ class ScheduleBuilder:
 
             for worker_id_str, total_shifts in worker_total_shifts.items():
                 if worker_id_str in no_last_post_workers:
-                    # Target is 0 last posts: treat as perfectly balanced regardless of total shifts
+                    # Target is 0 last posts
                     worker_expected_last_posts[worker_id_str] = 0
-                    worker_deviation[worker_id_str] = 0
+                    actual_lp = worker_last_posts.get(worker_id_str, 0)
+                    if actual_lp > 0:
+                        # If they have any last posts, treat as heavily overloaded
+                        # so they get swapped out
+                        worker_deviation[worker_id_str] = actual_lp + 10  # High priority to evict
+                    else:
+                        worker_deviation[worker_id_str] = 0
                     continue
                 if total_shifts > 0:
                     # Formula: expected_last_posts = (total_shifts / shifts_per_day) ± tolerance

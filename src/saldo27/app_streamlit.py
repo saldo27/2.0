@@ -70,7 +70,7 @@ class SidebarLogHandler(logging.Handler):
 
 
 # Constante de versión
-APP_VERSION = "2.8"
+APP_VERSION = "2.9"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -837,7 +837,19 @@ def get_worker_statistics():
         else:
             rosell_target = round(target * rosell_ratio)
         rosell_deviation = rosell_count - rosell_target
-        rosell_deviation_pct = (rosell_deviation / rosell_target * 100) if rosell_target > 0 else 0
+        if rosell_target > 0:
+            rosell_deviation_pct = rosell_deviation / rosell_target * 100
+        elif rosell_count > 0:
+            # target=0 but actual>0 means a violation — show as special marker
+            rosell_deviation_pct = float('inf')
+        else:
+            rosell_deviation_pct = 0.0
+
+        # Format the Rosell deviation percentage
+        if rosell_deviation_pct == float('inf'):
+            rosell_dev_pct_str = "⚠️ VIOL"
+        else:
+            rosell_dev_pct_str = f"{rosell_deviation_pct:+.1f}%"
 
         stats.append(
             {
@@ -853,7 +865,7 @@ def get_worker_statistics():
                 "Obj. Rosell": rosell_target,
                 "Rosell": rosell_count,
                 "Desv. Rosell": rosell_deviation,
-                "Desv. Rosell %": f"{rosell_deviation_pct:+.1f}%",
+                "Desv. Rosell %": rosell_dev_pct_str,
             }
         )
 
