@@ -2,12 +2,13 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 2.9 (Abril 2026)
+Versión: 2.8 (Marzo 2026)
 """
 
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
 # Esto asegura que los calendarios muestren Lunes-Domingo (formato español/ISO 8601)
 import os
+from typing import Any
 
 os.environ["LANG"] = "es_ES.utf8"
 os.environ["LC_ALL"] = "es_ES.utf8"
@@ -455,7 +456,7 @@ def load_schedule_from_json(uploaded_file):
                     scheduler = Scheduler(config)
                     scheduler.schedule = schedule
                     scheduler.workers_data = new_workers_data
-                    scheduler.worker_assignments = scheduler._map_worker_assignments()
+                    scheduler._repair_data_synchronization()
 
                     st.session_state.scheduler = scheduler
                     st.session_state.schedule = schedule
@@ -1197,6 +1198,7 @@ with st.sidebar:
 
             # Convert all datetime objects in the config
             export_data = convert_datetime_to_string(export_data)
+            assert isinstance(export_data, dict)
 
             # Add metadata for prior-schedule handler compatibility
             if "start_date" in st.session_state.config and "end_date" in st.session_state.config:
@@ -1244,10 +1246,11 @@ with st.sidebar:
                 # Always store raw bytes so future Scheduler instances can re-apply
                 raw_bytes = prior_file.read()
                 st.session_state.prior_schedule_raw = raw_bytes
-                if st.session_state.get("scheduler") is not None:
+                _sched: Scheduler | None = st.session_state.get("scheduler")
+                if _sched is not None:
                     from io import BytesIO
 
-                    result = st.session_state.scheduler.load_prior_schedule_data(BytesIO(raw_bytes))
+                    result = _sched.load_prior_schedule_data(BytesIO(raw_bytes))
                     if result.get("error"):
                         st.error(result["error"])
                     else:
@@ -1259,8 +1262,9 @@ with st.sidebar:
                     st.info("El calendario anterior se aplicará al generar el nuevo reparto.")
         with col_clear:
             if st.session_state.prior_schedule_loaded and st.button("🗑️ Limpiar", key="btn_clear_prior"):
-                if st.session_state.get("scheduler") is not None:
-                    st.session_state.scheduler.clear_prior_schedule_data()
+                _sched2: Scheduler | None = st.session_state.get("scheduler")
+                if _sched2 is not None:
+                    _sched2.clear_prior_schedule_data()
                 st.session_state.prior_schedule_data = None
                 st.session_state.prior_schedule_raw = None
                 st.session_state.prior_schedule_loaded = False
@@ -1599,6 +1603,8 @@ with tab1:
                 st.session_state.is_incompatible_checkbox = st.session_state.incompatible_buffer
             if "incompatible_with_buffer" in st.session_state and st.session_state.incompatible_with_buffer:
                 st.session_state.incompatible_with_multiselect = st.session_state.incompatible_with_buffer
+            if "no_last_post_buffer" in st.session_state:
+                st.session_state.no_last_post_checkbox = st.session_state.no_last_post_buffer
 
         with st.form("worker_form"):
             # El ID lo pasamos desde session_state
@@ -1628,12 +1634,18 @@ with tab1:
 
             # Incompatibilidades (actualizado a multiselect)
             st.markdown("**🚫 Incompatibilidades**")
-            col_inc1, col_inc2 = st.columns(2)
+            col_inc1, col_inc2, col_inc3 = st.columns(3)
             with col_inc1:
                 is_incompatible = st.checkbox(
                     "Incompatible con todos los marcados",
                     help="Este médico no puede coincidir con otros marcados igual",
                     key="is_incompatible_checkbox",
+                )
+            with col_inc3:
+                no_last_post = st.checkbox(
+                    "No asignar Rosell",
+                    help="Este médico no puede tener last posts (último puesto) asignados",
+                    key="no_last_post_checkbox",
                 )
             with col_inc2:
                 # Obtener lista de otros médicos para el multiselect
@@ -1741,6 +1753,7 @@ with tab1:
                         "work_percentage": work_percentage_value,  # Corrected: Scale 0-100, not 0-1
                         "is_incompatible": is_incompatible,
                         "incompatible_with": incomp_list,
+                        "no_last_post": no_last_post,
                         "mandatory_days": worker_data_mandatory,  # Renamed to match scheduler and used string
                         "days_off": worker_data_days_off,  # New field
                         "work_periods": worker_data_work_periods,  # New field
@@ -1909,6 +1922,7 @@ with tab1:
                             # Incompatibilidades
                             st.session_state.incompatible_buffer = worker.get("is_incompatible", False)
                             st.session_state.incompatible_with_buffer = worker.get("incompatible_with", [])
+                            st.session_state.no_last_post_buffer = worker.get("no_last_post", False)
 
                             # Días obligatorios
                             mandatory_days_str = worker.get("mandatory_days", "")
@@ -1956,11 +1970,12 @@ with tab2:
             # the dict can be missing keys or have shorter lists for transient reasons.
             # This correctly gives 184 * 4 = 736 when there are no variable_shifts,
             # and still accounts for variable_shifts days when they exist.
-            _scheduler = st.session_state.scheduler
+            _sched_obj = st.session_state.scheduler  # Scheduler instance
+            assert _sched_obj is not None
             _sched_raw = st.session_state.schedule
             total_possible = sum(
-                _scheduler._get_shifts_for_date(d)
-                for d in _scheduler._get_date_range(_scheduler.start_date, _scheduler.end_date)
+                _sched_obj._get_shifts_for_date(d)
+                for d in _sched_obj._get_date_range(_sched_obj.start_date, _sched_obj.end_date)
             )
             total_slots = sum(sum(1 for w in shifts if w is not None) for shifts in _sched_raw.values())
             coverage = (total_slots / total_possible * 100) if total_possible > 0 else 0
@@ -2292,7 +2307,7 @@ with tab3:
                 monthly_rows.append(row)
 
             # Totals row
-            totals_row = {"Médico": "TOTAL"}
+            totals_row: dict[str, Any] = {"Médico": "TOTAL"}
             grand_total = 0
             for mkey, mname in months_in_schedule.items():
                 col_sum = sum(r[mname] for r in monthly_rows)

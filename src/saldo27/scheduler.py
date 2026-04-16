@@ -26,6 +26,9 @@ class Scheduler:
         """Initialize the scheduler with configuration"""
         logging.info("Scheduler initialized")
 
+        # Cancellation flag — set to True from the UI to abort generation
+        self._cancelled: bool = False
+
         # Initialize cache for performance optimization
         self._cache: dict[str, Any] = {}
         self._cache_enabled = config.get("cache_enabled", SchedulerConfig.CACHE_ENABLED)
@@ -116,6 +119,7 @@ class Scheduler:
     def _init_tracking_state(self) -> None:
         """Phase 3: Initialize all tracking dictionaries and schedule structure."""
         self.schedule = {}
+        self.schedule_builder: Any = None  # Set by SchedulerCore during generation
         self.worker_assignments = {w["id"]: set() for w in self.workers_data}
         self.worker_posts = {w["id"]: set() for w in self.workers_data}
         self.worker_weekdays = {w["id"]: {i: 0 for i in range(7)} for w in self.workers_data}
@@ -303,7 +307,7 @@ class Scheduler:
             if delta == 0:
                 continue
 
-            base_target = self._base_target_shifts.get(wid, worker.get("target_shifts", 1))
+            base_target = self._base_target_shifts.get(wid) or float(worker.get("target_shifts", 1))
             adjusted = max(1, round(base_target - delta))
             worker["target_shifts"] = adjusted
             logging.info(
@@ -786,7 +790,7 @@ class Scheduler:
             logging.error(f"Error validating data synchronization: {e!s}", exc_info=True)
             return False, {"error": str(e), "is_synchronized": False}
 
-    def _repair_data_synchronization(self, validation_report: dict[str, Any] = None) -> bool:
+    def _repair_data_synchronization(self, validation_report: dict[str, Any] | None = None) -> bool:
         """
         Repair synchronization issues between worker_assignments and schedule.
         Uses schedule as the source of truth.
@@ -2890,7 +2894,7 @@ class Scheduler:
                     event_type=EventType.REAL_TIME_ACTIVATED,
                     data={"message": "Real-time features fully activated", "user_id": self.current_user},
                 )
-                self.real_time_engine.event_bus.publish(event)
+                self.real_time_engine.event_bus.publish(event)  # type: ignore[union-attr]
                 logging.debug("Real-time activation event published")
 
             logging.info("Real-time features successfully enabled and activated for smart swapping")
@@ -2919,6 +2923,7 @@ class Scheduler:
         if not self.is_real_time_enabled():
             return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
 
+        assert self.real_time_engine is not None
         try:
             result = self.real_time_engine.assign_worker_real_time(worker_id, shift_date, post_index, user_id, validate)
 
@@ -2952,6 +2957,7 @@ class Scheduler:
         if not self.is_real_time_enabled():
             return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
 
+        assert self.real_time_engine is not None
         try:
             result = self.real_time_engine.unassign_worker_real_time(shift_date, post_index, user_id)
 
@@ -2992,6 +2998,7 @@ class Scheduler:
         if not self.is_real_time_enabled():
             return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
 
+        assert self.real_time_engine is not None
         try:
             result = self.real_time_engine.swap_workers_real_time(
                 shift_date1, post_index1, shift_date2, post_index2, user_id, validate
@@ -3022,6 +3029,7 @@ class Scheduler:
         if not self.is_real_time_enabled():
             return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
 
+        assert self.real_time_engine is not None
         try:
             result = self.real_time_engine.validate_schedule_real_time(quick_check)
 
@@ -3050,6 +3058,7 @@ class Scheduler:
         if not self.is_real_time_enabled():
             return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
 
+        assert self.real_time_engine is not None
         try:
             result = self.real_time_engine.undo_last_change(user_id)
 
@@ -3072,6 +3081,7 @@ class Scheduler:
         if not self.is_real_time_enabled():
             return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
 
+        assert self.real_time_engine is not None
         try:
             result = self.real_time_engine.redo_last_change(user_id)
 
@@ -3091,6 +3101,7 @@ class Scheduler:
         if not self.is_real_time_enabled():
             return {"error": "Real-time features not enabled"}
 
+        assert self.real_time_engine is not None
         try:
             return self.real_time_engine.get_real_time_analytics()
         except Exception as e:
@@ -3111,8 +3122,9 @@ class Scheduler:
         if not self.is_real_time_enabled():
             return {"error": "Real-time features not enabled"}
 
+        assert self.real_time_engine is not None
         try:
-            changes = self.real_time_engine.change_tracker.get_change_history(limit=limit, user_id=user_id)
+            changes = self.real_time_engine.change_tracker.get_change_history(limit=limit, user_id=user_id or "")
 
             return {
                 "changes": [change.to_dict() for change in changes],
@@ -3148,6 +3160,7 @@ class Scheduler:
                 "error": "PREDICTIVE_ANALYTICS_DISABLED",
             }
 
+        assert self.predictive_analytics is not None
         try:
             result = self.predictive_analytics.generate_demand_forecasts(forecast_days)
 
@@ -3180,6 +3193,7 @@ class Scheduler:
                 "error": "PREDICTIVE_ANALYTICS_DISABLED",
             }
 
+        assert self.predictive_analytics is not None
         try:
             result = self.predictive_analytics.get_predictive_insights()
 
@@ -3208,13 +3222,14 @@ class Scheduler:
                 "error": "PREDICTIVE_OPTIMIZER_DISABLED",
             }
 
+        assert self.predictive_analytics is not None
         try:
             # Get latest forecasts if available
-            forecast_data = None
+            forecast_data: dict[str, Any] | None = None
             if self.predictive_analytics.latest_forecasts:
                 forecast_data = self.predictive_analytics.latest_forecasts
 
-            result = self.predictive_optimizer.predict_and_optimize(forecast_data)
+            result = self.predictive_optimizer.predict_and_optimize(forecast_data)  # type: ignore[arg-type]
 
             return {
                 "success": True,
@@ -3244,6 +3259,7 @@ class Scheduler:
                 "error": "PREDICTIVE_ANALYTICS_DISABLED",
             }
 
+        assert self.predictive_analytics is not None
         try:
             result = self.predictive_analytics.collect_and_store_current_data()
 
@@ -3267,6 +3283,7 @@ class Scheduler:
         if not self.is_predictive_analytics_enabled():
             return ["Predictive analytics not enabled - enable for optimization suggestions"]
 
+        assert self.predictive_analytics is not None
         try:
             return self.predictive_analytics.get_optimization_suggestions()
         except Exception as e:
@@ -3283,6 +3300,7 @@ class Scheduler:
         if not self.is_predictive_analytics_enabled():
             return {"enabled": False, "message": "Predictive analytics not enabled"}
 
+        assert self.predictive_analytics is not None
         try:
             return self.predictive_analytics.get_analytics_summary()
         except Exception as e:

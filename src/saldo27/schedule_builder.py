@@ -1308,7 +1308,7 @@ class ScheduleBuilder:
 
         return False
 
-    def _has_weekend_in_same_week(self, worker_id: str, target_date: datetime, exclude_date: datetime = None) -> bool:
+    def _has_weekend_in_same_week(self, worker_id: str, target_date: datetime, exclude_date: datetime | None = None) -> bool:
         """
         Check if worker already has a weekend shift in the same calendar week (Mon-Sun).
 
@@ -1367,6 +1367,12 @@ class ScheduleBuilder:
         # Basic availability check
         if self._is_worker_unavailable(worker_id, date) or worker_id in self.schedule.get(date, []):
             return False
+
+        # Check no_last_post constraint: worker cannot be assigned to the last post
+        if post == self.num_shifts - 1:
+            worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
+            if worker_config and worker_config.get("no_last_post", False):
+                return False
 
         # Check incompatibility against workers already assigned on this date
         already_assigned_on_date = [
@@ -2312,10 +2318,11 @@ class ScheduleBuilder:
         #
         # This scoring is applied during initial assignment to prevent imbalance
         # that would later require extensive swapping to fix.
+        # Workers with no_last_post=True have a target of 0 last posts — skip scoring.
         # =========================================================================
         is_last_post = post == self.num_shifts - 1  # 0-indexed, so P4 = index 3
 
-        if self.num_shifts > 1:  # Only relevant when there are multiple posts
+        if self.num_shifts > 1 and not worker.get("no_last_post", False):  # Only relevant when there are multiple posts
             # Get current post distribution for this worker
             post_counts = {}
             for assignment_date in self.worker_assignments[worker_id]:
@@ -3799,7 +3806,7 @@ class ScheduleBuilder:
 
                         self._execute_worker_swap(over_id, d_over, p_over, under_id, d_under, p_under)
 
-                        if score_fn is not None:
+                        if score_fn is not None and best_score is not None:
                             new_score = score_fn()
                             if new_score < best_score - 1e-9:
                                 self._execute_worker_swap(under_id, d_over, p_over, over_id, d_under, p_under)
@@ -3994,7 +4001,7 @@ class ScheduleBuilder:
                         # Execute and check composite score
                         self._execute_worker_swap(heavy_wk, d_h, p_h, light_wk, d_l, p_l)
 
-                        if score_fn is not None:
+                        if score_fn is not None and best_score is not None:
                             new_score = score_fn()
                             # Strict improvement → accept and raise the bar
                             if new_score > best_score + 1e-9:
@@ -4011,7 +4018,7 @@ class ScheduleBuilder:
                                 continue
 
                         total_swaps += 1
-                        cur_score = new_score if score_fn is not None else best_score
+                        cur_score = new_score if score_fn is not None else best_score  # type: ignore[possibly-undefined]
                         logging.info(
                             f"Multi-obj swap: {heavy_wk}({d_h.strftime('%Y-%m-%d')} wknd) "
                             f"↔ {light_wk}({d_l.strftime('%Y-%m-%d')} wday) "
@@ -4710,43 +4717,6 @@ class ScheduleBuilder:
         # Add pre-holidays (treated as Fridays)
         special_days.update(pre_holidays)
 
-        return self._distribute_special_days_proportionally(special_days)
-
-    def distribute_holiday_shifts_proportionally(self):
-        """
-        Función pública para distribución proporcional de días especiales
-        """
-        # Obtener todos los días especiales
-        special_days = set()
-
-        # Obtener todas las fechas del horario para encontrar fines de semana
-        all_dates = list(self.schedule.keys())
-
-        # Agregar fines de semana (viernes y sábados)
-        for date in all_dates:
-            # Asegurar que date es un objeto datetime
-            if hasattr(date, "weekday"):
-                if self._is_weekend_day(date):  # Pasar el objeto date completo, no solo weekday()
-                    special_days.add(date)
-
-        # Agregar festivos (considerados como domingos)
-        for holiday_date in self.holidays:
-            # Asegurar que holiday_date es un objeto datetime
-            if hasattr(holiday_date, "weekday") and holiday_date in all_dates:
-                special_days.add(holiday_date)
-
-        # Agregar pre-festivos (considerados como viernes)
-        pre_holidays = getattr(self, "pre_holidays", [])  # Usar getattr con default vacío
-        for pre_holiday_date in pre_holidays:
-            # Asegurar que pre_holiday_date es un objeto datetime
-            if hasattr(pre_holiday_date, "weekday") and pre_holiday_date in all_dates:
-                special_days.add(pre_holiday_date)
-
-        if not special_days:
-            logging.info("No special days found for proportional distribution")
-            return False
-
-        logging.info(f"Found {len(special_days)} special days for proportional distribution")
         return self._distribute_special_days_proportionally(special_days)
 
     def _distribute_special_days_proportionally(self, special_days):
@@ -5593,7 +5563,7 @@ class ScheduleBuilder:
         post: int,
         swapping_out_worker: str,
         giving_up_date=None,
-        custom_assignments: set = None,
+        custom_assignments: set | None = None,
     ) -> bool:
         """Like _can_swap_worker_to_date but uses a custom set of assignments
         instead of the live worker_assignments (for simulating chained swaps)."""
@@ -5951,7 +5921,7 @@ class ScheduleBuilder:
                         self.scheduler._update_tracking_data(under_id, date, post)
 
                         # ── Score gate: revert if composite score dropped ──
-                        if score_fn is not None:
+                        if score_fn is not None and best_score is not None:
                             new_score = score_fn()
                             if new_score < best_score - 1e-9:
                                 # Revert swap
@@ -6119,7 +6089,7 @@ class ScheduleBuilder:
                         self._execute_worker_swap(h_id, wk_date, wk_post, l_id, wd_date, wd_post)
 
                         # Score gate
-                        if score_fn is not None:
+                        if score_fn is not None and best_score is not None:
                             new_score = score_fn()
                             if new_score < best_score - 1e-9:
                                 # Revert: swap back
@@ -7143,7 +7113,7 @@ class ScheduleBuilder:
                 break
 
         if total_swaps > 0:
-            logging.info(f"Post-rotation optimizer: {total_swaps} swaps in {pass_num} passes")
+            logging.info(f"Post-rotation optimizer: {total_swaps} swaps in {pass_num} passes")  # type: ignore[possibly-undefined]
             # Resync tracking
             self._synchronize_tracking_data()
 
@@ -7189,6 +7159,8 @@ class ScheduleBuilder:
 
         shifts_per_day = self.scheduler.num_shifts if hasattr(self.scheduler, "num_shifts") else 2
 
+        no_last_post_workers = {str(w["id"]) for w in self.workers_data if w.get("no_last_post", False)}
+
         total_swaps = 0
 
         for iteration in range(max_iterations):
@@ -7230,6 +7202,11 @@ class ScheduleBuilder:
             underloaded = []
 
             for worker_id, stats in worker_stats.items():
+                if worker_id in no_last_post_workers:
+                    # Workers with no_last_post have target=0; treat as balanced (deviation=0)
+                    stats["expected"] = 0
+                    stats["deviation"] = 0
+                    continue
                 expected = stats["total_shifts"] / shifts_per_day
                 actual = stats["last_posts"]
                 deviation = actual - expected
@@ -7277,6 +7254,9 @@ class ScheduleBuilder:
                     worker_B = str(shifts[idx])
                     if worker_B == "None" or worker_B == worker_A:
                         continue
+
+                    if worker_B in no_last_post_workers:
+                        continue  # Cannot swap a no_last_post worker into the last post
 
                     if not self._can_modify_assignment(worker_B, date_val, "strict_last_post_B"):
                         continue
@@ -7374,6 +7354,16 @@ class ScheduleBuilder:
 
         logging.info(f"Using shifts_per_day = {shifts_per_day} for calculations")
 
+        no_last_post_workers = {str(w["id"]) for w in self.workers_data if w.get("no_last_post", False)}
+        if no_last_post_workers:
+            logging.info(f"Workers with no_last_post (target=0): {no_last_post_workers}")
+
+        # Initialize variables used after the loop for final logging
+        worker_total_shifts: dict[str, int] = {}
+        worker_last_posts: dict[str, int] = {}
+        worker_expected_last_posts: dict[str, float] = {}
+        iteration = 0
+
         for iteration in range(max_iterations):
             logging.info(f"--- IMPROVED Last Post Adjustment Iteration: {iteration + 1}/{max_iterations} ---")
             made_swap_in_this_iteration = False
@@ -7428,6 +7418,11 @@ class ScheduleBuilder:
             worker_deviation = {}
 
             for worker_id_str, total_shifts in worker_total_shifts.items():
+                if worker_id_str in no_last_post_workers:
+                    # Target is 0 last posts: treat as perfectly balanced regardless of total shifts
+                    worker_expected_last_posts[worker_id_str] = 0
+                    worker_deviation[worker_id_str] = 0
+                    continue
                 if total_shifts > 0:
                     # Formula: expected_last_posts = (total_shifts / shifts_per_day) ± tolerance
                     expected_last_posts = total_shifts / shifts_per_day
@@ -7502,6 +7497,9 @@ class ScheduleBuilder:
                         worker_B_id_str = str(shifts_on_this_day[earlier_post_idx])
 
                         if worker_B_id_str != "None" and worker_B_id_str != worker_A_id:
+                            if worker_B_id_str in no_last_post_workers:
+                                continue  # Cannot swap a no_last_post worker into the last post
+
                             worker_B_deviation = worker_deviation.get(worker_B_id_str, 0)
 
                             # Good swap candidate: B has negative deviation (needs more last posts)
@@ -7632,10 +7630,10 @@ class ScheduleBuilder:
                     )
 
             logging.info(
-                f"Finished IMPROVED last post adjustments. Total iterations: {iteration + 1}. Swaps made: {overall_swaps_made_across_iterations}"
+                f"Finished IMPROVED last post adjustments. Total iterations: {iteration + 1}. Swaps made: {overall_swaps_made_across_iterations}"  # type: ignore[possibly-undefined]
             )
         else:
-            logging.info(f"No IMPROVED last post adjustments made after {iteration + 1} iteration(s).")
+            logging.info(f"No IMPROVED last post adjustments made after {iteration + 1} iteration(s).")  # type: ignore[possibly-undefined]
 
         return overall_swaps_made_across_iterations
 

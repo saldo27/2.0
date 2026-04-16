@@ -1064,6 +1064,17 @@ class IterativeOptimizer:
 
             logging.debug(f"Found worker data for {worker_name}: {worker_data.get('id')}")
 
+            # Check no_last_post constraint: worker cannot be assigned to the last post
+            if worker_data.get("no_last_post", False) and shift_type.startswith("Post_"):
+                try:
+                    post_idx = int(shift_type.split("_")[1])
+                    num_shifts = getattr(self.scheduler, "num_shifts", 0) if self.scheduler else 0
+                    if num_shifts > 0 and post_idx == num_shifts - 1:
+                        logging.debug(f"Blocked by no_last_post constraint for {worker_name}")
+                        return False
+                except (ValueError, IndexError):
+                    pass
+
             # Check basic availability
             worker_availability = worker_data.get("availability", {})
             day_name = shift_date.strftime("%A")
