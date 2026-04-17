@@ -2119,6 +2119,23 @@ class SchedulerCore:
                 "tiebreaker": "random",
                 "description": "PCG64 permutation with alternate GRASP seed for maximum diversity",
             },
+            # ── Temporal-spread strategies (prevent monthly front-loading) ────────
+            {
+                "name": f"Monthly Spread + GRASP (Seed {self._make_hash_seed(attempt_num, 'ms')})",
+                "worker_order": "monthly_spread",
+                "randomize": True,
+                "seed": self._make_hash_seed(attempt_num, "ms"),
+                "tiebreaker": "random",
+                "description": "Workers with most balanced monthly distribution get priority; GRASP-RCL tiebreaker",
+            },
+            {
+                "name": f"Monthly Spread + GRASP Alt (Seed {self._make_hash_seed(attempt_num, 'ma')})",
+                "worker_order": "monthly_spread",
+                "randomize": True,
+                "seed": self._make_hash_seed(attempt_num, "ma"),
+                "tiebreaker": "random",
+                "description": "Monthly spread ordering with alternate GRASP seed for temporal diversity",
+            },
         ]
 
         # Select strategy based on attempt number.
@@ -2319,6 +2336,47 @@ class SchedulerCore:
                 _perm = _rng.permutation(len(_grp_list))
                 result.extend(_grp_list[int(i)] for i in _perm)
             workers = result
+
+        elif order_type == "monthly_spread":
+            # Prioritise workers whose monthly distribution is most balanced.
+            # Workers with the smallest excess in their most over-packed month
+            # are listed first, preventing temporal front-loading.
+            # Secondary tiebreaker: total assignment count (fewer shifts first).
+            from datetime import date as _date_cls
+
+            _start = self.start_date.date() if hasattr(self.start_date, "date") else self.start_date
+            _end = self.end_date.date() if hasattr(self.end_date, "date") else self.end_date
+
+            # Count months in scheduling period
+            _months_in_period: list[tuple[int, int]] = []
+            _cur = _date_cls(_start.year, _start.month, 1)
+            while _cur <= _end:
+                _months_in_period.append((_cur.year, _cur.month))
+                if _cur.month == 12:
+                    _cur = _date_cls(_cur.year + 1, 1, 1)
+                else:
+                    _cur = _date_cls(_cur.year, _cur.month + 1, 1)
+            _num_months = max(1, len(_months_in_period))
+
+            def _monthly_spread_key(worker: dict) -> tuple[float, int]:
+                wid = worker["id"]
+                target = worker.get("target_shifts", 0)
+                assignments = self.scheduler.worker_assignments.get(wid, set())
+                total_count = len(assignments)
+                if total_count == 0 or target == 0:
+                    return (0.0, 0)
+                monthly_expected = target / _num_months
+                month_counts: dict[tuple[int, int], int] = {}
+                for d in assignments:
+                    key = (d.year, d.month)
+                    month_counts[key] = month_counts.get(key, 0) + 1
+                if not month_counts:
+                    return (0.0, total_count)
+                # Max excess relative to expected monthly target
+                max_excess = max(cnt - monthly_expected for cnt in month_counts.values())
+                return (max_excess, total_count)
+
+            workers.sort(key=_monthly_spread_key)
 
         # Log first few workers to verify ordering
         if len(workers) > 0:

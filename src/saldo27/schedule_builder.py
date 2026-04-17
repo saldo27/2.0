@@ -3314,6 +3314,21 @@ class ScheduleBuilder:
                             if (existing, date_val) in self._locked_mandatory or self._is_mandatory(existing, date_val):
                                 continue
 
+                        # Temporal pacing adjustment: penalise workers ahead of their
+                        # scheduled pace and reward those behind. This prevents
+                        # front-loading by naturally spreading assignments across the
+                        # full scheduling period without introducing hard blocks.
+                        _total_days = max(1, (self.end_date - self.start_date).days)
+                        _elapsed_days = max(0, (date_val - self.start_date).days)
+                        _elapsed_frac = max(0.01, _elapsed_days / _total_days)
+                        _wk_target = worker_data.get("target_shifts", 0)
+                        if _wk_target > 0:
+                            _expected_so_far = _wk_target * _elapsed_frac
+                            _current_count = len(self.worker_assignments.get(worker_id, set()))
+                            # pace_delta > 0: behind pace (bonus); < 0: ahead of pace (penalty)
+                            _pace_delta = (_expected_so_far - _current_count) / _wk_target
+                            score = score + _pace_delta * 3000
+
                         # Valid candidate - add to list
                         valid_candidates.append((worker_id, score, worker_data))
 
