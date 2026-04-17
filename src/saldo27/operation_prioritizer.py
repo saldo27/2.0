@@ -17,6 +17,7 @@ class OperationPrioritizer:
             "fill_empty_shifts": 10,  # Máxima prioridad
             "distribute_bridge_shifts_proportionally": 9,  # Alta prioridad para puentes (±0.5 tolerance)
             "balance_workloads": 8,
+            "balance_monthly_distribution": 7,  # Balance de turnos por mes (cross-month swaps)
             "balance_weekday_distribution": 6,
             "improve_weekend_distribution": 5,
             "distribute_holiday_shifts_proportionally": 4,
@@ -188,6 +189,15 @@ class OperationPrioritizer:
             )
         )
 
+        # Balance de distribución mensual (cross-month swaps)
+        operations.append(
+            (
+                "balance_monthly_distribution",
+                self.scheduler.schedule_builder._balance_monthly_distribution,
+                self.base_priorities["balance_monthly_distribution"],
+            )
+        )
+
         # Balance de días de semana
         operations.append(
             (
@@ -339,6 +349,7 @@ class OperationPrioritizer:
         return [
             ("fill_empty_shifts", self.scheduler.schedule_builder._try_fill_empty_shifts, 10),
             ("balance_workloads", self.scheduler.schedule_builder._balance_workloads, 8),
+            ("balance_monthly_distribution", self.scheduler.schedule_builder._balance_monthly_distribution, 7),
             ("balance_weekday_distribution", self.scheduler.schedule_builder._balance_weekday_distribution, 6),
             ("improve_weekend_distribution", self.scheduler.schedule_builder._improve_weekend_distribution, 5),
             (

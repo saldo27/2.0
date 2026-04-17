@@ -116,37 +116,32 @@ class OptimizationMetrics:
             return 0.0
 
     def _calculate_workload_balance_score(self) -> float:
-        """Calcular score basado en el balance de carga de trabajo"""
+        """Calcular score basado en el balance de carga de trabajo.
+
+        Mide la desviación media de cada trabajador respecto a su propio
+        target_shifts en lugar del coeficiente de variación global.  El enfoque
+        CV es incorrecto cuando existe configuración manual de objetivos distintos
+        (p. ej. GABI=60, MÓNICA=24): ese spread es intencionado y no debe
+        penalizarse como desequilibrio.
+        """
         try:
             if not self.scheduler.workers_data:
                 return 100.0
 
-            assignment_counts = []
-
+            deviations = []
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
-                work_percentage = worker.get("work_percentage", 100)
+                target = worker.get("target_shifts", 0)
                 count = len(self.scheduler.worker_assignments.get(worker_id, set()))
+                if target > 0:
+                    deviations.append(abs(count - target) / target)
 
-                # Normalizar por porcentaje de trabajo
-                if work_percentage > 0:
-                    normalized_count = count * 100 / work_percentage
-                    assignment_counts.append(normalized_count)
-
-            if not assignment_counts:
+            if not deviations:
                 return 100.0
 
-            # Calcular coeficiente de variación
-            mean_count = sum(assignment_counts) / len(assignment_counts)
-            if mean_count == 0:
-                return 100.0
-
-            variance = sum((count - mean_count) ** 2 for count in assignment_counts) / len(assignment_counts)
-            cv = (variance**0.5) / mean_count  # Coeficiente de variación
-
-            # Convertir a score (menor CV = mejor score)
-            balance_score = max(0, 100 - (cv * 100))
-            return balance_score
+            avg_deviation_pct = sum(deviations) / len(deviations)
+            # Escala: 0 % desv → 100, 10 % desv → 60, 25 % desv → 0
+            return max(0.0, 100.0 - avg_deviation_pct * 400.0)
 
         except Exception as e:
             logging.error(f"Error calculating workload balance score: {e}")
@@ -157,7 +152,9 @@ class OptimizationMetrics:
 
         Counts Friday + Saturday + Sunday + Holidays + Pre-holidays to match
         the definition used by the scheduling operations.
-        Normalizes by work_percentage so part-time workers are compared fairly.
+        Compares each worker's actual weekend count against their proportional
+        expected weekend count (target_shifts × overall_weekend_ratio), so workers
+        with intentionally different targets (manual config) are scored fairly.
         """
         try:
             if not self.scheduler.workers_data:
@@ -165,14 +162,14 @@ class OptimizationMetrics:
 
             holidays = getattr(self.scheduler, "holidays", set())
 
-            weekend_counts = []
-
+            # Compute per-worker weekend counts and total shift counts first
+            worker_weekend_raw = {}
+            worker_total_raw = {}
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
-                work_percentage = worker.get("work_percentage", 100)
                 assignments = self.scheduler.worker_assignments.get(worker_id, set())
-
-                weekend_count = sum(
+                worker_total_raw[worker_id] = len(assignments)
+                worker_weekend_raw[worker_id] = sum(
                     1
                     for date in assignments
                     if hasattr(date, "weekday")
@@ -183,31 +180,42 @@ class OptimizationMetrics:
                     )
                 )
 
-                # Normalizar por porcentaje de trabajo
-                if work_percentage > 0:
-                    normalized_count = weekend_count * 100 / work_percentage
-                    weekend_counts.append(normalized_count)
+            total_all = sum(worker_total_raw.values())
+            total_wknd = sum(worker_weekend_raw.values())
+            if total_all == 0:
+                return 100.0
+            weekend_ratio = total_wknd / total_all
 
-            if not weekend_counts:
+            deviations = []
+            for worker in self.scheduler.workers_data:
+                worker_id = worker["id"]
+                target = worker.get("target_shifts", 0)
+                expected_wknd = target * weekend_ratio
+                actual_wknd = worker_weekend_raw[worker_id]
+                if expected_wknd > 0:
+                    deviations.append(abs(actual_wknd - expected_wknd) / expected_wknd)
+
+            if not deviations:
                 return 100.0
 
-            # Calcular variabilidad en asignaciones de fin de semana
-            mean_weekend = sum(weekend_counts) / len(weekend_counts)
-            if mean_weekend == 0:
-                return 100.0
-
-            variance = sum((count - mean_weekend) ** 2 for count in weekend_counts) / len(weekend_counts)
-            cv = (variance**0.5) / mean_weekend
-
-            balance_score = max(0, 100 - (cv * 80))  # Factor 80 para weekend balance
-            return balance_score
+            avg_deviation_pct = sum(deviations) / len(deviations)
+            # Escala: 0 % desv → 100, 10 % desv → 60, 25 % desv → 0
+            return max(0.0, 100.0 - avg_deviation_pct * 400.0)
 
         except Exception as e:
             logging.error(f"Error calculating weekend balance score: {e}")
             return 0.0
 
     def _calculate_post_rotation_score(self) -> float:
-        """Calcular score basado en la rotación de puestos"""
+        """Calcular score basado en la rotación de puestos.
+
+        Compares each worker's actual post distribution against the expected
+        EQUAL share across their AVAILABLE posts (not num_shifts, which would
+        wrongly penalise workers with no_last_post=True for never filling P4).
+
+        Uses mean absolute relative deviation so the penalty scales with the
+        magnitude of imbalance instead of absolute squared differences.
+        """
         try:
             if not self.scheduler.workers_data or self.scheduler.num_shifts <= 1:
                 return 100.0
@@ -222,7 +230,7 @@ class OptimizationMetrics:
                     continue
 
                 # Contar asignaciones por puesto
-                post_counts = {}
+                post_counts: dict[int, int] = {}
                 for date in assignments:
                     if date in self.scheduler.schedule:
                         workers_in_posts = self.scheduler.schedule[date]
@@ -230,15 +238,26 @@ class OptimizationMetrics:
                             if assigned_worker == worker_id:
                                 post_counts[post_idx] = post_counts.get(post_idx, 0) + 1
 
-                if post_counts:
-                    expected_per_post = len(assignments) / self.scheduler.num_shifts
-                    post_variance = sum((count - expected_per_post) ** 2 for count in post_counts.values()) / len(
-                        post_counts
-                    )
+                if not post_counts:
+                    continue
 
-                    # Score basado en varianza (menor = mejor)
-                    worker_score = max(0, 100 - (post_variance * 20))
-                    post_balance_scores.append(worker_score)
+                # Expected count per AVAILABLE post (not num_shifts, which would
+                # penalise no_last_post workers for never filling P4).
+                n_posts_used = len(post_counts)
+                expected_per_post = sum(post_counts.values()) / n_posts_used
+
+                if expected_per_post == 0:
+                    continue
+
+                # Mean absolute relative deviation: 0 = perfect, 1 = all on one post
+                mard = (
+                    sum(abs(count - expected_per_post) for count in post_counts.values())
+                    / n_posts_used
+                    / expected_per_post
+                )
+                # Scale: 0 % deviation → 100, 25 % → 75, 100 % → 0
+                worker_score = max(0.0, 100.0 - mard * 100.0)
+                post_balance_scores.append(worker_score)
 
             return sum(post_balance_scores) / len(post_balance_scores) if post_balance_scores else 100.0
 

@@ -653,7 +653,19 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             if _pm and _pm.iteration_data:
                 final_iter = len(_pm.iteration_data)
                 total_iter = _pm.total_iterations
-                final_score = _pm.iteration_data[-1].get("current_score", 0) if _pm.iteration_data else 0
+
+                # Calcular el score REAL del estado final del reparto, no el del
+                # último loop del optimizador iterativo (que es mid-proceso, antes
+                # de las fases de finalización).
+                final_score = 0.0
+                try:
+                    _metrics = getattr(_core, "metrics", None)
+                    if _metrics:
+                        final_score = _metrics.calculate_overall_schedule_score()
+                    else:
+                        final_score = _pm.iteration_data[-1].get("current_score", 0)
+                except Exception:
+                    final_score = _pm.iteration_data[-1].get("current_score", 0)
 
                 summary_lines.append("📊 Resumen de ejecución:")
                 summary_lines.append(f"   • Iteraciones: {final_iter}/{total_iter}")
