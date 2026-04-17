@@ -493,7 +493,7 @@ class ScheduleBuilder:
         # Manual workers: exact target, zero tolerance (block any excess immediately)
         if is_manual_worker and assignments_after > target_shifts:
             deviation_pct = ((assignments_after - target_shifts) / target_shifts * 100) if target_shifts > 0 else 0
-            logging.warning(
+            logging.debug(
                 f"🚫 BLOCKED: {worker_id} (manual) would have {assignments_after} shifts "
                 f"(exact target: {target_shifts}, deviation: {deviation_pct:+.1f}%) "
                 f"[current={current_assignments}, mandatory={mandatory_count}, non-mand={non_mandatory_assignments}]"
@@ -525,7 +525,7 @@ class ScheduleBuilder:
             # SIEMPRE bloquear excesos de tolerancia, sin excepción
             work_pct_msg = f" (part-time {work_percentage}%)" if work_percentage < 100 else ""
             deviation_pct = ((assignments_after - target_shifts) / target_shifts * 100) if target_shifts > 0 else 0
-            logging.warning(
+            logging.debug(
                 f"🚫 BLOCKED: {worker_id}{work_pct_msg} would have {assignments_after} shifts "
                 f"(max allowed: {max_allowed}, target: {target_shifts}, deviation: {deviation_pct:+.1f}%) "
                 f"[current={current_assignments}, mandatory={mandatory_count}, non-mand={non_mandatory_assignments}]"
@@ -590,7 +590,7 @@ class ScheduleBuilder:
             if weekend_after > max_weekend_allowed:
                 work_pct_msg = f" (part-time {work_percentage}%)" if work_percentage < 100 else ""
                 deviation = weekend_after - weekend_target
-                logging.warning(
+                logging.debug(
                     f"🚫 BLOCKED: {worker_id}{work_pct_msg} would exceed weekend tolerance "
                     f"({weekend_after} > {max_weekend_allowed}, target: {weekend_target:.1f}, deviation: {deviation:+.1f} shifts)"
                 )
@@ -2226,24 +2226,27 @@ class ScheduleBuilder:
                             else:
                                 break
 
-                        # Apply graduated penalties as we approach the limit
-                        if consecutive_count >= max_weekend_limit:
-                            # At or over limit - should have been blocked by hard constraints
-                            # But add extreme penalty just in case
-                            logging.warning(
-                                f"Worker {worker_id}: At weekend consecutive limit ({consecutive_count}/{max_weekend_limit})"
+                        # Apply graduated penalties as we approach the limit.
+                        # NOTE: consecutive_count INCLUDES the current prospective shift, so:
+                        #   consecutive_count = max_weekend_limit     → valid (AT limit, e.g. 3rd of 3)
+                        #   consecutive_count = max_weekend_limit + 1 → INVALID (4th of 3)
+                        if consecutive_count > max_weekend_limit:
+                            # OVER the limit: hard block — bonus deficit cannot override this
+                            logging.debug(
+                                f"Worker {worker_id}: Exceeds weekend consecutive limit ({consecutive_count}/{max_weekend_limit})"
                             )
-                            score -= 50000  # Extreme penalty
-                        elif consecutive_count == max_weekend_limit - 1:
-                            # One away from limit - heavy penalty
-                            score -= 15000
+                            return float("-inf")
+                        elif consecutive_count == max_weekend_limit:
+                            # AT the limit (e.g. 3rd consecutive) — valid but next weekend must be a break
+                            # Small caution penalty so deficit workers are still clearly preferred
+                            score -= 3000
                             if _DEBUG():
                                 logging.debug(
-                                    f"Worker {worker_id}: Near weekend limit ({consecutive_count}/{max_weekend_limit}) - heavy penalty"
+                                    f"Worker {worker_id}: At weekend consecutive limit ({consecutive_count}/{max_weekend_limit}) - caution penalty"
                                 )
-                        elif consecutive_count == max_weekend_limit - 2:
-                            # Two away from limit - moderate penalty
-                            score -= 5000
+                        elif consecutive_count == max_weekend_limit - 1:
+                            # One away from limit (e.g. 2nd consecutive) — valid, tiny penalty
+                            score -= 1000
 
                     # STRICT: Block weekend assignments that exceed configured tolerance
                     # CRITICAL: Weekend tolerance is NEVER relaxed - always use config value
@@ -3951,7 +3954,7 @@ class ScheduleBuilder:
         best_score = score_fn() if score_fn else None
         total_swaps = 0
         max_swaps = 30
-        max_pairs_checked = 200  # cap runtime
+        max_pairs_checked = 500  # was 200 — increased to find more beneficial swaps
         pairs_checked = 0
 
         # Sort by combined deviation (most deviant first for early wins)
