@@ -8,7 +8,7 @@ to predict future workload demands and resource needs.
 import logging
 import warnings
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
@@ -28,13 +28,6 @@ try:
 except ImportError as e:
     ML_AVAILABLE = False
     logging.warning(f"ML libraries not available: {e}. Falling back to basic forecasting.")
-
-if TYPE_CHECKING:
-    import pandas as pd
-    from sklearn.ensemble import RandomForestRegressor
-    from statsmodels.tsa.arima.model import ARIMA
-    from statsmodels.tsa.seasonal import seasonal_decompose
-
 
 class DemandForecaster:
     """
