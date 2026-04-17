@@ -7182,14 +7182,13 @@ class ScheduleBuilder:
         """
         STRICT last post distribution that ensures proportional assignment.
 
-        Uses the formula: expected_last_posts = total_worker_shifts / shifts_per_day
-        with a TIGHT tolerance of ±1 to ensure fairness.
+        Uses the formula: expected_last_posts = (worker_shifts / total_eligible_shifts) * total_last_post_slots
+        Accounts for no_last_post workers: the eligible workers must cover all last post slots
+        proportionally to their shift counts, with a TIGHT tolerance of ±0.75 to ensure fairness.
         """
         logging.info("=" * 60)
         logging.info("Starting STRICT last post distribution...")
         logging.info("=" * 60)
-
-        shifts_per_day = self.scheduler.num_shifts if hasattr(self.scheduler, "num_shifts") else 2
 
         no_last_post_workers = {str(w["id"]) for w in self.workers_data if w.get("no_last_post", False)}
 
@@ -7229,6 +7228,14 @@ class ScheduleBuilder:
                         if idx == last_post_idx:
                             worker_stats[worker_id_str]["last_posts"] += 1
 
+            # Proportional distribution: last posts must be shared among eligible workers only.
+            # Workers with no_last_post cannot occupy the last post, so the eligible workers
+            # must cover ALL last post slots proportionally to their shift counts.
+            total_eligible_shifts_strict = sum(
+                s["total_shifts"] for wid, s in worker_stats.items() if wid not in no_last_post_workers
+            )
+            total_last_post_slots_strict = len(swappable_days)
+
             # Calculate expected and deviation
             overloaded = []
             underloaded = []
@@ -7245,7 +7252,12 @@ class ScheduleBuilder:
                     else:
                         stats["deviation"] = 0
                     continue
-                expected = stats["total_shifts"] / shifts_per_day
+                # Each eligible worker's expected last posts = their share of eligible work × total last post slots
+                expected = (
+                    (stats["total_shifts"] / total_eligible_shifts_strict) * total_last_post_slots_strict
+                    if total_eligible_shifts_strict > 0
+                    else 0
+                )
                 actual = stats["last_posts"]
                 deviation = actual - expected
                 stats["expected"] = expected
@@ -7455,6 +7467,13 @@ class ScheduleBuilder:
             worker_expected_last_posts = {}
             worker_deviation = {}
 
+            # Proportional distribution: last posts must be shared among eligible workers only.
+            # Workers with no_last_post cannot occupy the last post, so the eligible workers
+            # must cover ALL last post slots proportionally to their shift counts.
+            total_eligible_worker_shifts_in_period = sum(
+                shifts for wid, shifts in worker_total_shifts.items() if wid not in no_last_post_workers and shifts > 0
+            )
+
             for worker_id_str, total_shifts in worker_total_shifts.items():
                 if worker_id_str in no_last_post_workers:
                     # Target is 0 last posts
@@ -7468,8 +7487,13 @@ class ScheduleBuilder:
                         worker_deviation[worker_id_str] = 0
                     continue
                 if total_shifts > 0:
-                    # Formula: expected_last_posts = (total_shifts / shifts_per_day) ± tolerance
-                    expected_last_posts = total_shifts / shifts_per_day
+                    # Each eligible worker's expected last posts = their share of eligible work × total last post slots
+                    expected_last_posts = (
+                        (total_shifts / total_eligible_worker_shifts_in_period)
+                        * total_last_slots_in_non_variable_periods
+                        if total_eligible_worker_shifts_in_period > 0
+                        else 0
+                    )
                     worker_expected_last_posts[worker_id_str] = expected_last_posts
 
                     actual_last_posts = worker_last_posts[worker_id_str]

@@ -798,8 +798,16 @@ def get_worker_statistics():
         for date in scheduler._get_date_range(scheduler.start_date, scheduler.end_date)
         if scheduler._get_shifts_for_date(date) > last_post_idx
     )
-    total_schedule_slots = total_all_slots
-    rosell_ratio = total_last_post_slots / total_schedule_slots if total_schedule_slots > 0 else 0
+
+    # Proportional Rosell target: each eligible worker should cover
+    # (their_target / total_eligible_target) * total_last_post_slots.
+    # Workers with no_last_post are excluded from "eligible".
+    no_last_post_ids = {w["id"] for w in scheduler.workers_data if w.get("no_last_post", False)}
+    total_eligible_target = sum(
+        (w.get("_raw_target") or w.get("target_shifts", 0))
+        for w in scheduler.workers_data
+        if w["id"] not in no_last_post_ids
+    )
 
     stats = []
     for worker_id, data in core_stats["workers"].items():
@@ -835,7 +843,10 @@ def get_worker_statistics():
         if worker_data and worker_data.get("no_last_post", False):
             rosell_target = 0
         else:
-            rosell_target = round(target * rosell_ratio)
+            # Proportional target: worker's share of eligible shifts × total last post slots
+            rosell_target = (
+                round((target / total_eligible_target) * total_last_post_slots) if total_eligible_target > 0 else 0
+            )
         rosell_deviation = rosell_count - rosell_target
         if rosell_target > 0:
             rosell_deviation_pct = rosell_deviation / rosell_target * 100
