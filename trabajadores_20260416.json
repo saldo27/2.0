@@ -146,7 +146,7 @@
   {
     "id": "SALVA",
     "target_shifts": 0,
-    "work_percentage": 100,
+    "work_percentage": 80,
     "is_incompatible": false,
     "incompatible_with": [],
     "no_last_post": false,
