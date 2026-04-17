@@ -900,10 +900,7 @@ class IterativeOptimizer:
             donors.sort(key=lambda x: x[1], reverse=True)
 
             if donors:
-                logging.info(
-                    f"      Found {len(donors)} donors "
-                    f"(top: {donors[0][0]} +{donors[0][1]})"
-                )
+                logging.info(f"      Found {len(donors)} donors (top: {donors[0][0]} +{donors[0][1]})")
 
             for need_info in remaining_need:
                 if need_info["shortage"] <= 0:
@@ -919,9 +916,7 @@ class IterativeOptimizer:
                     for dk, assignments in optimized_schedule.items():
                         if isinstance(assignments, list):
                             for idx, w in enumerate(assignments):
-                                if w == donor_name and not self._is_mandatory_shift(
-                                    donor_name, dk, workers_data
-                                ):
+                                if w == donor_name and not self._is_mandatory_shift(donor_name, dk, workers_data):
                                     donor_shifts_list.append((dk, f"Post_{idx}", idx))
                         elif isinstance(assignments, dict):
                             for stype, shift_workers in assignments.items():
@@ -975,13 +970,8 @@ class IterativeOptimizer:
                             balance_tracker["shifts_added"].get(need_worker, 0) + 1
                         )
 
-                        date_display = (
-                            dk.strftime("%Y-%m-%d") if isinstance(dk, datetime) else str(dk)
-                        )
-                        logging.info(
-                            f"      🎯 DONOR: {donor_name}→{need_worker} "
-                            f"on {date_display} ({stype})"
-                        )
+                        date_display = dk.strftime("%Y-%m-%d") if isinstance(dk, datetime) else str(dk)
+                        logging.info(f"      🎯 DONOR: {donor_name}→{need_worker} on {date_display} ({stype})")
                         break  # One transfer per donor per round
 
         # Report balance results
@@ -1128,8 +1118,8 @@ class IterativeOptimizer:
                     # Also check the reverse direction
                     for other in others_on_date:
                         other_data = next(
-                            (w for w in workers_data if str(w.get("id", "")) == str(other)
-                             or w.get("id") == other), None
+                            (w for w in workers_data if str(w.get("id", "")) == str(other) or w.get("id") == other),
+                            None,
                         )
                         if other_data:
                             other_incomp = set(other_data.get("incompatible_with", []))
@@ -2231,7 +2221,9 @@ class IterativeOptimizer:
                         # a false incompatibility/gap conflict with X
                         orig_d_over = optimized_schedule[d_over][idx_over]
                         optimized_schedule[d_over][idx_over] = None
-                        can_med = self._can_worker_take_shift(mediator, d_over, st_over, optimized_schedule, workers_data)
+                        can_med = self._can_worker_take_shift(
+                            mediator, d_over, st_over, optimized_schedule, workers_data
+                        )
                         optimized_schedule[d_over][idx_over] = orig_d_over
                         if not can_med:
                             continue
@@ -3567,11 +3559,13 @@ class IterativeOptimizer:
                         if other in my_incomp:
                             return False
                         other_data = next(
-                            (w for w in workers_data if str(w.get("id", "")) == str(other)
-                             or w.get("id") == other), None
+                            (w for w in workers_data if str(w.get("id", "")) == str(other) or w.get("id") == other),
+                            None,
                         )
-                        if other_data and (worker_name in set(other_data.get("incompatible_with", []))
-                                           or worker_id in set(other_data.get("incompatible_with", []))):
+                        if other_data and (
+                            worker_name in set(other_data.get("incompatible_with", []))
+                            or worker_id in set(other_data.get("incompatible_with", []))
+                        ):
                             return False
 
             # CRITICAL: Check tolerance limit (±12% absolute maximum during optimization)

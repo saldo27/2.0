@@ -427,9 +427,7 @@ class LiveValidator:
         work_percentage = worker_data.get("work_percentage", 100)
 
         # Determine minimum days required between shifts (calendar days, per-worker)
-        min_required_days_between = get_effective_min_gap(
-            worker_data, self.scheduler.gap_between_shifts
-        )
+        min_required_days_between = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
 
         # If gap_between_shifts is 0, allow consecutive work (no gap validation needed)
         if self.scheduler.gap_between_shifts == 0:
@@ -804,12 +802,8 @@ class LiveValidator:
 
         for worker_id, assignments in self.scheduler.worker_assignments.items():
             assignments_list = sorted(list(assignments))
-            worker_data = next(
-                (w for w in self.scheduler.workers_data if w["id"] == worker_id), None
-            )
-            effective_gap = get_effective_min_gap(
-                worker_data, self.scheduler.gap_between_shifts
-            )
+            worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
+            effective_gap = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
 
             for i in range(len(assignments_list) - 1):
                 gap = (assignments_list[i + 1] - assignments_list[i]).days

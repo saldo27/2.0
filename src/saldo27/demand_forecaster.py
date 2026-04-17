@@ -29,6 +29,7 @@ except ImportError as e:
     ML_AVAILABLE = False
     logging.warning(f"ML libraries not available: {e}. Falling back to basic forecasting.")
 
+
 class DemandForecaster:
     """
     Advanced demand forecasting using multiple algorithms and ensemble methods
@@ -761,9 +762,7 @@ class DemandForecaster:
 
         return self._generate_basic_forecasts(forecast_days)
 
-    def validate_forecast_accuracy(
-        self, actual_data: dict[str, Any], forecast_data: dict[str, Any]
-    ) -> dict[str, Any]:
+    def validate_forecast_accuracy(self, actual_data: dict[str, Any], forecast_data: dict[str, Any]) -> dict[str, Any]:
         """
         Validate forecast accuracy against actual results
 

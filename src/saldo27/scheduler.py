@@ -1794,10 +1794,10 @@ class Scheduler:
                     for incompatible_id in incompatible_with:
                         if incompatible_id in workers_assigned:
                             # Skip if BOTH workers are mandatory on this date
-                            both_mandatory = (
-                                (worker_id, date) in mandatory_pairs
-                                and (incompatible_id, date) in mandatory_pairs
-                            )
+                            both_mandatory = (worker_id, date) in mandatory_pairs and (
+                                incompatible_id,
+                                date,
+                            ) in mandatory_pairs
                             if both_mandatory:
                                 logging.info(
                                     f"Incompatible workers {worker_id} and {incompatible_id} on {date} — both MANDATORY, skipping violation"

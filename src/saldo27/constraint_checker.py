@@ -134,7 +134,9 @@ class ConstraintChecker:
                     continue  # Skip self
                 if assigned_id in incompatible_with:
                     if _debug_enabled():
-                        logging.debug(f"Incompatibility Violation: {worker_id} cannot work with {assigned_id} on {date}")
+                        logging.debug(
+                            f"Incompatibility Violation: {worker_id} cannot work with {assigned_id} on {date}"
+                        )
                     return False
 
             return True  # No incompatibilities found
@@ -157,9 +159,7 @@ class ConstraintChecker:
         if not worker:
             return False  # Should not happen
         # Determine minimum gap (calendar days) per worker type
-        min_required_days_between = get_effective_min_gap(
-            worker, self.scheduler.gap_between_shifts
-        )
+        min_required_days_between = get_effective_min_gap(worker, self.scheduler.gap_between_shifts)
 
         assignments = sorted(
             list(

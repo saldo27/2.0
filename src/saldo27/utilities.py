@@ -30,9 +30,7 @@ def get_effective_min_gap(worker_data: dict | None, gap_between_shifts: int) -> 
 
     # Rule B (strict): manual workers with ≤3 guardias/mes
     if not is_auto:
-        guardias_mes = worker_data.get(
-            "_original_target_shifts", worker_data.get("target_shifts", 0)
-        )
+        guardias_mes = worker_data.get("_original_target_shifts", worker_data.get("target_shifts", 0))
         if guardias_mes <= 3:
             return gap_between_shifts + 1
 

@@ -400,9 +400,7 @@ class AdvancedDistributionEngine:
             closest_gap = min(closest_gap, gap)
 
         # Bonus exponencial por gaps grandes
-        worker_data = next(
-            (w for w in self.scheduler.workers_data if w["id"] == worker_id), None
-        )
+        worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
         min_gap = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
 
         if closest_gap > min_gap:

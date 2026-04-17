@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 def _DEBUG() -> bool:
     return logging.getLogger().isEnabledFor(logging.DEBUG)
 
+
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -901,7 +902,9 @@ class ScheduleBuilder:
                 or date1 not in simulated_assignments[worker1_id]
             ):
                 if _DEBUG():
-                    logging.debug(f"_can_worker_swap: Invalid initial state for worker1 {worker1_id} at {date1}|P{post1}")
+                    logging.debug(
+                        f"_can_worker_swap: Invalid initial state for worker1 {worker1_id} at {date1}|P{post1}"
+                    )
                 return False
 
             # Validate initial state for worker2
@@ -913,7 +916,9 @@ class ScheduleBuilder:
                 or date2 not in simulated_assignments[worker2_id]
             ):
                 if _DEBUG():
-                    logging.debug(f"_can_worker_swap: Invalid initial state for worker2 {worker2_id} at {date2}|P{post2}")
+                    logging.debug(
+                        f"_can_worker_swap: Invalid initial state for worker2 {worker2_id} at {date2}|P{post2}"
+                    )
                 return False
 
             # Simulate the swap
@@ -1099,7 +1104,9 @@ class ScheduleBuilder:
                         monthly_tolerance = 1 if work_pct >= 100 else 0
                         if month_count_sim > expected_monthly + monthly_tolerance:
                             if _dbg:
-                                logging.debug(f"Sim Check Fail: Monthly limit {worker_id} in {date.year}-{date.month:02d}")
+                                logging.debug(
+                                    f"Sim Check Fail: Monthly limit {worker_id} in {date.year}-{date.month:02d}"
+                                )
                             return False
 
             return True  # All checks passed on simulated data
@@ -1318,7 +1325,9 @@ class ScheduleBuilder:
 
         return False
 
-    def _has_weekend_in_same_week(self, worker_id: str, target_date: datetime, exclude_date: datetime | None = None) -> bool:
+    def _has_weekend_in_same_week(
+        self, worker_id: str, target_date: datetime, exclude_date: datetime | None = None
+    ) -> bool:
         """
         Check if worker already has a weekend shift in the same calendar week (Mon-Sun).
 
@@ -3751,10 +3760,8 @@ class ScheduleBuilder:
         avg_norm = sum(worker_norm.values()) / len(worker_norm)
 
         # Workers above and below average (any amount)
-        over = [(wid, worker_norm[wid] - avg_norm)
-                for wid in worker_norm if worker_norm[wid] > avg_norm + 0.3]
-        under = [(wid, avg_norm - worker_norm[wid])
-                 for wid in worker_norm if worker_norm[wid] < avg_norm - 0.3]
+        over = [(wid, worker_norm[wid] - avg_norm) for wid in worker_norm if worker_norm[wid] > avg_norm + 0.3]
+        under = [(wid, avg_norm - worker_norm[wid]) for wid in worker_norm if worker_norm[wid] < avg_norm - 0.3]
 
         if not over or not under:
             logging.info("Workload refinement: already balanced within 0.3")
@@ -3896,9 +3903,7 @@ class ScheduleBuilder:
 
             expected_post = count / num_shifts if num_shifts > 0 and count > 0 else 0
             post_var = (
-                sum((c - expected_post) ** 2 for c in post_counts.values()) / len(post_counts)
-                if post_counts
-                else 0.0
+                sum((c - expected_post) ** 2 for c in post_counts.values()) / len(post_counts) if post_counts else 0.0
             )
 
             worker_stats[wid] = {
@@ -3921,9 +3926,7 @@ class ScheduleBuilder:
         interesting = [
             wid
             for wid, s in worker_stats.items()
-            if abs(s["norm"] - avg_norm) > 0.2
-            or abs(s["wk_norm"] - avg_wk) > 0.3
-            or s["post_var"] > 1.0
+            if abs(s["norm"] - avg_norm) > 0.2 or abs(s["wk_norm"] - avg_wk) > 0.3 or s["post_var"] > 1.0
         ]
 
         if len(interesting) < 2:
@@ -6031,7 +6034,7 @@ class ScheduleBuilder:
 
         tolerance = getattr(scheduler, "weekend_tolerance", 1)
 
-        heavy: list[tuple[str, float, list]] = []   # (worker_id, deviation, [(date, post)])
+        heavy: list[tuple[str, float, list]] = []  # (worker_id, deviation, [(date, post)])
         light: list[tuple[str, float, list]] = []
 
         for worker in self.workers_data:

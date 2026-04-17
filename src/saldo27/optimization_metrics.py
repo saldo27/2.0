@@ -416,7 +416,7 @@ class OptimizationMetrics:
                 return 0.0
 
             variance = sum((c - mean_val) ** 2 for c in weekend_counts) / len(weekend_counts)
-            cv = (variance ** 0.5) / mean_val
+            cv = (variance**0.5) / mean_val
             return cv
 
         except Exception as e:
@@ -504,8 +504,7 @@ class OptimizationMetrics:
                 # Even with SA active, stop if best_score is completely flat for 3 iterations
                 if avg_improvement < 0.0001:
                     return False, (
-                        f"Best score estancado (avg: {avg_improvement:.4f}, "
-                        f"SA accepts: {sa_accepts_in_window})"
+                        f"Best score estancado (avg: {avg_improvement:.4f}, SA accepts: {sa_accepts_in_window})"
                     )
 
             # Verificar si se alcanzó un score excelente

@@ -841,12 +841,12 @@ def get_worker_statistics():
             rosell_deviation_pct = rosell_deviation / rosell_target * 100
         elif rosell_count > 0:
             # target=0 but actual>0 means a violation — show as special marker
-            rosell_deviation_pct = float('inf')
+            rosell_deviation_pct = float("inf")
         else:
             rosell_deviation_pct = 0.0
 
         # Format the Rosell deviation percentage
-        if rosell_deviation_pct == float('inf'):
+        if rosell_deviation_pct == float("inf"):
             rosell_dev_pct_str = "⚠️ VIOL"
         else:
             rosell_dev_pct_str = f"{rosell_deviation_pct:+.1f}%"
