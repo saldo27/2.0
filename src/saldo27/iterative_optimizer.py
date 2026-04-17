@@ -1400,9 +1400,9 @@ class IterativeOptimizer:
                 is_manual_worker = not worker_data.get("auto_calculate_shifts", True)
 
                 if is_manual_worker:
-                    # Manual workers: allow +1 shift tolerance to unblock redistribution
-                    max_shifts = target_shifts + 1
-                    tolerance_label = "+1 (MANUAL)"
+                    # Manual workers: zero tolerance, matching _would_violate_tolerance in schedule_builder
+                    max_shifts = target_shifts
+                    tolerance_label = "0 (MANUAL)"
                 else:
                     # Use Phase 2 tolerance (12%) during optimization
                     # Part-time workers get adjusted tolerance (minimum 5%)
@@ -3425,6 +3425,11 @@ class IterativeOptimizer:
                         stats = worker_stats.get(worker_name, {})
                         assigned = stats.get("total_shifts", 0)
                         target = worker.get("target_shifts", 0)
+
+                        # Manual workers have zero tolerance — never assign beyond their exact target
+                        is_manual = not worker.get("auto_calculate_shifts", True)
+                        if is_manual and assigned >= target:
+                            continue
 
                         # Greedy score: prioritize workers below target
                         deviation = assigned - target if target > 0 else assigned
