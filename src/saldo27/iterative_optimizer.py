@@ -113,12 +113,18 @@ class IterativeOptimizer:
         else:
             logging.error("Scheduler core missing tolerance validator")
             return OptimizationResult(
-                success=False, iteration=0, total_violations=float("inf"), general_violations=0, weekend_violations=0
+                success=False, iteration=0, total_violations=999999, general_violations=0, weekend_violations=0
             )
 
         current_schedule = copy.deepcopy(schedule)
         best_schedule = copy.deepcopy(schedule)
         best_violations = float("inf")
+
+        # Initialize variables used in the return fallback after the loop
+        total_violations = 0
+        general_violations = 0
+        weekend_violations = 0
+        validation_report: dict = {}
 
         # DEBUG: Verify max_iterations value before loop
         logging.info(
@@ -2676,12 +2682,13 @@ class IterativeOptimizer:
 
             # ── G7: Monthly floor check for giver (old_worker) ───────────────
             # Prevent repeated stripping of a worker from the same month.
-            _rd_obj = random_date if isinstance(random_date, datetime) else None
-            if _rd_obj is None:
+            if isinstance(random_date, datetime):
+                _rd_obj = random_date
+            else:
                 try:
-                    _rd_obj = datetime.strptime(random_date, "%Y-%m-%d")
+                    _rd_obj = datetime.strptime(str(random_date), "%Y-%m-%d")
                 except Exception:
-                    pass
+                    _rd_obj = None
             if _rd_obj is not None:
                 _giver_data = next(
                     (w for w in workers_data if w.get("id") == old_worker or f"Worker {w.get('id')}" == old_worker),
@@ -2963,13 +2970,14 @@ class IterativeOptimizer:
                     date_key_try, shift_type_try, format_type = shift_info
 
                     # G9: Monthly floor check — don't strip giver below monthly floor
+                    if isinstance(date_key_try, datetime):
+                        _g9_dtobj: datetime | None = date_key_try
+                    else:
+                        try:
+                            _g9_dtobj = datetime.strptime(str(date_key_try), "%Y-%m-%d")
+                        except Exception:
+                            _g9_dtobj = None
                     if _g9_worker_data:
-                        _g9_dtobj = date_key_try if isinstance(date_key_try, datetime) else None
-                        if _g9_dtobj is None:
-                            try:
-                                _g9_dtobj = datetime.strptime(date_key_try, "%Y-%m-%d")
-                            except Exception:
-                                pass
                         if _g9_dtobj is not None:
                             _g9_ym = (_g9_dtobj.year, _g9_dtobj.month)
                             _g9_curr = _g9_monthly_counts.get(_g9_ym, 0)
@@ -3057,12 +3065,22 @@ class IterativeOptimizer:
                     elif format_type == "list":
                         assignments = optimized_schedule[date_key_try]
 
+                        # ── Locate the post index of the worker FIRST so we can
+                        #    pass the correct shift_type to _can_worker_take_shift
+                        #    (needed for no_last_post enforcement). ────────────
+                        try:
+                            idx = assignments.index(worker)
+                        except ValueError:
+                            logging.warning(f"FORCED list: {worker} not found on {date_key_try} — skipping")
+                            continue
+                        shift_type_for_post = f"Post_{idx}"
+
                         # Try constraint-aware replacement - PRIORITIZE workers with DEFICIT
                         valid_alternatives_with_priority = []
                         for candidate in worker_names:
                             if candidate != worker:
                                 if self._can_worker_take_shift(
-                                    candidate, date_key_try, "Position", optimized_schedule, workers_data
+                                    candidate, date_key_try, shift_type_for_post, optimized_schedule, workers_data
                                 ):
                                     # Calculate candidate's current deviation
                                     candidate_data = next(
@@ -3088,12 +3106,6 @@ class IterativeOptimizer:
                             alternative_worker = valid_alternatives_with_priority[0][0]
                             deficit_amount = valid_alternatives_with_priority[0][1]
 
-                            # ── Pre-swap accounting: locate post index ───────────────────────
-                            try:
-                                idx = assignments.index(worker)
-                            except ValueError:
-                                logging.warning(f"FORCED list: {worker} not found on {date_key_try} — skipping")
-                                continue
                             pre_at_post = assignments[idx]  # == worker guaranteed
 
                             assignments[idx] = alternative_worker
@@ -3188,7 +3200,7 @@ class IterativeOptimizer:
         return max(0, (initial_violations - current_violations) / iterations)
 
     def _count_worker_shifts(
-        self, worker_name: str, schedule: dict, workers_data: list[dict] = None, exclude_mandatory: bool = False
+        self, worker_name: str, schedule: dict, workers_data: list[dict] | None = None, exclude_mandatory: bool = False
     ) -> int:
         """
         Count total shifts assigned to a worker in the schedule.
@@ -3564,11 +3576,11 @@ class IterativeOptimizer:
 
             # CRITICAL: Check tolerance limit (±12% absolute maximum during optimization)
             # This prevents optimization from violating tolerance limits
+            worker_data = None
             if hasattr(scheduler_core, "builder") and scheduler_core.builder:
                 builder = scheduler_core.builder
 
                 # Find worker in workers_data to get target_shifts
-                worker_data = None
                 for w in workers_data:
                     w_id = w.get("id")
                     w_name = f"Worker {w_id}" if isinstance(w_id, (int, str)) and str(w_id).isdigit() else str(w_id)
@@ -3640,6 +3652,8 @@ class IterativeOptimizer:
             # Check basic gap constraint (simplified - just check adjacent days)
             if hasattr(scheduler_core, "scheduler") and hasattr(scheduler_core.scheduler, "gap_between_shifts"):
                 gap = scheduler_core.scheduler.gap_between_shifts
+                if not worker_data:
+                    return False
                 min_days_between = get_effective_min_gap(worker_data, gap)
 
                 # Get worker's assignments

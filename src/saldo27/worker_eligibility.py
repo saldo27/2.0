@@ -1,5 +1,6 @@
 import logging
 from datetime import timedelta
+from typing import Any
 
 from saldo27.utilities import get_effective_min_gap
 
@@ -16,7 +17,7 @@ class WorkerEligibilityTracker:
         start_date=None,
         end_date=None,
         date_utils=None,
-        scheduler=None,
+        scheduler: Any = None,
     ):
         """
         Initialize the worker eligibility tracker

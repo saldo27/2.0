@@ -7125,6 +7125,14 @@ class ScheduleBuilder:
                         var_after = _worker_variance(w_i, counts_i_new) + _worker_variance(w_j, counts_j_new)
 
                         if var_after < var_before - 1e-9:
+                            # CRITICAL: no_last_post workers cannot be swapped into the last post
+                            last_post = num_shifts - 1
+                            if j == last_post or i == last_post:
+                                w_going_to_last = w_i if j == last_post else w_j
+                                cfg = next((w for w in self.workers_data if w["id"] == w_going_to_last), None)
+                                if cfg and cfg.get("no_last_post", False):
+                                    continue
+
                             # Commit swap
                             posts[i], posts[j] = w_j, w_i
                             swaps_this_pass += 1

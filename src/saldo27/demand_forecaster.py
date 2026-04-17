@@ -8,7 +8,7 @@ to predict future workload demands and resource needs.
 import logging
 import warnings
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -28,6 +28,12 @@ try:
 except ImportError as e:
     ML_AVAILABLE = False
     logging.warning(f"ML libraries not available: {e}. Falling back to basic forecasting.")
+
+if TYPE_CHECKING:
+    import pandas as pd
+    from sklearn.ensemble import RandomForestRegressor
+    from statsmodels.tsa.arima.model import ARIMA
+    from statsmodels.tsa.seasonal import seasonal_decompose
 
 
 class DemandForecaster:
@@ -227,7 +233,7 @@ class DemandForecaster:
         """Fit ARIMA model to time series data"""
         try:
             # Handle missing values
-            time_series = time_series.fillna(method="forward").fillna(method="backward")
+            time_series = time_series.ffill().bfill()
 
             if len(time_series) < self.config["min_data_points"]:
                 return None
@@ -276,7 +282,7 @@ class DemandForecaster:
 
             # Create time series
             ts = pd.Series(fill_rates, index=timestamps)
-            ts = ts.fillna(method="forward").fillna(method="backward")
+            ts = ts.ffill().bfill()
 
             # Perform seasonal decomposition
             decomposition = seasonal_decompose(ts, model="additive", period=self.config["seasonal_periods"])
@@ -764,7 +770,7 @@ class DemandForecaster:
 
     def validate_forecast_accuracy(
         self, actual_data: dict[str, Any], forecast_data: dict[str, Any]
-    ) -> dict[str, float]:
+    ) -> dict[str, Any]:
         """
         Validate forecast accuracy against actual results
 

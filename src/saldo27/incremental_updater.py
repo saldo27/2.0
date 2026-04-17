@@ -17,9 +17,9 @@ class UpdateResult:
 
     success: bool
     message: str
-    conflicts: list[str] = None
-    suggestions: list[str] = None
-    rollback_data: dict[str, Any] = None
+    conflicts: list[str] | None = None
+    suggestions: list[str] | None = None
+    rollback_data: dict[str, Any] | None = None
 
     def __post_init__(self):
         if self.conflicts is None:
