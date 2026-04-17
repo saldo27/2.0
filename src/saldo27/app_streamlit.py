@@ -1677,7 +1677,7 @@ with tab1:
             col_inc1, col_inc2, col_inc3 = st.columns(3)
             with col_inc1:
                 is_incompatible = st.checkbox(
-                    "Incompatible con todos los marcados",
+                    "Implantador de Marcapasos",
                     help="Este médico no puede coincidir con otros marcados igual",
                     key="is_incompatible_checkbox",
                 )
