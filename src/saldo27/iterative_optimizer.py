@@ -313,6 +313,22 @@ class IterativeOptimizer:
         # DEBUG: Confirm loop has exited
         logging.info("🏁 DEBUG: Loop has exited after completing all iterations or breaking early")
 
+        # Re-validate current_schedule (which includes greedy-fill and other
+        # strategy improvements applied AFTER the last best_schedule snapshot)
+        # and prefer it when it is at least as good as the saved best.
+        if self.best_result:
+            final_report = self._create_validation_report(validator, current_schedule)
+            final_gen = len(final_report.get("general_shift_violations", []))
+            final_wknd = len(final_report.get("weekend_shift_violations", []))
+            final_total = final_gen + final_wknd
+
+            if final_total <= self.best_result.total_violations:
+                self.best_result.schedule = copy.deepcopy(current_schedule)
+                self.best_result.validation_report = final_report
+                self.best_result.total_violations = final_total
+                self.best_result.general_violations = final_gen
+                self.best_result.weekend_violations = final_wknd
+
         # Return best result found
         if self.best_result:
             logging.warning(f"⚠️  Optimization completed with {self.best_result.total_violations} violations remaining")

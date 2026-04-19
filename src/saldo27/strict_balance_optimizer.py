@@ -1043,19 +1043,39 @@ class StrictBalanceOptimizer:
         return False
 
     def _save_state(self) -> dict:
-        """Guarda el estado actual para rollback"""
+        """Guarda el estado actual para rollback, incluyendo todos los contadores de tracking."""
         return {
             "schedule": {k: v[:] for k, v in self.schedule.items()},
             "assignments": {k: set(v) for k, v in self.worker_assignments.items()},
+            "shift_counts": dict(self.scheduler.worker_shift_counts),
+            "weekdays": {k: dict(v) for k, v in self.scheduler.worker_weekdays.items()},
+            "weekends": {k: list(v) for k, v in self.scheduler.worker_weekends.items()},
+            "weekend_counts": dict(self.scheduler.worker_weekend_counts),
+            "bridge_counts": {k: set(v) for k, v in self.scheduler.worker_bridge_counts.items()},
         }
 
     def _restore_state(self, state: dict):
-        """Restaura un estado previo"""
+        """Restaura un estado previo, incluyendo todos los contadores de tracking."""
         self.schedule.clear()
         self.schedule.update({k: v[:] for k, v in state["schedule"].items()})
 
         self.worker_assignments.clear()
         self.worker_assignments.update({k: set(v) for k, v in state["assignments"].items()})
+
+        self.scheduler.worker_shift_counts.clear()
+        self.scheduler.worker_shift_counts.update(state["shift_counts"])
+
+        self.scheduler.worker_weekdays.clear()
+        self.scheduler.worker_weekdays.update({k: dict(v) for k, v in state["weekdays"].items()})
+
+        self.scheduler.worker_weekends.clear()
+        self.scheduler.worker_weekends.update({k: list(v) for k, v in state["weekends"].items()})
+
+        self.scheduler.worker_weekend_counts.clear()
+        self.scheduler.worker_weekend_counts.update(state["weekend_counts"])
+
+        self.scheduler.worker_bridge_counts.clear()
+        self.scheduler.worker_bridge_counts.update({k: set(v) for k, v in state["bridge_counts"].items()})
 
     def _try_chain_swap(self, overloaded: list, underloaded: list, tolerance: int) -> bool:
         """

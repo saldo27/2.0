@@ -530,13 +530,6 @@ class ConstraintChecker:
         Returns: (bool, str) - (passed, reason_if_failed)
         """
         try:
-            # ENHANCED: Ensure data synchronization before constraint checking
-            if hasattr(self.scheduler, "_ensure_data_synchronization"):
-                if not self.scheduler._ensure_data_synchronization():
-                    logging.warning(
-                        f"Data synchronization issues detected before constraint check for worker {worker_id} on {date.strftime('%Y-%m-%d')}"
-                    )
-
             worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if not worker:
                 return False, "worker_not_found"

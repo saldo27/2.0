@@ -823,8 +823,9 @@ class Scheduler:
                             corrected_assignments[worker_id] = set()
                         corrected_assignments[worker_id].add(date)
 
-            # Replace worker_assignments with corrected version
-            self.worker_assignments = corrected_assignments
+            # Update worker_assignments in place to preserve shared references
+            self.worker_assignments.clear()
+            self.worker_assignments.update(corrected_assignments)
 
             # Verify the repair
             is_synchronized_after, validation_after = self._validate_data_synchronization()
