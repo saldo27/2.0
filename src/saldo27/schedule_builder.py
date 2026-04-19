@@ -383,25 +383,25 @@ class ScheduleBuilder:
             return False
 
         # Proteger objetivo mensual de trabajadores manuales (guardias/mes fijadas)
-        worker_config = next(
-            (w for w in self.workers_data if w["id"] == worker_id), None
-        )
-        if worker_config and not worker_config.get("auto_calculate_shifts", True):
-            monthly_target = self._get_expected_monthly_target(
-                worker_config, date.year, date.month
-            )
-            if monthly_target > 0:
-                current_month_count = sum(
-                    1
-                    for d in self.worker_assignments.get(worker_id, set())
-                    if d.year == date.year and d.month == date.month
-                )
-                if current_month_count <= monthly_target:
-                    logging.info(
-                        f"🚫 BLOCKED {operation_name}: Cannot remove {worker_id} from {date.strftime('%Y-%m-%d')} - "
-                        f"monthly count {current_month_count} at/below target {monthly_target}"
+        # Skip for intra-day position swaps (last_post): monthly count doesn't change
+        # when two workers swap positions on the SAME date.
+        _is_position_swap = "last_post" in operation_name
+        if not _is_position_swap:
+            worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
+            if worker_config and not worker_config.get("auto_calculate_shifts", True):
+                monthly_target = self._get_expected_monthly_target(worker_config, date.year, date.month)
+                if monthly_target > 0:
+                    current_month_count = sum(
+                        1
+                        for d in self.worker_assignments.get(worker_id, set())
+                        if d.year == date.year and d.month == date.month
                     )
-                    return False
+                    if current_month_count <= monthly_target:
+                        logging.info(
+                            f"🚫 BLOCKED {operation_name}: Cannot remove {worker_id} from {date.strftime('%Y-%m-%d')} - "
+                            f"monthly count {current_month_count} at/below target {monthly_target}"
+                        )
+                        return False
 
         return True
 
@@ -4521,14 +4521,8 @@ class ScheduleBuilder:
             all_months.add((d.year, d.month))
 
         # Process manual workers first (strict), then auto workers
-        manual_workers = [
-            w for w in self.workers_data
-            if not w.get("auto_calculate_shifts", True)
-        ]
-        auto_workers = [
-            w for w in self.workers_data
-            if w.get("auto_calculate_shifts", True)
-        ]
+        manual_workers = [w for w in self.workers_data if not w.get("auto_calculate_shifts", True)]
+        auto_workers = [w for w in self.workers_data if w.get("auto_calculate_shifts", True)]
         ordered_workers = manual_workers + auto_workers
 
         for worker in ordered_workers:
@@ -4557,8 +4551,7 @@ class ScheduleBuilder:
 
             label = "Manual" if is_manual else "Auto"
             logging.info(
-                f"📋 {label} worker {wid}: under-target months={under_months}, "
-                f"over-target months={over_months}"
+                f"📋 {label} worker {wid}: under-target months={under_months}, over-target months={over_months}"
             )
 
             # Strategy 1: cross-month rebalance (over → under via swap)
@@ -4568,9 +4561,7 @@ class ScheduleBuilder:
                 for over_ym, surplus in sorted(over_months, key=lambda x: x[1], reverse=True):
                     if deficit <= 0 or surplus <= 0 or changes >= max_changes:
                         break
-                    result = self._monthly_cross_month_swap(
-                        wid, worker, over_ym, under_ym
-                    )
+                    result = self._monthly_cross_month_swap(wid, worker, over_ym, under_ym)
                     if result:
                         changes += 1
                         deficit -= 1
@@ -4614,14 +4605,9 @@ class ScheduleBuilder:
         Returns True if a swap was made.
         """
         is_manual = not worker_config.get("auto_calculate_shifts", True)
-        dates_over = [
-            d for d in self.worker_assignments.get(wid, set())
-            if (d.year, d.month) == over_ym
-        ]
+        dates_over = [d for d in self.worker_assignments.get(wid, set()) if (d.year, d.month) == over_ym]
         dates_under = [
-            d for d in self.schedule
-            if (d.year, d.month) == under_ym
-            and wid not in (self.schedule.get(d) or [])
+            d for d in self.schedule if (d.year, d.month) == under_ym and wid not in (self.schedule.get(d) or [])
         ]
         random.shuffle(dates_over)
         random.shuffle(dates_under)
@@ -4641,9 +4627,7 @@ class ScheduleBuilder:
                     other_wid = self.schedule[d_under][post_under]
                     if other_wid is None or other_wid == wid:
                         continue
-                    other_config = next(
-                        (w for w in self.workers_data if w["id"] == other_wid), None
-                    )
+                    other_config = next((w for w in self.workers_data if w["id"] == other_wid), None)
                     # Don't use manual workers as swap partners
                     if other_config and not other_config.get("auto_calculate_shifts", True):
                         continue
@@ -4656,14 +4640,14 @@ class ScheduleBuilder:
                         continue
 
                     others_on_under = [
-                        w for i, w in enumerate(self.schedule[d_under])
+                        w
+                        for i, w in enumerate(self.schedule[d_under])
                         if w is not None and i != post_under and w != other_wid
                     ]
                     if not self._check_incompatibility_with_list(wid, others_on_under):
                         continue
                     others_on_over = [
-                        w for i, w in enumerate(self.schedule[d_over])
-                        if w is not None and i != post_over and w != wid
+                        w for i, w in enumerate(self.schedule[d_over]) if w is not None and i != post_over and w != wid
                     ]
                     if not self._check_incompatibility_with_list(other_wid, others_on_over):
                         continue
@@ -4674,9 +4658,7 @@ class ScheduleBuilder:
                         ):
                             continue
                     if self._is_weekend_or_holiday(d_under):
-                        if self._would_exceed_weekend_limit_simulated(
-                            wid, d_under, self.scheduler.worker_assignments
-                        ):
+                        if self._would_exceed_weekend_limit_simulated(wid, d_under, self.scheduler.worker_assignments):
                             continue
 
                     # Execute swap
@@ -4707,9 +4689,7 @@ class ScheduleBuilder:
         Returns True if filled.
         """
         dates_in_month = [
-            d for d in self.schedule
-            if (d.year, d.month) == under_ym
-            and wid not in (self.schedule.get(d) or [])
+            d for d in self.schedule if (d.year, d.month) == under_ym and wid not in (self.schedule.get(d) or [])
         ]
         random.shuffle(dates_in_month)
 
@@ -4718,9 +4698,7 @@ class ScheduleBuilder:
                 donor_wid = self.schedule[d][post]
                 if donor_wid is None or donor_wid == wid:
                     continue
-                donor_config = next(
-                    (w for w in self.workers_data if w["id"] == donor_wid), None
-                )
+                donor_config = next((w for w in self.workers_data if w["id"] == donor_wid), None)
                 if not donor_config:
                     continue
                 # Don't take from manual workers
@@ -4735,12 +4713,11 @@ class ScheduleBuilder:
 
                 # Also check donor's monthly count
                 donor_month_count = sum(
-                    1 for dd in self.worker_assignments.get(donor_wid, set())
+                    1
+                    for dd in self.worker_assignments.get(donor_wid, set())
                     if dd.year == under_ym[0] and dd.month == under_ym[1]
                 )
-                donor_month_target = self._get_expected_monthly_target(
-                    donor_config, under_ym[0], under_ym[1]
-                )
+                donor_month_target = self._get_expected_monthly_target(donor_config, under_ym[0], under_ym[1])
                 if donor_month_count <= donor_month_target:
                     continue
 
@@ -4750,16 +4727,13 @@ class ScheduleBuilder:
                     continue
 
                 others_on_date = [
-                    w for i, w in enumerate(self.schedule[d])
-                    if w is not None and i != post and w != donor_wid
+                    w for i, w in enumerate(self.schedule[d]) if w is not None and i != post and w != donor_wid
                 ]
                 if not self._check_incompatibility_with_list(wid, others_on_date):
                     continue
 
                 if self._is_weekend_or_holiday(d):
-                    if self._would_exceed_weekend_limit_simulated(
-                        wid, d, self.scheduler.worker_assignments
-                    ):
+                    if self._would_exceed_weekend_limit_simulated(wid, d, self.scheduler.worker_assignments):
                         continue
 
                 # Execute replacement
@@ -4770,8 +4744,7 @@ class ScheduleBuilder:
                 self.scheduler._update_tracking_data(wid, d, post, removing=False)
 
                 logging.info(
-                    f"🔧 Fill deficit: {wid} replaces {donor_wid} on "
-                    f"{d.strftime('%d-%b')} (month {under_ym[1]:02d})"
+                    f"🔧 Fill deficit: {wid} replaces {donor_wid} on {d.strftime('%d-%b')} (month {under_ym[1]:02d})"
                 )
                 return True
         return False
@@ -5817,7 +5790,8 @@ class ScheduleBuilder:
                     under_nb_dates = [
                         d
                         for d in self.worker_assignments.get(under_worker_id, set())
-                        if d not in bridge_days_set and self._can_modify_assignment(under_worker_id, d, "bridge_3way_under")
+                        if d not in bridge_days_set
+                        and self._can_modify_assignment(under_worker_id, d, "bridge_3way_under")
                     ]
                     if not under_nb_dates:
                         continue

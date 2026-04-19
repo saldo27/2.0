@@ -936,12 +936,20 @@ class IterativeOptimizer:
                     for dk, assignments in optimized_schedule.items():
                         if isinstance(assignments, list):
                             for idx, w in enumerate(assignments):
-                                if w == donor_name and not self._is_mandatory_shift(donor_name, dk, workers_data) and not self._is_monthly_protected(donor_name, dk, optimized_schedule, workers_data):
+                                if (
+                                    w == donor_name
+                                    and not self._is_mandatory_shift(donor_name, dk, workers_data)
+                                    and not self._is_monthly_protected(donor_name, dk, optimized_schedule, workers_data)
+                                ):
                                     donor_shifts_list.append((dk, f"Post_{idx}", idx))
                         elif isinstance(assignments, dict):
                             for stype, shift_workers in assignments.items():
                                 if isinstance(shift_workers, list) and donor_name in shift_workers:
-                                    if not self._is_mandatory_shift(donor_name, dk, workers_data) and not self._is_monthly_protected(donor_name, dk, optimized_schedule, workers_data):
+                                    if not self._is_mandatory_shift(
+                                        donor_name, dk, workers_data
+                                    ) and not self._is_monthly_protected(
+                                        donor_name, dk, optimized_schedule, workers_data
+                                    ):
                                         donor_shifts_list.append((dk, stype, None))
 
                     random.shuffle(donor_shifts_list)
@@ -1844,6 +1852,149 @@ class IterativeOptimizer:
                     )
 
         logging.info(f"   ✅ Made {redistributions_made} weekend shift redistributions")
+
+        # --- Donor-pull for under-only case ---
+        # When workers need more weekends but nobody has excess above tolerance,
+        # recruit donors from workers whose weekend count exceeds their target
+        # (even within tolerance) and swap weekend↔weekday shifts.
+        remaining_need = [n for n in need_more_weekends if n["shortage"] > 0]
+        if remaining_need and not have_excess_weekends:
+            logging.info("   🎯 Weekend donor-pull: no excess workers, recruiting above-target donors")
+
+            # Build per-worker weekend counts from current optimized schedule
+            worker_we_counts: dict[str, int] = {}
+            worker_wd_slots: dict[str, list[tuple]] = {}  # weekday slots per worker
+            worker_we_slots: dict[str, list[tuple]] = {}  # weekend slots per worker
+
+            # Classify dates
+            weekend_date_set: set = set()
+            weekday_date_set: set = set()
+            for dk in optimized_schedule:
+                try:
+                    d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
+                    if d.weekday() >= 4 or d in _holidays_rw or (d + timedelta(days=1)) in _holidays_rw:
+                        weekend_date_set.add(dk)
+                    else:
+                        weekday_date_set.add(dk)
+                except (ValueError, AttributeError):
+                    continue
+
+            for dk in optimized_schedule:
+                assigns = optimized_schedule.get(dk, [])
+                if not isinstance(assigns, list):
+                    continue
+                is_we = dk in weekend_date_set
+                for idx, w in enumerate(assigns):
+                    if w is None:
+                        continue
+                    if is_we:
+                        worker_we_counts[w] = worker_we_counts.get(w, 0) + 1
+                        worker_we_slots.setdefault(w, []).append((dk, idx))
+                    else:
+                        worker_wd_slots.setdefault(w, []).append((dk, idx))
+
+            # Weekend target per worker (proportional)
+            total_days = len(optimized_schedule)
+            total_we_days = len(weekend_date_set)
+            we_ratio = total_we_days / total_days if total_days else 0.0
+
+            worker_we_target: dict[str, float] = {}
+            for wd in workers_data:
+                wname = str(wd.get("id", wd.get("name", "")))
+                raw_target = wd.get("_raw_target", wd.get("target_shifts", 0))
+                worker_we_target[wname] = raw_target * we_ratio
+
+            # Find donors: workers NOT needing more weekends whose count > target
+            needing_ids = {n["worker"] for n in remaining_need}
+            donors = []
+            for wname, we_count in worker_we_counts.items():
+                if wname in needing_ids:
+                    continue
+                target = worker_we_target.get(wname, 0)
+                if we_count > target:
+                    donors.append((wname, we_count - target))
+
+            donors.sort(key=lambda x: x[1], reverse=True)
+
+            if donors:
+                logging.info(f"      Found {len(donors)} donors (top: {donors[0][0]} +{donors[0][1]:.1f})")
+                pull_swaps = 0
+                max_pull = 15
+
+                for need_info in remaining_need:
+                    if pull_swaps >= max_pull:
+                        break
+                    under_w = need_info["worker"]
+                    shortage = need_info["shortage"]
+                    if shortage <= 0:
+                        continue
+
+                    # Get under-worker's weekday slots (to offer in exchange)
+                    under_weekdays = list(worker_wd_slots.get(under_w, []))
+                    if not under_weekdays:
+                        continue
+                    random.shuffle(under_weekdays)
+
+                    for donor_name, _ in donors:
+                        if shortage <= 0 or pull_swaps >= max_pull:
+                            break
+
+                        # Get donor's weekend slots
+                        donor_weekends = list(worker_we_slots.get(donor_name, []))
+                        if not donor_weekends:
+                            continue
+                        random.shuffle(donor_weekends)
+
+                        swapped = False
+                        for we_dk, we_idx in donor_weekends:
+                            if swapped:
+                                break
+                            for wd_dk, wd_idx in under_weekdays:
+                                # Vacate both slots temporarily for constraint check
+                                orig_we = optimized_schedule[we_dk][we_idx]
+                                orig_wd = optimized_schedule[wd_dk][wd_idx]
+                                optimized_schedule[we_dk][we_idx] = None
+                                optimized_schedule[wd_dk][wd_idx] = None
+
+                                ok_donor = self._can_worker_take_shift(
+                                    donor_name,
+                                    wd_dk,
+                                    f"Post_{wd_idx}",
+                                    optimized_schedule,
+                                    workers_data,
+                                )
+                                ok_under = self._can_worker_take_shift(
+                                    under_w,
+                                    we_dk,
+                                    f"Post_{we_idx}",
+                                    optimized_schedule,
+                                    workers_data,
+                                )
+
+                                # Restore originals
+                                optimized_schedule[we_dk][we_idx] = orig_we
+                                optimized_schedule[wd_dk][wd_idx] = orig_wd
+
+                                if not ok_donor or not ok_under:
+                                    continue
+
+                                # Execute swap
+                                optimized_schedule[we_dk][we_idx] = under_w
+                                optimized_schedule[wd_dk][wd_idx] = donor_name
+                                pull_swaps += 1
+                                shortage -= 1
+                                need_info["shortage"] = shortage
+
+                                we_disp = we_dk.strftime("%Y-%m-%d") if isinstance(we_dk, datetime) else we_dk
+                                wd_disp = wd_dk.strftime("%Y-%m-%d") if isinstance(wd_dk, datetime) else wd_dk
+                                logging.info(f"      🎯 PULL: {donor_name}(we {we_disp})↔{under_w}(wd {wd_disp})")
+                                swapped = True
+                                break
+
+                logging.info(f"   ✅ Weekend donor-pull: {pull_swaps} swaps")
+            else:
+                logging.info("      ℹ️  No donors with weekend surplus found")
+
         return optimized_schedule
 
     def _apply_weekend_swaps(
@@ -2132,7 +2283,11 @@ class IterativeOptimizer:
                 assignments = optimized_schedule[d]
                 if isinstance(assignments, list):
                     for idx, w in enumerate(assignments):
-                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data) and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data):
+                        if (
+                            w == over_worker
+                            and not self._is_mandatory_shift(over_worker, d, workers_data)
+                            and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data)
+                        ):
                             over_we_shifts.append((d, idx))
 
             if not over_we_shifts:
@@ -2154,7 +2309,11 @@ class IterativeOptimizer:
                     assignments = optimized_schedule[d]
                     if isinstance(assignments, list):
                         for idx, w in enumerate(assignments):
-                            if w == under_worker and not self._is_mandatory_shift(under_worker, d, workers_data) and not self._is_monthly_protected(under_worker, d, optimized_schedule, workers_data):
+                            if (
+                                w == under_worker
+                                and not self._is_mandatory_shift(under_worker, d, workers_data)
+                                and not self._is_monthly_protected(under_worker, d, optimized_schedule, workers_data)
+                            ):
                                 under_wd_shifts.append((d, idx))
 
                 if not under_wd_shifts:
@@ -2296,7 +2455,11 @@ class IterativeOptimizer:
                 assignments = optimized_schedule[d]
                 if isinstance(assignments, list):
                     for idx, w in enumerate(assignments):
-                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data) and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data):
+                        if (
+                            w == over_worker
+                            and not self._is_mandatory_shift(over_worker, d, workers_data)
+                            and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data)
+                        ):
                             over_shifts.append((d, idx))
             if not over_shifts:
                 continue
@@ -2468,7 +2631,11 @@ class IterativeOptimizer:
                 asgn = optimized_schedule[d]
                 if isinstance(asgn, list):
                     for idx, w in enumerate(asgn):
-                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data) and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data):
+                        if (
+                            w == over_worker
+                            and not self._is_mandatory_shift(over_worker, d, workers_data)
+                            and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data)
+                        ):
                             over_we_shifts.append((d, idx))
             random.shuffle(over_we_shifts)
 
@@ -2516,10 +2683,12 @@ class IterativeOptimizer:
                         asgn = optimized_schedule[cd_key]
                         if isinstance(asgn, list):
                             for cidx, cw in enumerate(asgn):
-                                if cw == under_worker and not self._is_mandatory_shift(
-                                    under_worker, cd_key, workers_data
-                                ) and not self._is_monthly_protected(
-                                    under_worker, cd_key, optimized_schedule, workers_data
+                                if (
+                                    cw == under_worker
+                                    and not self._is_mandatory_shift(under_worker, cd_key, workers_data)
+                                    and not self._is_monthly_protected(
+                                        under_worker, cd_key, optimized_schedule, workers_data
+                                    )
                                 ):
                                     conflict_dates.append((cd_key, cidx))
 
@@ -3016,12 +3185,20 @@ class IterativeOptimizer:
                         for shift_type_scan, workers_scan in assignments_scan.items():
                             if worker in workers_scan:
                                 # Skip mandatory shifts
-                                if not self._is_mandatory_shift(worker, date_key_scan, workers_data) and not self._is_monthly_protected(worker, date_key_scan, optimized_schedule, workers_data):
+                                if not self._is_mandatory_shift(
+                                    worker, date_key_scan, workers_data
+                                ) and not self._is_monthly_protected(
+                                    worker, date_key_scan, optimized_schedule, workers_data
+                                ):
                                     shifts_to_try.append((date_key_scan, shift_type_scan, "dict"))
                     elif isinstance(assignments_scan, list):
                         if worker in assignments_scan:
                             # Skip mandatory shifts
-                            if not self._is_mandatory_shift(worker, date_key_scan, workers_data) and not self._is_monthly_protected(worker, date_key_scan, optimized_schedule, workers_data):
+                            if not self._is_mandatory_shift(
+                                worker, date_key_scan, workers_data
+                            ) and not self._is_monthly_protected(
+                                worker, date_key_scan, optimized_schedule, workers_data
+                            ):
                                 shifts_to_try.append((date_key_scan, None, "list"))
 
                 # Shuffle to avoid always trying the same dates
