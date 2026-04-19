@@ -744,6 +744,10 @@ class IterativeOptimizer:
                     )
                     continue
 
+                # Skip if removing would break manual worker's monthly target
+                if self._is_monthly_protected(excess_worker, date_key, optimized_schedule, workers_data):
+                    continue
+
                 logging.debug(f"      📅 Trying to reassign {shift_type} on {date_key} from {excess_worker}")
 
                 # Find best recipient for this shift
@@ -932,12 +936,12 @@ class IterativeOptimizer:
                     for dk, assignments in optimized_schedule.items():
                         if isinstance(assignments, list):
                             for idx, w in enumerate(assignments):
-                                if w == donor_name and not self._is_mandatory_shift(donor_name, dk, workers_data):
+                                if w == donor_name and not self._is_mandatory_shift(donor_name, dk, workers_data) and not self._is_monthly_protected(donor_name, dk, optimized_schedule, workers_data):
                                     donor_shifts_list.append((dk, f"Post_{idx}", idx))
                         elif isinstance(assignments, dict):
                             for stype, shift_workers in assignments.items():
                                 if isinstance(shift_workers, list) and donor_name in shift_workers:
-                                    if not self._is_mandatory_shift(donor_name, dk, workers_data):
+                                    if not self._is_mandatory_shift(donor_name, dk, workers_data) and not self._is_monthly_protected(donor_name, dk, optimized_schedule, workers_data):
                                         donor_shifts_list.append((dk, stype, None))
 
                     random.shuffle(donor_shifts_list)
@@ -1531,6 +1535,77 @@ class IterativeOptimizer:
             logging.error(f"Error checking if shift is mandatory for {worker_name}: {e}")
             return False
 
+    def _is_monthly_protected(self, worker_name: str, date_key, schedule: dict, workers_data: list[dict]) -> bool:
+        """
+        Check if removing a shift from a manual worker on this date would drop
+        their monthly count below the expected monthly target.
+
+        Args:
+            worker_name: Worker name/id
+            date_key: Date of the shift
+            schedule: Current schedule dict (deep copy used by optimizer)
+            workers_data: Worker configuration data
+
+        Returns:
+            bool: True if shift is protected (should NOT be removed)
+        """
+        try:
+            # Find worker data
+            worker_data = None
+            for w in workers_data:
+                w_id = w.get("id", "")
+                if w_id == worker_name or str(w_id) == str(worker_name):
+                    worker_data = w
+                    break
+                elif worker_name.startswith("Worker "):
+                    try:
+                        worker_number = worker_name.split(" ")[1]
+                        if str(w_id) == worker_number:
+                            worker_data = w
+                            break
+                    except (IndexError, ValueError):
+                        continue
+
+            if not worker_data:
+                return False
+
+            # Only protect manual workers (auto_calculate_shifts == False)
+            if worker_data.get("auto_calculate_shifts", True):
+                return False
+
+            # Get monthly target
+            if not self.scheduler or not hasattr(self.scheduler, "schedule_builder"):
+                return False
+
+            date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
+            monthly_target = self.scheduler.schedule_builder._get_expected_monthly_target(
+                worker_data, date_obj.year, date_obj.month
+            )
+
+            if monthly_target <= 0:
+                return False
+
+            # Count current monthly shifts from schedule
+            current_month_count = 0
+            for d, assignments in schedule.items():
+                d_obj = d if isinstance(d, datetime) else datetime.strptime(d, "%Y-%m-%d")
+                if d_obj.year == date_obj.year and d_obj.month == date_obj.month:
+                    if isinstance(assignments, list):
+                        current_month_count += assignments.count(worker_name)
+
+            if current_month_count <= monthly_target:
+                logging.info(
+                    f"🚫 MONTHLY PROTECTED: {worker_name} on {date_obj.strftime('%Y-%m-%d')} - "
+                    f"month count {current_month_count} would drop below target {monthly_target}"
+                )
+                return True
+
+            return False
+
+        except Exception as e:
+            logging.error(f"Error checking monthly protection for {worker_name}: {e}")
+            return False
+
     def _redistribute_weekend_shifts(
         self, schedule: dict, violations: list[dict], workers_data: list[dict], schedule_config: dict
     ) -> dict:
@@ -1675,6 +1750,10 @@ class IterativeOptimizer:
                     logging.debug(
                         f"      🔒 SKIPPING mandatory weekend shift for {excess_worker} on {date_key} - cannot redistribute"
                     )
+                    continue
+
+                # Skip if removing would break manual worker's monthly target
+                if self._is_monthly_protected(excess_worker, date_key, optimized_schedule, workers_data):
                     continue
 
                 # Find best weekend recipient
@@ -1901,6 +1980,10 @@ class IterativeOptimizer:
                         )
                         continue
 
+                    # Skip if removing would break manual worker's monthly target
+                    if self._is_monthly_protected(over_worker, date_key, optimized_schedule, workers_data):
+                        continue
+
                     # Check if under-assigned worker is already on this shift
                     if under_worker in workers_list:
                         rejections["already_assigned"] += 1
@@ -2049,7 +2132,7 @@ class IterativeOptimizer:
                 assignments = optimized_schedule[d]
                 if isinstance(assignments, list):
                     for idx, w in enumerate(assignments):
-                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data):
+                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data) and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data):
                             over_we_shifts.append((d, idx))
 
             if not over_we_shifts:
@@ -2071,7 +2154,7 @@ class IterativeOptimizer:
                     assignments = optimized_schedule[d]
                     if isinstance(assignments, list):
                         for idx, w in enumerate(assignments):
-                            if w == under_worker and not self._is_mandatory_shift(under_worker, d, workers_data):
+                            if w == under_worker and not self._is_mandatory_shift(under_worker, d, workers_data) and not self._is_monthly_protected(under_worker, d, optimized_schedule, workers_data):
                                 under_wd_shifts.append((d, idx))
 
                 if not under_wd_shifts:
@@ -2213,7 +2296,7 @@ class IterativeOptimizer:
                 assignments = optimized_schedule[d]
                 if isinstance(assignments, list):
                     for idx, w in enumerate(assignments):
-                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data):
+                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data) and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data):
                             over_shifts.append((d, idx))
             if not over_shifts:
                 continue
@@ -2256,6 +2339,8 @@ class IterativeOptimizer:
                                 if med_w != mediator:
                                     continue
                                 if self._is_mandatory_shift(mediator, d_med, workers_data):
+                                    continue
+                                if self._is_monthly_protected(mediator, d_med, optimized_schedule, workers_data):
                                     continue
                                 st_med = f"Post_{med_idx}"
                                 # Vacate Z from d_med so under_worker Y doesn't
@@ -2383,7 +2468,7 @@ class IterativeOptimizer:
                 asgn = optimized_schedule[d]
                 if isinstance(asgn, list):
                     for idx, w in enumerate(asgn):
-                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data):
+                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data) and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data):
                             over_we_shifts.append((d, idx))
             random.shuffle(over_we_shifts)
 
@@ -2433,6 +2518,8 @@ class IterativeOptimizer:
                             for cidx, cw in enumerate(asgn):
                                 if cw == under_worker and not self._is_mandatory_shift(
                                     under_worker, cd_key, workers_data
+                                ) and not self._is_monthly_protected(
+                                    under_worker, cd_key, optimized_schedule, workers_data
                                 ):
                                     conflict_dates.append((cd_key, cidx))
 
@@ -2688,6 +2775,11 @@ class IterativeOptimizer:
                 T *= cooling_rate
                 continue
 
+            # Skip if removing would break manual worker's monthly target
+            if self._is_monthly_protected(old_worker, random_date, optimized_schedule, workers_data):
+                T *= cooling_rate
+                continue
+
             # ── G7: Monthly floor check for giver (old_worker) ───────────────
             # Prevent repeated stripping of a worker from the same month.
             if isinstance(random_date, datetime):
@@ -2924,12 +3016,12 @@ class IterativeOptimizer:
                         for shift_type_scan, workers_scan in assignments_scan.items():
                             if worker in workers_scan:
                                 # Skip mandatory shifts
-                                if not self._is_mandatory_shift(worker, date_key_scan, workers_data):
+                                if not self._is_mandatory_shift(worker, date_key_scan, workers_data) and not self._is_monthly_protected(worker, date_key_scan, optimized_schedule, workers_data):
                                     shifts_to_try.append((date_key_scan, shift_type_scan, "dict"))
                     elif isinstance(assignments_scan, list):
                         if worker in assignments_scan:
                             # Skip mandatory shifts
-                            if not self._is_mandatory_shift(worker, date_key_scan, workers_data):
+                            if not self._is_mandatory_shift(worker, date_key_scan, workers_data) and not self._is_monthly_protected(worker, date_key_scan, optimized_schedule, workers_data):
                                 shifts_to_try.append((date_key_scan, None, "list"))
 
                 # Shuffle to avoid always trying the same dates

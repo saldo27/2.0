@@ -634,7 +634,7 @@ class SchedulerCore:
 
             # Simulated Annealing parameters
             sa_temperature_start = 1.0
-            sa_cooling_rate = 0.7
+            sa_cooling_rate = 0.90  # was 0.7 — too aggressive for 70+ iterations; 0.9 keeps T>0.01 for ~45 iters
             sa_max_drop = -2.0  # never accept a drop worse than this
 
             while overall_improvement_made and improvement_loop_count < max_improvement_loops:
@@ -1011,6 +1011,8 @@ class SchedulerCore:
                 )
                 changed3 = self.scheduler.schedule_builder._balance_weekday_distribution()
                 changed4 = self.scheduler.schedule_builder._balance_monthly_distribution()
+                changed4b = self.scheduler.schedule_builder._enforce_manual_monthly_targets()
+                changed4 = changed4 or changed4b
                 # Rebalance weekend distribution — corrects imbalances introduced by workload/monthly swaps.
                 changed5 = False
                 try:
@@ -1114,7 +1116,9 @@ class SchedulerCore:
             # correct any disruption that the monthly pass introduces.
             logging.info("Running FINAL monthly distribution balance pass...")
             for _pass in range(5):
-                if not self.scheduler.schedule_builder._balance_monthly_distribution():
+                changed_monthly = self.scheduler.schedule_builder._balance_monthly_distribution()
+                changed_manual = self.scheduler.schedule_builder._enforce_manual_monthly_targets()
+                if not changed_monthly and not changed_manual:
                     logging.info(f"Monthly distribution converged after {_pass + 1} pass(es)")
                     break
 
