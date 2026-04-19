@@ -64,9 +64,11 @@ def setup_logging(
         console_handler.setFormatter(console_formatter)
 
         # Try to configure console for UTF-8
-        if hasattr(console_handler.stream, "reconfigure"):
+        stream = console_handler.stream
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
             try:
-                console_handler.stream.reconfigure(encoding="utf-8", errors="replace")
+                reconfigure(encoding="utf-8", errors="replace")
             except Exception as e:
                 print(f"Could not reconfigure console stream encoding: {e}")
 
