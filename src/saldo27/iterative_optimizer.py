@@ -1275,17 +1275,17 @@ class IterativeOptimizer:
                         pass
                 expected_monthly_rough = raw_target / months_in_period
 
-                # Manual workers: guardias/mes with ±1 tolerance to allow redistribution
+                # Manual workers: guardias/mes with ZERO tolerance (exact monthly count)
                 is_manual_worker = not worker_data.get("auto_calculate_shifts", True)
 
                 if is_manual_worker:
                     guardias_mes = worker_data.get("_original_target_shifts", 0)
                     if guardias_mes > 0:
-                        # Allow +1 tolerance per month to unblock forced redistribution
-                        if shifts_this_month + 1 > guardias_mes + 1:
+                        # Exact monthly enforcement: no tolerance for manual workers
+                        if shifts_this_month + 1 > guardias_mes:
                             logging.debug(
                                 f"❌ {worker_name} blocked: MANUAL monthly limit - "
-                                f"{shifts_this_month + 1} would exceed {guardias_mes}+1 guardias/mes "
+                                f"{shifts_this_month + 1} would exceed {guardias_mes} guardias/mes "
                                 f"(month: {shift_date.strftime('%Y-%m')})"
                             )
                             return False
@@ -1596,7 +1596,7 @@ class IterativeOptimizer:
             if current_month_count <= monthly_target:
                 logging.info(
                     f"🚫 MONTHLY PROTECTED: {worker_name} on {date_obj.strftime('%Y-%m-%d')} - "
-                    f"month count {current_month_count} would drop below target {monthly_target}"
+                    f"month count {current_month_count} at/below target {monthly_target}"
                 )
                 return True
 

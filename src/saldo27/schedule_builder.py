@@ -399,7 +399,7 @@ class ScheduleBuilder:
                 if current_month_count <= monthly_target:
                     logging.info(
                         f"🚫 BLOCKED {operation_name}: Cannot remove {worker_id} from {date.strftime('%Y-%m-%d')} - "
-                        f"monthly count {current_month_count} would drop below target {monthly_target}"
+                        f"monthly count {current_month_count} at/below target {monthly_target}"
                     )
                     return False
 
@@ -1439,6 +1439,7 @@ class ScheduleBuilder:
         Calcula el objetivo mensual esperado dinámicamente.
 
         Fórmula: objetivo_global / número_de_meses (ajustado si mes incompleto)
+        Para trabajadores manuales: usa directamente _original_target_shifts (guardias/mes).
         """
         if not worker_config:
             return 0
@@ -1448,6 +1449,13 @@ class ScheduleBuilder:
         monthly_targets_config = worker_config.get("monthly_targets", {})
         if monthly_targets_config.get(month_key, 0) > 0:
             return monthly_targets_config[month_key]
+
+        # Manual workers: use their exact guardias/mes directly (no rounding needed)
+        is_manual = not worker_config.get("auto_calculate_shifts", True)
+        if is_manual:
+            guardias_mes = worker_config.get("_original_target_shifts", 0)
+            if guardias_mes > 0:
+                return guardias_mes
 
         # Calcular dinámicamente desde objetivo global
         # CRÍTICO: Usar _raw_target (objetivo TOTAL) para distribución mensual
@@ -1618,6 +1626,7 @@ class ScheduleBuilder:
 
         # Count mandatory shifts in this specific month
         mandatory_this_month = 0
+        is_manual = not worker_config.get("auto_calculate_shifts", True) if worker_config else False
         if worker_config and worker_config.get("mandatory_days"):
             try:
                 mandatory_dates_all = set(self.date_utils.parse_dates(worker_config["mandatory_days"]))
@@ -1632,6 +1641,9 @@ class ScheduleBuilder:
             # This ensures stricter monthly balance for reduced schedules
             tolerance_pct = 0.0
             base_tolerance = 0  # No extra tolerance
+        elif is_manual:
+            # Manual workers: ALWAYS zero tolerance regardless of mode
+            base_tolerance = 0
         else:
             # Full-time workers: ZERO tolerance during initial fill (strict mode)
             # to prevent front-loading (e.g. 6,3 instead of 5,4).
