@@ -1168,6 +1168,16 @@ class SchedulerCore:
             except Exception as e:
                 logging.warning(f"Targeted weekend balance pass failed: {e}")
 
+            # --- FINAL: Re-enforce manual worker monthly targets ---
+            # All previous balance passes (bridge, weekend, targeted) can
+            # disrupt manual worker monthly counts.  Run enforcement as
+            # the very last operation to guarantee strict targets.
+            logging.info("Running FINAL manual monthly target enforcement...")
+            for _mpass in range(10):
+                if not self.scheduler.schedule_builder._enforce_manual_monthly_targets():
+                    logging.info(f"Manual monthly targets converged after {_mpass + 1} pass(es)")
+                    break
+
             logging.info("Schedule finalization phase completed successfully.")
             return True
 

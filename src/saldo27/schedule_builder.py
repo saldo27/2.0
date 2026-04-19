@@ -4571,23 +4571,63 @@ class ScheduleBuilder:
                                 over_months[i] = (ym, s - 1)
                                 break
 
-            # Strategy 2: fill short months by taking from over-target donors
-            month_counts_2 = {}
-            for d in self.worker_assignments.get(wid, set()):
-                key = (d.year, d.month)
-                month_counts_2[key] = month_counts_2.get(key, 0) + 1
+            # Strategy 2 (manual workers): independent shed excess + fill deficit
+            # More flexible than cross-month swap: operations are independent,
+            # so the replacement workers don't need to be the same person.
+            if is_manual:
+                # Re-compute over/under months after Strategy 1
+                month_counts_2 = {}
+                for d in self.worker_assignments.get(wid, set()):
+                    key = (d.year, d.month)
+                    month_counts_2[key] = month_counts_2.get(key, 0) + 1
 
-            for under_ym, _ in sorted(under_months, key=lambda x: x[1], reverse=True):
-                if changes >= max_changes:
-                    break
-                target = self._get_expected_monthly_target(worker, under_ym[0], under_ym[1])
-                current = month_counts_2.get(under_ym, 0)
-                while current < target and changes < max_changes:
-                    filled = self._monthly_fill_deficit(wid, worker, under_ym)
-                    if not filled:
+                remaining_over = []
+                remaining_under = []
+                for ym in all_months:
+                    t = self._get_expected_monthly_target(worker, ym[0], ym[1])
+                    if t <= 0:
+                        continue
+                    c = month_counts_2.get(ym, 0)
+                    if c > t:
+                        remaining_over.append((ym, c - t))
+                    elif c < t:
+                        remaining_under.append((ym, t - c))
+
+                # Step A: shed excess from over-target months
+                for over_ym, surplus in sorted(remaining_over, key=lambda x: x[1], reverse=True):
+                    while surplus > 0 and changes < max_changes:
+                        shed = self._monthly_shed_excess(wid, worker, over_ym)
+                        if not shed:
+                            break
+                        changes += 1
+                        surplus -= 1
+
+                # Step B: fill deficit in under-target months
+                for under_ym, deficit in sorted(remaining_under, key=lambda x: x[1], reverse=True):
+                    while deficit > 0 and changes < max_changes:
+                        filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False)
+                        if not filled:
+                            break
+                        changes += 1
+                        deficit -= 1
+            else:
+                # Strategy 2 (auto workers): fill short months by taking from over-target donors
+                month_counts_2 = {}
+                for d in self.worker_assignments.get(wid, set()):
+                    key = (d.year, d.month)
+                    month_counts_2[key] = month_counts_2.get(key, 0) + 1
+
+                for under_ym, _ in sorted(under_months, key=lambda x: x[1], reverse=True):
+                    if changes >= max_changes:
                         break
-                    changes += 1
-                    current += 1
+                    target = self._get_expected_monthly_target(worker, under_ym[0], under_ym[1])
+                    current = month_counts_2.get(under_ym, 0)
+                    while current < target and changes < max_changes:
+                        filled = self._monthly_fill_deficit(wid, worker, under_ym)
+                        if not filled:
+                            break
+                        changes += 1
+                        current += 1
 
         if changes > 0:
             logging.info(f"✅ Monthly target enforcement: {changes} changes")
@@ -4681,11 +4721,16 @@ class ScheduleBuilder:
                     return True
         return False
 
-    def _monthly_fill_deficit(self, wid, worker_config, under_ym):
+    def _monthly_fill_deficit(self, wid, worker_config, under_ym, strict_donor=True):
         """Fill one shift deficit in under_ym for a worker.
 
         Takes a shift from a worker who is above their monthly target
         in that month. Protects manual workers from being used as donors.
+
+        Args:
+            strict_donor: If True, donor must be above overall target AND monthly target.
+                If False (used for manual worker enforcement), donor only needs to be
+                above their monthly target in the specific month.
         Returns True if filled.
         """
         dates_in_month = [
@@ -4705,13 +4750,14 @@ class ScheduleBuilder:
                 if not donor_config.get("auto_calculate_shifts", True):
                     continue
 
-                # Only take from donors who are at/above their overall target
-                donor_total = len(self.worker_assignments.get(donor_wid, set()))
-                donor_target = donor_config.get("target_shifts", 0)
-                if donor_total <= donor_target:
-                    continue
+                if strict_donor:
+                    # Only take from donors who are at/above their overall target
+                    donor_total = len(self.worker_assignments.get(donor_wid, set()))
+                    donor_target = donor_config.get("target_shifts", 0)
+                    if donor_total <= donor_target:
+                        continue
 
-                # Also check donor's monthly count
+                # Check donor's monthly count — must be above monthly target
                 donor_month_count = sum(
                     1
                     for dd in self.worker_assignments.get(donor_wid, set())
@@ -4746,6 +4792,72 @@ class ScheduleBuilder:
                 logging.info(
                     f"🔧 Fill deficit: {wid} replaces {donor_wid} on {d.strftime('%d-%b')} (month {under_ym[1]:02d})"
                 )
+                return True
+        return False
+
+    def _monthly_shed_excess(self, wid, worker_config, over_ym):
+        """Remove one shift from over_ym for a manual worker by finding a replacement.
+
+        Finds a day in the over-target month where the worker is assigned,
+        and replaces them with an eligible auto worker who is below their
+        monthly target in that month.
+        Returns True if one excess shift was shed.
+        """
+        dates_over = [d for d in self.worker_assignments.get(wid, set()) if (d.year, d.month) == over_ym]
+        random.shuffle(dates_over)
+
+        for d in dates_over:
+            if not self._can_modify_assignment(wid, d, "monthly_shed"):
+                continue
+            if d not in self.schedule or wid not in self.schedule[d]:
+                continue
+            try:
+                post = self.schedule[d].index(wid)
+            except ValueError:
+                continue
+
+            # Find an eligible auto worker to replace the manual worker
+            candidates = list(self.workers_data)
+            random.shuffle(candidates)
+            for candidate in candidates:
+                cid = candidate["id"]
+                if cid == wid:
+                    continue
+                # Don't use other manual workers as replacements
+                if not candidate.get("auto_calculate_shifts", True):
+                    continue
+                # Candidate must not already be assigned on this date
+                if cid in (self.schedule.get(d) or []):
+                    continue
+                # Prefer candidates below their monthly target in this month
+                cand_month_count = sum(
+                    1
+                    for dd in self.worker_assignments.get(cid, set())
+                    if dd.year == over_ym[0] and dd.month == over_ym[1]
+                )
+                cand_month_target = self._get_expected_monthly_target(candidate, over_ym[0], over_ym[1])
+                if cand_month_count >= cand_month_target:
+                    continue
+
+                if not self._can_assign_worker(cid, d, post, replacing_worker=wid):
+                    continue
+
+                others_on_date = [w for i, w in enumerate(self.schedule[d]) if w is not None and i != post and w != wid]
+                if not self._check_incompatibility_with_list(cid, others_on_date):
+                    continue
+
+                if self._is_weekend_or_holiday(d):
+                    if self._would_exceed_weekend_limit_simulated(cid, d, self.scheduler.worker_assignments):
+                        continue
+
+                # Execute replacement
+                self.schedule[d][post] = cid
+                self.worker_assignments[wid].discard(d)
+                self.worker_assignments[cid].add(d)
+                self.scheduler._update_tracking_data(wid, d, post, removing=True)
+                self.scheduler._update_tracking_data(cid, d, post, removing=False)
+
+                logging.info(f"🔧 Shed excess: {cid} replaces {wid} on {d.strftime('%d-%b')} (month {over_ym[1]:02d})")
                 return True
         return False
 
