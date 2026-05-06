@@ -150,7 +150,7 @@ class RealTimeEngine:
                     message=update_result.message,
                     operation_id=operation_id,
                     validation_results=validation_results,
-                    conflicts=cast(list[ConflictInfo], update_result.conflicts) if isinstance(getattr(update_result, "conflicts", None), list) else [],
+                    conflicts=cast("list[ConflictInfo]", update_result.conflicts) if isinstance(getattr(update_result, "conflicts", None), list) else [],
                     suggestions=update_result.suggestions if isinstance(getattr(update_result, "suggestions", None), list) else [],
                 )
 

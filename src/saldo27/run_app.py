@@ -32,7 +32,7 @@ streamlit_hello.__path__ = []
 # Crear streamlit_app como MÓDULO, no función
 streamlit_app_module = types.ModuleType("streamlit_app")
 streamlit_app_module.__file__ = "<dummy_app>"
-setattr(streamlit_hello, "streamlit_app", streamlit_app_module)
+streamlit_hello.streamlit_app = streamlit_app_module
 
 sys.modules["streamlit.hello"] = streamlit_hello
 sys.modules["streamlit.hello. streamlit_app"] = streamlit_app_module
@@ -50,7 +50,7 @@ def open_browser():
 
 def run_streamlit():
     if getattr(sys, "frozen", False):
-        application_path = getattr(sys, "_MEIPASS")  # type: ignore[attr-defined]
+        application_path = sys._MEIPASS  # type: ignore[attr-defined]
     else:
         application_path = os.path.dirname(os.path.abspath(__file__))
 

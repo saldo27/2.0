@@ -230,8 +230,8 @@ def cached(ttl: int = 3600, cache_instance: PerformanceCache | None = None):
             return cache.cached_call(func, args, kwargs, ttl)
 
         # Add cache management methods to the wrapped function
-        setattr(wrapper, "cache_invalidate", lambda pattern=None: cache.invalidate(pattern))
-        setattr(wrapper, "cache_stats", lambda: cache.get_stats())
+        wrapper.cache_invalidate = lambda pattern=None: cache.invalidate(pattern)
+        wrapper.cache_stats = lambda: cache.get_stats()
 
         return wrapper
 
