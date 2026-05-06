@@ -312,6 +312,7 @@ def load_workers_from_file(uploaded_file):
                 "work_periods": str(item.get("work_periods", "")),
                 "auto_calculate_shifts": bool(item.get("auto_calculate_shifts", True)),
                 "no_last_post": bool(item.get("no_last_post", False)),
+                "only_last_post": bool(item.get("only_last_post", False)),
             }
 
             # Compatibilidad con formato antiguo (mandatory_dates lista)
@@ -815,12 +816,14 @@ def get_worker_statistics():
 
     # Proportional Rosell target: each eligible worker should cover
     # (their_target / total_eligible_target) * total_last_post_slots.
-    # Workers with no_last_post are excluded from "eligible".
+    # Workers with no_last_post or only_last_post are excluded from the shared pool.
     no_last_post_ids = {w["id"] for w in scheduler.workers_data if w.get("no_last_post", False)}
+    only_last_post_ids = {w["id"] for w in scheduler.workers_data if w.get("only_last_post", False)}
+    excluded_from_pool = no_last_post_ids | only_last_post_ids
     total_eligible_target = sum(
         (w.get("_raw_target") or w.get("target_shifts", 0))
         for w in scheduler.workers_data
-        if w["id"] not in no_last_post_ids
+        if w["id"] not in excluded_from_pool
     )
 
     stats = []
@@ -854,21 +857,27 @@ def get_worker_statistics():
             if len(shifts) > last_post_idx and shifts[last_post_idx] == worker_id
         )
         # Workers with no_last_post=True have rosell target = 0
+        # Workers with only_last_post=True: target = all their shifts, deviation = 0
         if worker_data and worker_data.get("no_last_post", False):
             rosell_target = 0
+            rosell_deviation = rosell_count if rosell_count > 0 else 0
+            rosell_deviation_pct = float("inf") if rosell_count > 0 else 0.0
+        elif worker_data and worker_data.get("only_last_post", False):
+            rosell_target = target
+            rosell_deviation = 0
+            rosell_deviation_pct = 0.0
         else:
             # Proportional target: worker's share of eligible shifts × total last post slots
             rosell_target = (
                 round((target / total_eligible_target) * total_last_post_slots) if total_eligible_target > 0 else 0
             )
-        rosell_deviation = rosell_count - rosell_target
-        if rosell_target > 0:
-            rosell_deviation_pct = rosell_deviation / rosell_target * 100
-        elif rosell_count > 0:
-            # target=0 but actual>0 means a violation — show as special marker
-            rosell_deviation_pct = float("inf")
-        else:
-            rosell_deviation_pct = 0.0
+            rosell_deviation = rosell_count - rosell_target
+            if rosell_target > 0:
+                rosell_deviation_pct = rosell_deviation / rosell_target * 100
+            elif rosell_count > 0:
+                rosell_deviation_pct = float("inf")
+            else:
+                rosell_deviation_pct = 0.0
 
         # Format the Rosell deviation percentage
         if rosell_deviation_pct == float("inf"):
@@ -1676,20 +1685,32 @@ with tab1:
 
             # Incompatibilidades (actualizado a multiselect)
             st.markdown("**🚫 Incompatibilidades**")
-            col_inc1, col_inc2, col_inc3 = st.columns(3)
+            # Fila 1: checkboxes de marcapasos y Rosell
+            col_inc1, col_inc2 = st.columns(2)
             with col_inc1:
                 is_incompatible = st.checkbox(
                     "Implantador de Marcapasos",
                     help="Este médico no puede coincidir con otros marcados igual",
                     key="is_incompatible_checkbox",
                 )
-            with col_inc3:
+            with col_inc2:
                 no_last_post = st.checkbox(
                     "No asignar Rosell",
                     help="Este médico no puede tener last posts (último puesto) asignados",
                     key="no_last_post_checkbox",
+                    value=st.session_state.get("no_last_post_buffer", False),
                 )
-            with col_inc2:
+            # Fila 2: Solo Rosell y multiselect de IDs incompatibles
+            col_inc3, col_inc4 = st.columns(2)
+            with col_inc3:
+                only_last_post = st.checkbox(
+                    "Solo Rosell",
+                    help="Este médico SOLO puede ser asignado en el último puesto (Rosell). Sus guardias quedan fuera de la contabilización y ajustes de last posts del resto.",
+                    key="only_last_post_checkbox",
+                    value=st.session_state.get("only_last_post_buffer", False),
+                    disabled=no_last_post,
+                )
+            with col_inc4:
                 # Obtener lista de otros médicos para el multiselect
                 existing_ids = [w["id"] for w in st.session_state.workers_data if w["id"] != worker_id]
 
@@ -1796,6 +1817,7 @@ with tab1:
                         "is_incompatible": is_incompatible,
                         "incompatible_with": incomp_list,
                         "no_last_post": no_last_post,
+                        "only_last_post": only_last_post and not no_last_post,
                         "mandatory_days": worker_data_mandatory,  # Renamed to match scheduler and used string
                         "days_off": worker_data_days_off,  # New field
                         "work_periods": worker_data_work_periods,  # New field
@@ -1827,6 +1849,8 @@ with tab1:
                     st.session_state.work_periods_buffer = ""
                     st.session_state.incompatible_buffer = False
                     st.session_state.incompatible_with_buffer = []
+                    st.session_state.no_last_post_buffer = False
+                    st.session_state.only_last_post_buffer = False
                     st.session_state.mandatory_dates_buffer = ""
                     st.session_state.days_off_buffer = ""
 
@@ -1844,6 +1868,8 @@ with tab1:
                 st.session_state.work_periods_buffer = ""
                 st.session_state.incompatible_buffer = False
                 st.session_state.incompatible_with_buffer = []
+                st.session_state.no_last_post_buffer = False
+                st.session_state.only_last_post_buffer = False
                 st.session_state.mandatory_dates_buffer = ""
                 st.session_state.days_off_buffer = ""
                 st.success("✅ Formulario limpiado")
@@ -1921,6 +1947,10 @@ with tab1:
                         st.write("**Incompatibilidad:** ⚠️ Incompatible con otros trabajadores marcados")
                     elif worker.get("incompatible_with"):
                         st.write(f"**Incompatible con:** {', '.join(worker['incompatible_with'])}")
+                    if worker.get("no_last_post"):
+                        st.write("**Puesto Rosell:** 🚫 No asignar Rosell")
+                    elif worker.get("only_last_post"):
+                        st.write("**Puesto Rosell:** 🎯 Solo Rosell")
 
                     # Días obligatorios
                     if worker.get("mandatory_dates"):
@@ -1965,6 +1995,7 @@ with tab1:
                             st.session_state.incompatible_buffer = worker.get("is_incompatible", False)
                             st.session_state.incompatible_with_buffer = worker.get("incompatible_with", [])
                             st.session_state.no_last_post_buffer = worker.get("no_last_post", False)
+                            st.session_state.only_last_post_buffer = worker.get("only_last_post", False)
 
                             # Días obligatorios
                             mandatory_days_str = worker.get("mandatory_days", "")

@@ -397,7 +397,7 @@ class ScheduleBuilder:
                         if d.year == date.year and d.month == date.month
                     )
                     if current_month_count <= monthly_target:
-                        logging.info(
+                        logging.debug(
                             f"🚫 BLOCKED {operation_name}: Cannot remove {worker_id} from {date.strftime('%Y-%m-%d')} - "
                             f"monthly count {current_month_count} at/below target {monthly_target}"
                         )
@@ -743,9 +743,9 @@ class ScheduleBuilder:
             # CRITICAL: no_last_post workers cannot be assigned to the last post
             if post == self.num_shifts - 1 and worker.get("no_last_post", False):
                 return False
-
-            # Check worker availability (days off)
-            if self._is_worker_unavailable(worker_id, date):
+            # CRITICAL: only_last_post workers can ONLY be assigned to the last post
+            if post != self.num_shifts - 1 and worker.get("only_last_post", False):
+                return False
                 return False
 
             # Check for incompatibilities
@@ -1024,8 +1024,11 @@ class ScheduleBuilder:
                 if _dbg:
                     logging.debug(f"Sim Check Fail: no_last_post {worker_id} on {date}")
                 return False
-
-            # 1. Incompatibility (using simulated_schedule)
+            # 0b. only_last_post: worker can ONLY be assigned to the last post
+            if post != self.num_shifts - 1 and worker_data and worker_data.get("only_last_post", False):
+                if _dbg:
+                    logging.debug(f"Sim Check Fail: only_last_post {worker_id} on {date}")
+                return False
             if not self._check_incompatibility_simulated(worker_id, date, simulated_schedule):
                 if _dbg:
                     logging.debug(f"Sim Check Fail: Incompatible {worker_id} on {date}")
@@ -1413,8 +1416,11 @@ class ScheduleBuilder:
             worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if worker_config and worker_config.get("no_last_post", False):
                 return False
-
-        # Check incompatibility against workers already assigned on this date
+        # Check only_last_post constraint: worker can ONLY be assigned to the last post
+        if post != self.num_shifts - 1:
+            worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
+            if worker_config and worker_config.get("only_last_post", False):
+                return False
         already_assigned_on_date = [
             w for idx, w in enumerate(self.schedule.get(date, [])) if w is not None and idx != post
         ]
@@ -2377,7 +2383,7 @@ class ScheduleBuilder:
         # =========================================================================
         is_last_post = post == self.num_shifts - 1  # 0-indexed, so P4 = index 3
 
-        if self.num_shifts > 1 and not worker.get("no_last_post", False):  # Only relevant when there are multiple posts
+        if self.num_shifts > 1 and not worker.get("no_last_post", False) and not worker.get("only_last_post", False):  # Only relevant when there are multiple posts
             # Get current post distribution for this worker
             post_counts = {}
             for assignment_date in self.worker_assignments[worker_id]:
@@ -3572,15 +3578,22 @@ class ScheduleBuilder:
                 "normalized_count": normalized_count,
             }
 
-        # Calculate average normalized count
-        total_normalized = sum(data["normalized_count"] for data in assignment_counts.values())
-        avg_normalized = total_normalized / len(assignment_counts) if assignment_counts else 0
+        # Manual workers have fixed monthly targets — exclude them from the
+        # average so their lower normalized counts don't distort the baseline.
+        auto_worker_ids = {
+            w["id"] for w in self.workers_data if w.get("auto_calculate_shifts", True)
+        }
+        auto_counts = [data["normalized_count"] for wid, data in assignment_counts.items() if wid in auto_worker_ids]
+        avg_normalized = sum(auto_counts) / len(auto_counts) if auto_counts else 0
 
         # Identify overloaded and underloaded workers using absolute tolerance of ±1
+        # Only consider auto workers — manual workers cannot participate in moves.
         overloaded = []
         underloaded = []
 
         for worker_id_val, data_val in assignment_counts.items():  # Renamed worker_id, data
+            if worker_id_val not in auto_worker_ids:
+                continue
             # Use absolute tolerance of ±1 turno instead of percentage
             if data_val["normalized_count"] > avg_normalized + 1.0:
                 overloaded.append((worker_id_val, data_val))
@@ -3808,24 +3821,49 @@ class ScheduleBuilder:
         if not worker_norm:
             return False
 
-        avg_norm = sum(worker_norm.values()) / len(worker_norm)
+        # Build auto-worker set: manual workers have fixed targets by design and
+        # cannot participate in workload swaps (their monthly counts are at target,
+        # so _can_modify_assignment always blocks them).
+        auto_workers = {
+            w["id"] for w in self.workers_data if w.get("auto_calculate_shifts", True)
+        }
 
-        # Workers above and below average (any amount)
-        over = [(wid, worker_norm[wid] - avg_norm) for wid in worker_norm if worker_norm[wid] > avg_norm + 0.3]
-        under = [(wid, avg_norm - worker_norm[wid]) for wid in worker_norm if worker_norm[wid] < avg_norm - 0.3]
+        avg_norm = sum(worker_norm[wid] for wid in auto_workers if wid in worker_norm) / max(len(auto_workers), 1)
+
+        # Workers above and below average — auto workers only.
+        # Threshold of 3.0 normalized points avoids chasing statistical noise
+        # (≈ 3 shifts for a 100% worker, 1.5 shifts for a 50% worker).
+        _REFINE_THRESHOLD = 3.0
+        over = [
+            (wid, worker_norm[wid] - avg_norm)
+            for wid in auto_workers
+            if wid in worker_norm and worker_norm[wid] > avg_norm + _REFINE_THRESHOLD
+        ]
+        under = [
+            (wid, avg_norm - worker_norm[wid])
+            for wid in auto_workers
+            if wid in worker_norm and worker_norm[wid] < avg_norm - _REFINE_THRESHOLD
+        ]
 
         if not over or not under:
             logging.info("Workload refinement: already balanced within 0.3")
             return False
 
-        over.sort(key=lambda x: x[1], reverse=True)
-        under.sort(key=lambda x: x[1], reverse=True)
+        logging.info(f"Workload refinement: {len(over)} over, {len(under)} under (avg_norm={avg_norm:.2f})")
+        for wid, dev in over[:3]:
+            logging.info(f"  OVER  {wid}: norm={worker_norm[wid]:.1f} (+{dev:.2f})")
+        for wid, dev in under[:3]:
+            logging.info(f"  UNDER {wid}: norm={worker_norm[wid]:.1f} (-{dev:.2f})")
 
         schedule = self.scheduler.schedule
         best_score = score_fn() if score_fn else None
         total_swaps = 0
         reverted = 0
         max_swaps = 20
+        diag_swap_ok = 0
+        diag_score_fail = 0
+        diag_constraint_fail = 0
+        diag_modify_blocked = 0
 
         for over_id, _ in over:
             if total_swaps >= max_swaps:
@@ -3838,9 +3876,6 @@ class ScheduleBuilder:
             for under_id, _ in under:
                 if total_swaps >= max_swaps:
                     break
-                # Only useful if they have different work_percentage
-                if worker_pct[over_id] == worker_pct[under_id]:
-                    continue
 
                 under_dates = sorted(self.worker_assignments.get(under_id, set()))
                 random.shuffle(under_dates)
@@ -3850,6 +3885,7 @@ class ScheduleBuilder:
                     if swapped:
                         break
                     if not self._can_modify_assignment(over_id, d_over, "workload_refine"):
+                        diag_modify_blocked += 1
                         continue
                     if d_over not in schedule or over_id not in schedule[d_over]:
                         continue
@@ -3859,19 +3895,17 @@ class ScheduleBuilder:
                         if d_under == d_over:
                             continue  # Same-date swap only trades posts, not useful
                         if not self._can_modify_assignment(under_id, d_under, "workload_refine"):
+                            diag_modify_blocked += 1
                             continue
                         if d_under not in schedule or under_id not in schedule[d_under]:
                             continue
                         p_under = schedule[d_under].index(under_id)
 
                         if not self._can_worker_swap(over_id, d_over, p_over, under_id, d_under, p_under):
+                            diag_constraint_fail += 1
                             continue
 
-                        # Verify the swap actually improves normalized balance
-                        # After swap: over_id loses d_over, gains d_under (count unchanged)
-                        # But we're doing worker-worker swap so both keep same count
-                        # The value comes from the score_fn checking composite improvement
-
+                        diag_swap_ok += 1
                         self._execute_worker_swap(over_id, d_over, p_over, under_id, d_under, p_under)
 
                         if score_fn is not None and best_score is not None:
@@ -3879,6 +3913,7 @@ class ScheduleBuilder:
                             if new_score < best_score - 1e-9:
                                 self._execute_worker_swap(under_id, d_over, p_over, over_id, d_under, p_under)
                                 reverted += 1
+                                diag_score_fail += 1
                                 continue
                             best_score = new_score
 
@@ -3893,6 +3928,7 @@ class ScheduleBuilder:
         logging.info(
             f"Workload refinement completed: {total_swaps} swaps"
             + (f", {reverted} reverted by score gate" if reverted else "")
+            + f" [diag: modify_blocked={diag_modify_blocked}, constraint_fail={diag_constraint_fail}, swap_ok={diag_swap_ok}, score_fail={diag_score_fail}]"
         )
 
         if total_swaps > 0:
@@ -6000,6 +6036,11 @@ class ScheduleBuilder:
             worker_cfg = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if worker_cfg and worker_cfg.get("no_last_post", False):
                 return False
+        # CRITICAL: only_last_post workers can ONLY be placed on the last post
+        if post != self.num_shifts - 1:
+            worker_cfg = next((w for w in self.workers_data if w["id"] == worker_id), None)
+            if worker_cfg and worker_cfg.get("only_last_post", False):
+                return False
         for p_idx, w in enumerate(self.schedule.get(date, [])):
             if w == worker_id and p_idx != post:
                 return False
@@ -6064,6 +6105,11 @@ class ScheduleBuilder:
         if post == self.num_shifts - 1:
             worker_cfg = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if worker_cfg and worker_cfg.get("no_last_post", False):
+                return False
+        # CRITICAL: only_last_post workers can ONLY be placed on the last post
+        if post != self.num_shifts - 1:
+            worker_cfg = next((w for w in self.workers_data if w["id"] == worker_id), None)
+            if worker_cfg and worker_cfg.get("only_last_post", False):
                 return False
 
         # Worker must not already be working on that date (other post)
@@ -7542,12 +7588,23 @@ class ScheduleBuilder:
 
                         if var_after < var_before - 1e-9:
                             # CRITICAL: no_last_post workers cannot be swapped into the last post
+                            # CRITICAL: only_last_post workers can ONLY be swapped into the last post
                             last_post = num_shifts - 1
                             if j == last_post or i == last_post:
                                 w_going_to_last = w_i if j == last_post else w_j
-                                cfg = next((w for w in self.workers_data if w["id"] == w_going_to_last), None)
-                                if cfg and cfg.get("no_last_post", False):
+                                w_going_to_nonlast = w_j if j == last_post else w_i
+                                cfg_last = next((w for w in self.workers_data if w["id"] == w_going_to_last), None)
+                                cfg_nonlast = next((w for w in self.workers_data if w["id"] == w_going_to_nonlast), None)
+                                if cfg_last and cfg_last.get("no_last_post", False):
                                     continue
+                                if cfg_nonlast and cfg_nonlast.get("only_last_post", False):
+                                    continue
+                            else:
+                                # Neither i nor j is the last post — block only_last_post workers from non-last swaps
+                                for w_check in (w_i, w_j):
+                                    cfg_check = next((w for w in self.workers_data if w["id"] == w_check), None)
+                                    if cfg_check and cfg_check.get("only_last_post", False):
+                                        continue
 
                             # Commit swap
                             posts[i], posts[j] = w_j, w_i
@@ -7604,6 +7661,7 @@ class ScheduleBuilder:
         logging.info("=" * 60)
 
         no_last_post_workers = {str(w["id"]) for w in self.workers_data if w.get("no_last_post", False)}
+        only_last_post_workers = {str(w["id"]) for w in self.workers_data if w.get("only_last_post", False)}
 
         total_swaps = 0
 
@@ -7629,7 +7687,10 @@ class ScheduleBuilder:
                     continue
 
                 worker_in_last = str(shifts[last_post_idx])
-                swappable_days.append((date_val, last_post_idx, worker_in_last))
+                # only_last_post workers permanently occupy their last post slot —
+                # those slots are NOT available for general redistribution.
+                if worker_in_last not in only_last_post_workers:
+                    swappable_days.append((date_val, last_post_idx, worker_in_last))
 
                 # Count shifts per worker
                 for idx, worker_id in enumerate(shifts):
@@ -7644,8 +7705,12 @@ class ScheduleBuilder:
             # Proportional distribution: last posts must be shared among eligible workers only.
             # Workers with no_last_post cannot occupy the last post, so the eligible workers
             # must cover ALL last post slots proportionally to their shift counts.
+            # Workers with only_last_post are excluded from this pool: their slots are reserved
+            # and already removed from swappable_days above.
             total_eligible_shifts_strict = sum(
-                s["total_shifts"] for wid, s in worker_stats.items() if wid not in no_last_post_workers
+                s["total_shifts"]
+                for wid, s in worker_stats.items()
+                if wid not in no_last_post_workers and wid not in only_last_post_workers
             )
             total_last_post_slots_strict = len(swappable_days)
 
@@ -7654,6 +7719,11 @@ class ScheduleBuilder:
             underloaded = []
 
             for worker_id, stats in worker_stats.items():
+                if worker_id in only_last_post_workers:
+                    # These workers are always in the last post by design — skip distribution
+                    stats["expected"] = stats["last_posts"]
+                    stats["deviation"] = 0
+                    continue
                 if worker_id in no_last_post_workers:
                     # Workers with no_last_post have target=0
                     stats["expected"] = 0
@@ -7818,8 +7888,11 @@ class ScheduleBuilder:
         logging.info(f"Using shifts_per_day = {shifts_per_day} for calculations")
 
         no_last_post_workers = {str(w["id"]) for w in self.workers_data if w.get("no_last_post", False)}
+        only_last_post_workers = {str(w["id"]) for w in self.workers_data if w.get("only_last_post", False)}
         if no_last_post_workers:
             logging.info(f"Workers with no_last_post (target=0): {no_last_post_workers}")
+        if only_last_post_workers:
+            logging.info(f"Workers with only_last_post (excluded from pool): {only_last_post_workers}")
 
         # Initialize variables used after the loop for final logging
         worker_total_shifts: dict[str, int] = {}
@@ -7872,9 +7945,11 @@ class ScheduleBuilder:
                     worker_in_last_actual_post = str(shifts_on_day[actual_last_assigned_idx])
 
                     worker_last_posts[worker_in_last_actual_post] += 1
-                    swappable_days_with_last_post_info.append(
-                        (date_val, actual_last_assigned_idx, worker_in_last_actual_post)
-                    )
+                    # only_last_post workers occupy their slot permanently — not swappable
+                    if worker_in_last_actual_post not in only_last_post_workers:
+                        swappable_days_with_last_post_info.append(
+                            (date_val, actual_last_assigned_idx, worker_in_last_actual_post)
+                        )
 
             # 2. Calculate expected last posts per worker using improved formula
             worker_expected_last_posts = {}
@@ -7883,11 +7958,21 @@ class ScheduleBuilder:
             # Proportional distribution: last posts must be shared among eligible workers only.
             # Workers with no_last_post cannot occupy the last post, so the eligible workers
             # must cover ALL last post slots proportionally to their shift counts.
+            # Workers with only_last_post are excluded from the pool (their slots are reserved).
+            excluded_from_pool = no_last_post_workers | only_last_post_workers
             total_eligible_worker_shifts_in_period = sum(
-                shifts for wid, shifts in worker_total_shifts.items() if wid not in no_last_post_workers and shifts > 0
+                shifts for wid, shifts in worker_total_shifts.items() if wid not in excluded_from_pool and shifts > 0
             )
+            # shared_last_post_slots = slots NOT occupied by only_last_post workers
+            # (swappable_days_with_last_post_info already excludes their slots — see above)
+            shared_last_post_slots = len(swappable_days_with_last_post_info)
 
             for worker_id_str, total_shifts in worker_total_shifts.items():
+                if worker_id_str in only_last_post_workers:
+                    # These workers always occupy their last post — excluded from distribution
+                    worker_expected_last_posts[worker_id_str] = worker_last_posts.get(worker_id_str, 0)
+                    worker_deviation[worker_id_str] = 0
+                    continue
                 if worker_id_str in no_last_post_workers:
                     # Target is 0 last posts
                     worker_expected_last_posts[worker_id_str] = 0
@@ -7903,7 +7988,7 @@ class ScheduleBuilder:
                     # Each eligible worker's expected last posts = their share of eligible work × total last post slots
                     expected_last_posts = (
                         (total_shifts / total_eligible_worker_shifts_in_period)
-                        * total_last_slots_in_non_variable_periods
+                        * shared_last_post_slots
                         if total_eligible_worker_shifts_in_period > 0
                         else 0
                     )
@@ -7980,6 +8065,8 @@ class ScheduleBuilder:
                         if worker_B_id_str != "None" and worker_B_id_str != worker_A_id:
                             if worker_B_id_str in no_last_post_workers:
                                 continue  # Cannot swap a no_last_post worker into the last post
+                            if worker_B_id_str in only_last_post_workers:
+                                continue  # only_last_post workers must stay in the last post
 
                             worker_B_deviation = worker_deviation.get(worker_B_id_str, 0)
 

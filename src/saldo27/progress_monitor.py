@@ -22,7 +22,7 @@ class ProgressMonitor:
         self.update_frequency = 1  # Actualizar cada iteración
 
     def start_monitoring(self):
-        """Iniciar el monitoreo de progreso"""
+        """Iniciar monitorización del progreso"""
         self.start_time = datetime.now()
         self.iteration_times = []
         self.best_score = 0.0
@@ -30,7 +30,7 @@ class ProgressMonitor:
         self.last_significant_improvement = 0
 
         logging.info("=" * 60)
-        logging.info("🚀 INICIANDO OPTIMIZACIÓN DE HORARIOS")
+        logging.info("🚀 INICIANDO OPTIMIZACIÓN DEL REPARTO")
         logging.info("=" * 60)
         logging.info(f"📊 Objetivo: {self.total_iterations} iteraciones máximas")
         logging.info(f"🕒 Inicio: {self.start_time.strftime('%H:%M:%S')}")

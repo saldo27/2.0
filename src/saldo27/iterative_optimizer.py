@@ -1108,6 +1108,17 @@ class IterativeOptimizer:
                 except (ValueError, IndexError):
                     pass
 
+            # Check only_last_post constraint: worker can ONLY be assigned to the last post
+            if worker_data.get("only_last_post", False) and shift_type.startswith("Post_"):
+                try:
+                    post_idx = int(shift_type.split("_")[1])
+                    num_shifts = getattr(self.scheduler, "num_shifts", 0) if self.scheduler else 0
+                    if num_shifts > 0 and post_idx != num_shifts - 1:
+                        logging.debug(f"Blocked by only_last_post constraint for {worker_name}")
+                        return False
+                except (ValueError, IndexError):
+                    pass
+
             # Check basic availability
             worker_availability = worker_data.get("availability", {})
             day_name = shift_date.strftime("%A")
@@ -1638,24 +1649,28 @@ class IterativeOptimizer:
         for violation in violations:
             worker_name = violation["worker"]
             deviation = violation["deviation_percentage"]
+            shortage = violation.get("shortage", 0)
+            excess = violation.get("excess", 0)
 
-            if deviation < -self.tolerance * 100:
+            # Classify by shortage/excess flags — violations are already pre-filtered
+            # by the validator so we should not re-apply the tolerance threshold here
+            if shortage > 0:
                 priority = abs(deviation)  # Higher absolute deviation = higher priority
                 need_more_weekends.append(
                     {
                         "worker": worker_name,
-                        "shortage": abs(violation["shortage"]),
+                        "shortage": shortage,
                         "priority": priority,
                         "deviation": deviation,
                         "abs_deviation": abs(deviation),  # For easier sorting
                     }
                 )
-            elif deviation > self.tolerance * 100:
+            elif excess > 0:
                 priority = abs(deviation)  # Higher absolute deviation = higher priority
                 have_excess_weekends.append(
                     {
                         "worker": worker_name,
-                        "excess": violation["excess"],
+                        "excess": excess,
                         "priority": priority,
                         "deviation": deviation,
                         "abs_deviation": abs(deviation),  # For easier sorting
@@ -2007,6 +2022,173 @@ class IterativeOptimizer:
             else:
                 logging.info("      ℹ️  No donors with weekend surplus found")
 
+        # --- Excess-push for over-only case ---
+        # When workers have too many weekends but nobody is under tolerance,
+        # recruit recipients from workers whose weekend count is below their target
+        # (even within tolerance) and do a bilateral weekend↔weekday swap:
+        #   over_w  : loses we_dk (weekend, month M), gains wd_dk (recip weekday, month M)
+        #   recip   : gains we_dk (weekend, month M), loses wd_dk (weekday, month M)
+        # Same-month pairs ensure over_w's monthly count doesn't change → no monthly-protection block.
+        remaining_excess = [e for e in have_excess_weekends if e.get("excess", 0) > 0]
+        if remaining_excess and not need_more_weekends:
+            logging.info("   🎯 Weekend excess-push: no under workers, recruiting below-target recipients")
+
+            # Build per-worker weekend/weekday slots from current schedule
+            ep_worker_we_counts: dict[str, int] = {}
+            ep_worker_wd_slots: dict[str, list[tuple]] = {}
+            ep_worker_we_slots: dict[str, list[tuple]] = {}
+
+            ep_weekend_set: set = set()
+            for dk in optimized_schedule:
+                try:
+                    d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
+                    if d.weekday() >= 4 or d in _holidays_rw or (d + timedelta(days=1)) in _holidays_rw:
+                        ep_weekend_set.add(dk)
+                except (ValueError, AttributeError):
+                    continue
+
+            for dk in optimized_schedule:
+                assigns = optimized_schedule.get(dk, [])
+                if not isinstance(assigns, list):
+                    continue
+                is_we = dk in ep_weekend_set
+                for idx, w in enumerate(assigns):
+                    if w is None or not isinstance(w, str):
+                        continue
+                    if is_we:
+                        ep_worker_we_counts[w] = ep_worker_we_counts.get(w, 0) + 1
+                        ep_worker_we_slots.setdefault(w, []).append((dk, idx))
+                    else:
+                        ep_worker_wd_slots.setdefault(w, []).append((dk, idx))
+
+            # Weekend target per worker (proportional)
+            total_days_ep = len(optimized_schedule)
+            total_we_ep = len(ep_weekend_set)
+            we_ratio_ep = total_we_ep / total_days_ep if total_days_ep else 0.0
+
+            worker_we_target_ep: dict[str, float] = {}
+            for wd_data in workers_data:
+                wname = str(wd_data.get("id", wd_data.get("name", "")))
+                raw_target = wd_data.get("_raw_target", wd_data.get("target_shifts", 0))
+                worker_we_target_ep[wname] = raw_target * we_ratio_ep
+
+            # Find recipients: workers NOT in excess-violation whose weekend count < their target
+            excess_ids = {e["worker"] for e in remaining_excess}
+            recipients = []
+            for wname, we_count in ep_worker_we_counts.items():
+                if wname in excess_ids:
+                    continue
+                target = worker_we_target_ep.get(wname, 0)
+                if we_count < target:
+                    recipients.append((wname, target - we_count))
+
+            recipients.sort(key=lambda x: x[1], reverse=True)
+
+            if recipients:
+                logging.info(f"      Found {len(recipients)} recipients (top: {recipients[0][0]} -{recipients[0][1]:.1f})")
+                push_swaps = 0
+                max_push = 15
+
+                for excess_info in remaining_excess:
+                    if push_swaps >= max_push:
+                        break
+                    over_w = excess_info["worker"]
+                    excess_left = excess_info["excess"]
+                    if excess_left <= 0:
+                        continue
+
+                    over_weekends = list(ep_worker_we_slots.get(over_w, []))
+                    if not over_weekends:
+                        continue
+                    random.shuffle(over_weekends)
+
+                    for recip_name, _ in recipients:
+                        if excess_left <= 0 or push_swaps >= max_push:
+                            break
+
+                        # Recipient's weekday slots (they will give one to over_w)
+                        recip_weekdays = list(ep_worker_wd_slots.get(recip_name, []))
+                        if not recip_weekdays:
+                            continue
+                        random.shuffle(recip_weekdays)
+
+                        swapped = False
+                        for we_dk, we_idx in over_weekends:
+                            if swapped:
+                                break
+                            we_date_obj = (
+                                we_dk if isinstance(we_dk, datetime) else datetime.strptime(we_dk, "%Y-%m-%d")
+                            )
+
+                            # Only use recip weekday slots in the SAME month as we_dk
+                            # so over_w's monthly count stays constant (no monthly-protection block).
+                            same_month_recip_wd = [
+                                (wd_dk, wd_idx)
+                                for wd_dk, wd_idx in recip_weekdays
+                                if (
+                                    wd_dk if isinstance(wd_dk, datetime)
+                                    else datetime.strptime(wd_dk, "%Y-%m-%d")
+                                ).month == we_date_obj.month
+                                and (
+                                    wd_dk if isinstance(wd_dk, datetime)
+                                    else datetime.strptime(wd_dk, "%Y-%m-%d")
+                                ).year == we_date_obj.year
+                            ]
+                            if not same_month_recip_wd:
+                                continue
+
+                            for wd_dk, wd_idx in same_month_recip_wd:
+                                # Vacate both slots temporarily for unbiased constraint checks
+                                orig_we = optimized_schedule[we_dk][we_idx]
+                                orig_wd = optimized_schedule[wd_dk][wd_idx]
+                                optimized_schedule[we_dk][we_idx] = None
+                                optimized_schedule[wd_dk][wd_idx] = None
+
+                                # over_w takes recip's weekday (same month as we_dk: net 0 for over_w)
+                                ok_over = self._can_worker_take_shift(
+                                    over_w, wd_dk, f"Post_{wd_idx}", optimized_schedule, workers_data
+                                )
+                                # recip takes over_w's weekend
+                                ok_recip = self._can_worker_take_shift(
+                                    recip_name, we_dk, f"Post_{we_idx}", optimized_schedule, workers_data
+                                )
+
+                                # Restore originals
+                                optimized_schedule[we_dk][we_idx] = orig_we
+                                optimized_schedule[wd_dk][wd_idx] = orig_wd
+
+                                if not ok_over or not ok_recip:
+                                    continue
+
+                                # Execute bilateral swap atomically
+                                optimized_schedule[we_dk][we_idx] = recip_name  # recip takes weekend
+                                optimized_schedule[wd_dk][wd_idx] = over_w      # over_w takes weekday
+
+                                push_swaps += 1
+                                excess_left -= 1
+                                excess_info["excess"] = excess_left
+
+                                we_disp = we_dk.strftime("%Y-%m-%d") if isinstance(we_dk, datetime) else we_dk
+                                wd_disp = wd_dk.strftime("%Y-%m-%d") if isinstance(wd_dk, datetime) else wd_dk
+                                logging.info(
+                                    f"      🎯 PUSH: {over_w}(we {we_disp})↔{recip_name}(wd {wd_disp})"
+                                )
+                                # Update slot tracking
+                                ep_worker_we_slots[over_w] = [
+                                    s for s in ep_worker_we_slots.get(over_w, []) if s != (we_dk, we_idx)
+                                ]
+                                ep_worker_we_slots.setdefault(recip_name, []).append((we_dk, we_idx))
+                                ep_worker_wd_slots[recip_name] = [
+                                    s for s in ep_worker_wd_slots.get(recip_name, []) if s != (wd_dk, wd_idx)
+                                ]
+                                ep_worker_wd_slots.setdefault(over_w, []).append((wd_dk, wd_idx))
+                                swapped = True
+                                break
+
+                logging.info(f"   ✅ Weekend excess-push: {push_swaps} swaps")
+            else:
+                logging.info("      ℹ️  No recipients below weekend target found")
+
         return optimized_schedule
 
     def _apply_weekend_swaps(
@@ -2035,14 +2217,17 @@ class IterativeOptimizer:
         for violation in weekend_violations:
             worker_name = violation["worker"]
             deviation = violation["deviation_percentage"]
+            excess = violation.get("excess", 0)
+            shortage = violation.get("shortage", 0)
 
-            if deviation > self.tolerance * 100:  # Over-assigned (e.g., +13.3%)
+            # Violations are already pre-filtered by the validator — classify by excess/shortage
+            if excess > 0:
                 over_assigned.append(
-                    {"worker": worker_name, "deviation": deviation, "excess": violation.get("excess", 0)}
+                    {"worker": worker_name, "deviation": deviation, "excess": excess}
                 )
-            elif deviation < -self.tolerance * 100:  # Under-assigned (e.g., -25%, -16.7%)
+            elif shortage > 0:
                 under_assigned.append(
-                    {"worker": worker_name, "deviation": deviation, "shortage": abs(violation.get("shortage", 0))}
+                    {"worker": worker_name, "deviation": deviation, "shortage": shortage}
                 )
 
         # Sort by severity with randomized tie-breaking to explore different pairs each iteration
@@ -2288,6 +2473,10 @@ class IterativeOptimizer:
             over_excess = over_info.get("excess", 1)
 
             # Collect non-mandatory weekend shifts of over_worker
+            # Note: skip _is_monthly_protected here because Strategy 5 is a
+            # bilateral swap (over_worker gains a weekday in return), so the
+            # monthly count may not change if we pick same-month dates.
+            # The per-combination same-month check below enforces correctness.
             over_we_shifts = []
             for d in weekend_date_set:
                 if d not in optimized_schedule:
@@ -2298,7 +2487,6 @@ class IterativeOptimizer:
                         if (
                             w == over_worker
                             and not self._is_mandatory_shift(over_worker, d, workers_data)
-                            and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data)
                         ):
                             over_we_shifts.append((d, idx))
 
@@ -2338,6 +2526,16 @@ class IterativeOptimizer:
                     if swapped:
                         break
                     for wd_date, wd_idx in under_wd_shifts:
+                        # For bilateral swaps involving monthly-protected workers:
+                        # over_worker loses we_date, gains wd_date.
+                        # If they are in different months AND over_worker's we_date
+                        # month is at the floor, skip (would drop below target).
+                        we_date_obj = we_date if isinstance(we_date, datetime) else datetime.strptime(we_date, "%Y-%m-%d")
+                        wd_date_obj = wd_date if isinstance(wd_date, datetime) else datetime.strptime(wd_date, "%Y-%m-%d")
+                        if (we_date_obj.year, we_date_obj.month) != (wd_date_obj.year, wd_date_obj.month):
+                            if self._is_monthly_protected(over_worker, we_date, optimized_schedule, workers_data):
+                                continue  # Cross-month swap would drop monthly count below target
+
                         # Temporarily vacate both slots so constraint checks
                         # don't see the departing worker's old assignment
                         # (avoids false-positive gap/pattern rejections).
@@ -2635,7 +2833,10 @@ class IterativeOptimizer:
                 break
             over_worker = over_info["worker"]
 
-            # Collect non-mandatory weekend shifts of over_worker
+            # Collect non-mandatory weekend shifts of over_worker.
+            # Skip _is_monthly_protected: this method does only one-way moves
+            # (over_worker loses a shift), but we check the donor's monthly
+            # count below before committing, so we avoid violating the target.
             over_we_shifts = []
             for d in weekend_date_set:
                 if d not in optimized_schedule:
@@ -2646,7 +2847,6 @@ class IterativeOptimizer:
                         if (
                             w == over_worker
                             and not self._is_mandatory_shift(over_worker, d, workers_data)
-                            and not self._is_monthly_protected(over_worker, d, optimized_schedule, workers_data)
                         ):
                             over_we_shifts.append((d, idx))
             random.shuffle(over_we_shifts)
