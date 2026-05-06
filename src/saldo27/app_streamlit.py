@@ -2,7 +2,7 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 2.8 (Marzo 2026)
+Versión: 2.9 (Mayo 2026)
 """
 
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
@@ -526,8 +526,8 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             "workers_data": st.session_state.workers_data,  # Pass directly, matching Kivy
             "holidays": holidays,
             "variable_shifts": variable_shifts,
-            "gap_between_shifts": st.session_state.config.get("gap_between_shifts", 2),
-            "max_consecutive_weekends": st.session_state.config.get("max_consecutive_weekends", 2),
+            "gap_between_shifts": st.session_state.config.get("gap_between_shifts", 4),
+            "max_consecutive_weekends": st.session_state.config.get("max_consecutive_weekends", 3),
             "enable_proportional_weekends": st.session_state.config.get("enable_proportional_weekends", True),
             "weekend_tolerance": st.session_state.config.get("weekend_tolerance", 1),
             "cache_enabled": st.session_state.config.get("cache_enabled", False),
@@ -537,7 +537,7 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             "last_post_adjustment_max_iterations": st.session_state.config.get(
                 "last_post_adjustment_max_iterations", 10
             ),
-            "max_complete_attempts": st.session_state.config.get("max_complete_attempts", 5),  # Match Kivy default
+            "max_complete_attempts": st.session_state.config.get("max_complete_attempts", 8),  # Match Kivy default
         }
 
         # Crear scheduler
@@ -1440,8 +1440,8 @@ with st.sidebar:
             "Días mínimos entre guardias",
             min_value=0,
             max_value=7,
-            value=st.session_state.config.get("gap_between_shifts", 3),
-            help="Número mínimo de días de descanso entre guardias consecutivos",
+            value=st.session_state.config.get("gap_between_shifts", 4),
+            help="Número mínimo de días entre guardias consecutivos",
         )
         st.session_state.config["gap_between_shifts"] = gap_between_shifts
 
