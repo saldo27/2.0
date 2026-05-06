@@ -148,7 +148,7 @@ class BridgeManager:
             # If a bridge was detected, add it
             if bridge_info:
                 # Only include if bridge days are within schedule period
-                valid_bridge_days = [d for d in bridge_info["bridge_days"] if start <= d <= end]
+                valid_bridge_days = [d for d in bridge_info["bridge_days"] if isinstance(d, date) and start <= d <= end]
                 if valid_bridge_days:
                     bridge_info["bridge_days"] = valid_bridge_days
                     bridges.append(bridge_info)
@@ -165,7 +165,7 @@ class BridgeManager:
         logger.info(f"Total bridges detected: {len(bridges)}, Total bridge days: {len(bridge_days)}")
         return bridges
 
-    def is_bridge_day(self, check_date: datetime) -> bool:
+    def is_bridge_day(self, check_date: date | datetime) -> bool:
         """
         Verifica si una fecha es parte de un puente.
 
@@ -180,7 +180,7 @@ class BridgeManager:
 
         return check_date in self.bridge_days_set
 
-    def get_bridge_for_date(self, check_date: datetime) -> dict[str, Any] | None:
+    def get_bridge_for_date(self, check_date: date | datetime) -> dict[str, Any] | None:
         """
         Obtiene información del puente para una fecha específica.
 

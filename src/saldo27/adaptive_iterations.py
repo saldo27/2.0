@@ -489,7 +489,7 @@ class AdaptiveIterationManager:
     def _count_gap_violations(self, scheduler_instance) -> int:
         """Count violations of gap between shifts constraint"""
         violations = 0
-        gap_days = getattr(scheduler_instance, "gap_between_shifts", 1)
+        gap_days = getattr(scheduler_instance, "gap_between_shifts", 3)
         workers_data = getattr(scheduler_instance, "workers_data", [])
         workers_map = {w["id"]: w for w in workers_data}
 

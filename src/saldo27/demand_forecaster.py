@@ -169,7 +169,7 @@ class DemandForecaster:
             fill_rates = np.array(data["fill_rates"])
             efficiency_scores = np.array(data["efficiency_scores"])
 
-            if len(fill_rates) < self.config["min_data_points"]:
+            if len(fill_rates) < int(str(self.config["min_data_points"])):
                 logging.warning("Insufficient data for ARIMA forecasting")
                 return None
 
@@ -229,7 +229,7 @@ class DemandForecaster:
             # Handle missing values
             time_series = time_series.ffill().bfill()
 
-            if len(time_series) < self.config["min_data_points"]:
+            if len(time_series) < int(str(self.config["min_data_points"])):
                 return None
 
             # Suppress warnings for cleaner output
@@ -270,7 +270,7 @@ class DemandForecaster:
             timestamps = pd.to_datetime(data["timestamps"])
             fill_rates = np.array(data["fill_rates"])
 
-            if len(fill_rates) < self.config["seasonal_periods"] * 2:
+            if len(fill_rates) < int(str(self.config["seasonal_periods"])) * 2:
                 logging.warning("Insufficient data for seasonal decomposition")
                 return None
 
@@ -361,7 +361,7 @@ class DemandForecaster:
             # Remove rows with NaN values
             features_df = features_df.dropna()
 
-            if len(features_df) < self.config["min_data_points"]:
+            if len(features_df) < int(str(self.config["min_data_points"])):
                 logging.warning("Insufficient clean data for ML forecasting")
                 return None
 

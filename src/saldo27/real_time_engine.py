@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 
 from saldo27.change_tracker import ChangeTracker
 from saldo27.event_bus import EventType, get_event_bus
@@ -22,9 +22,9 @@ class RealTimeOperationResult:
     success: bool
     message: str
     operation_id: str
-    validation_results: list[ValidationResult] = None
-    conflicts: list[ConflictInfo] = None
-    suggestions: list[str] = None
+    validation_results: list[ValidationResult] | None = None
+    conflicts: list[ConflictInfo] | None = None
+    suggestions: list[str] | None = None
 
     def __post_init__(self):
         if self.validation_results is None:
@@ -150,8 +150,8 @@ class RealTimeEngine:
                     message=update_result.message,
                     operation_id=operation_id,
                     validation_results=validation_results,
-                    conflicts=update_result.conflicts if hasattr(update_result, "conflicts") else [],
-                    suggestions=update_result.suggestions if hasattr(update_result, "suggestions") else [],
+                    conflicts=cast(list[ConflictInfo], update_result.conflicts) if isinstance(getattr(update_result, "conflicts", None), list) else [],
+                    suggestions=update_result.suggestions if isinstance(getattr(update_result, "suggestions", None), list) else [],
                 )
 
         except Exception as e:
@@ -387,7 +387,7 @@ class RealTimeEngine:
                 )
 
             # Perform undo
-            undone_change = self.change_tracker.undo(user_id)
+            undone_change = self.change_tracker.mark_undo_applied()
 
             if undone_change:
                 return RealTimeOperationResult(
@@ -421,7 +421,7 @@ class RealTimeEngine:
                 )
 
             # Perform redo
-            redone_change = self.change_tracker.redo(user_id)
+            redone_change = self.change_tracker.mark_redo_applied()
 
             if redone_change:
                 return RealTimeOperationResult(
@@ -507,7 +507,7 @@ class RealTimeEngine:
             # Detect conflicts and suggest resolutions
             conflicts = self.live_validator.detect_conflicts()
             for conflict in conflicts[: limit // 2]:
-                suggestions.extend(conflict.resolution_suggestions[:1])
+                suggestions.extend((conflict.resolution_suggestions or [])[:1])
 
             # Workload balancing suggestions
             workloads = {

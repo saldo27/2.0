@@ -85,7 +85,7 @@ class DateTimeUtils:
             return datetime.now(spain_tz).replace(tzinfo=None)
         except Exception as e:
             logging.error(f"Fallback time error: {e!s}")
-            return datetime.utcnow()
+            return datetime.now()
 
     def parse_dates(self, date_str: str) -> list[datetime]:
         """

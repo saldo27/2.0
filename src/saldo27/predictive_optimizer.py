@@ -43,7 +43,7 @@ class PredictiveOptimizer:
 
         logging.info("PredictiveOptimizer initialized")
 
-    def predict_and_optimize(self, forecast_data: dict[str, Any] = None) -> dict[str, Any]:
+    def predict_and_optimize(self, forecast_data: dict[str, Any] | None = None) -> dict[str, Any]:
         """
         Perform predictive optimization based on forecast data
 
@@ -319,7 +319,7 @@ class PredictiveOptimizer:
 
     def _recommend_parameter_adjustments(self, forecast_data: dict[str, Any]) -> dict[str, Any]:
         """Recommend adjustments to scheduling parameters based on predictions"""
-        adjustments = {
+        adjustments: dict[str, Any] = {
             "iteration_parameters": {},
             "constraint_parameters": {},
             "optimization_settings": {},
@@ -339,12 +339,12 @@ class PredictiveOptimizer:
 
                 if avg_complexity > 0.8:
                     adjustments["iteration_parameters"]["max_iterations"] = min(
-                        self.config["max_iterations"] * 1.5, self.config["max_iterations"] + 50
+                        int(self.config["max_iterations"]) * 1.5, int(self.config["max_iterations"]) + 50
                     )
                     adjustments["iteration_parameters"]["reason"] = "High complexity periods predicted"
                 elif avg_complexity < 0.4:
                     adjustments["iteration_parameters"]["max_iterations"] = max(
-                        self.config["max_iterations"] * 0.8, self.config["max_iterations"] - 20
+                        int(self.config["max_iterations"]) * 0.8, int(self.config["max_iterations"]) - 20
                     )
                     adjustments["iteration_parameters"]["reason"] = "Low complexity periods predicted"
 
@@ -478,7 +478,7 @@ class PredictiveOptimizer:
 
     def _predict_performance_impact(self, forecast_data: dict[str, Any]) -> dict[str, Any]:
         """Predict performance impact of different optimization strategies"""
-        performance_predictions = {
+        performance_predictions: dict[str, Any] = {
             "baseline_performance": {},
             "optimized_performance": {},
             "improvement_potential": {},

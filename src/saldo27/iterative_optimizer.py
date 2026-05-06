@@ -560,6 +560,15 @@ class IterativeOptimizer:
                     optimized_schedule = self._greedy_fill_empty_slots(
                         optimized_schedule, workers_data, schedule_config, scheduler_core
                     )
+                    # Strategy 2.6: Chain displacement fill — for slots still empty after
+                    # all greedy passes, displace a gap-blocking worker to another date
+                    # that another worker can cover, freeing the blocker to fill the slot.
+                    remaining_empty = self._count_empty_slots(optimized_schedule)
+                    if remaining_empty > 0:
+                        logging.info(f"   ⛓️ Still {remaining_empty} empty slots — chain displacement fill")
+                        optimized_schedule = self._chain_displacement_fill(
+                            optimized_schedule, workers_data, schedule_config, scheduler_core
+                        )
 
         # Strategy 3 & 4 (SA perturbations + forced redistribution) DISABLED.
         # These massive random swaps destroy the carefully balanced schedule
@@ -1887,11 +1896,14 @@ class IterativeOptimizer:
                 for idx, w in enumerate(assigns):
                     if w is None:
                         continue
+                    if not isinstance(w, str):
+                        continue
+                    w_str = w
                     if is_we:
-                        worker_we_counts[w] = worker_we_counts.get(w, 0) + 1
-                        worker_we_slots.setdefault(w, []).append((dk, idx))
+                        worker_we_counts[w_str] = worker_we_counts.get(w_str, 0) + 1
+                        worker_we_slots.setdefault(w_str, []).append((dk, idx))
                     else:
-                        worker_wd_slots.setdefault(w, []).append((dk, idx))
+                        worker_wd_slots.setdefault(w_str, []).append((dk, idx))
 
             # Weekend target per worker (proportional)
             total_days = len(optimized_schedule)
@@ -2601,7 +2613,7 @@ class IterativeOptimizer:
             except Exception:
                 continue
 
-        gap = int(schedule_config.get("gap_between_shifts", getattr(self.scheduler, "gap_between_shifts", 2)))
+        gap = int(schedule_config.get("gap_between_shifts", getattr(self.scheduler, "gap_between_shifts", 3)))
 
         # Build worker name list for replacement candidates
         all_worker_names = []
@@ -2777,7 +2789,7 @@ class IterativeOptimizer:
         optimized_schedule = copy.deepcopy(schedule)
 
         # ── Build worker name list + target lookup ────────────────────────────
-        worker_names = []
+        worker_names: list[str] = []
         worker_targets: dict[str, float] = {}
         for i, w in enumerate(workers_data):
             if isinstance(w, dict):
@@ -2825,7 +2837,7 @@ class IterativeOptimizer:
         # ── Pre-compute monthly counts for giver monthly-floor check (G7) ────
         # Tracks how many shifts each worker has in each (year, month) bucket.
         # Updated on every accepted swap so the floor guard stays accurate.
-        _sa_monthly: dict[str, dict] = {}  # worker → {(yr, mo): count}
+        _sa_monthly: dict[str, dict[tuple[int, int], int]] = {}  # worker → {(yr, mo): count}
         _sa_all_months: set = set()
         for _dk, _asgn in optimized_schedule.items():
             try:
@@ -2932,11 +2944,18 @@ class IterativeOptimizer:
                 T *= cooling_rate
                 continue
 
+            if not isinstance(random_shift, str):
+                T *= cooling_rate
+                continue
+
             if not (isinstance(current_workers, list) and len(current_workers) > 0):
                 T *= cooling_rate
                 continue
 
             old_worker = random.choice(current_workers)
+            if not isinstance(old_worker, str):
+                T *= cooling_rate
+                continue
 
             # ── HARD CONSTRAINT: never perturb mandatory shifts ───────────────
             if self._is_mandatory_shift(old_worker, random_date, workers_data):
@@ -2976,7 +2995,7 @@ class IterativeOptimizer:
             # In weekend mode, prefer workers with weekend deficit (70% chance).
             if _sa_weekend_mode and random_date in _sa_weekend_dates and random.random() < 0.70:
                 # Build weighted pool: workers further below weekend target are more likely
-                _deficit_pool = []
+                _deficit_pool: list[str] = []
                 for _cand in worker_names:
                     if _cand in current_workers:
                         continue
@@ -3766,6 +3785,168 @@ class IterativeOptimizer:
 
         except Exception as e:
             logging.error(f"Error in greedy fill: {e}", exc_info=True)
+
+        return optimized_schedule
+
+    def _chain_displacement_fill(
+        self, schedule: dict, workers_data: list[dict], schedule_config: dict, scheduler_core
+    ) -> dict:
+        """
+        Fill persistent empty slots via a 2-worker chain swap.
+
+        For each empty slot (d_e, p_e):
+          1. Find worker W assigned on date d_w where |d_e - d_w| < min_gap
+             (gap-blocked from filling d_e directly).
+          2. Simulate removing W from d_w; verify W can now take d_e.
+          3. Find worker W2 who can cover d_w in the modified schedule.
+          4. Execute: W -> d_e, W2 -> d_w.
+
+        This resolves slots that greedy cannot reach because every eligible worker
+        has a shift within the gap window.
+        """
+        logging.info("   ⛓️  CHAIN DISPLACEMENT FILL: Starting")
+        optimized_schedule = copy.deepcopy(schedule)
+        filled_count = 0
+        gap_between_shifts = getattr(self, "gap_between_shifts", 3)
+
+        try:
+            # Collect empty slots (list-format only — this system uses list format)
+            empty_slots = []
+            for date, assignments in optimized_schedule.items():
+                if isinstance(assignments, list):
+                    for p_idx, worker in enumerate(assignments):
+                        if worker is None:
+                            empty_slots.append({"date": date, "post": p_idx})
+
+            if not empty_slots:
+                logging.info("   ✅ CHAIN DISPLACEMENT FILL: No empty slots")
+                return optimized_schedule
+
+            logging.info(f"   📊 Chain fill: {len(empty_slots)} empty slots to attempt")
+
+            for slot in empty_slots:
+                d_e = slot["date"]
+                p_e = slot["post"]
+                shift_type_e = f"Post_{p_e}"
+                found = False
+
+                # Build list of (w_name, d_w, post_w, w_data, diff) where W is gap-blocked
+                # from d_e but could potentially work it if removed from d_w.
+                candidates_w: list[tuple] = []
+                for d_w, assigns in optimized_schedule.items():
+                    if d_w == d_e or not isinstance(assigns, list):
+                        continue
+                    try:
+                        diff = abs((d_e - d_w).days)
+                    except Exception:
+                        continue
+                    if diff == 0:
+                        continue
+                    for post_w, w_name in enumerate(assigns):
+                        if w_name is None:
+                            continue
+                        w_data = next(
+                            (
+                                w
+                                for w in workers_data
+                                if str(w.get("id", "")) == str(w_name) or w.get("id") == w_name
+                            ),
+                            None,
+                        )
+                        if w_data is None:
+                            continue
+                        # Skip manual workers — their exact monthly target must not be disturbed
+                        if not w_data.get("auto_calculate_shifts", True):
+                            continue
+                        min_gap = get_effective_min_gap(w_data, gap_between_shifts)
+                        # W is gap-blocked: d_w is within the forbidden window for d_e
+                        if 0 < diff < min_gap:
+                            candidates_w.append((w_name, d_w, post_w, w_data, diff))
+
+                # Sort: most-deficit workers first (most benefit to move), then tightest block
+                def _w_priority(item: tuple) -> tuple:
+                    w_name_i, _, _, w_data_i, diff_i = item
+                    current = sum(
+                        1
+                        for assigns_i in optimized_schedule.values()
+                        if isinstance(assigns_i, list) and w_name_i in assigns_i
+                    )
+                    target = w_data_i.get("target_shifts", current)
+                    deficit = target - current  # positive = under target
+                    return (-deficit, diff_i)
+
+                candidates_w.sort(key=_w_priority)
+
+                for w_name, d_w, post_w, w_data, _diff in candidates_w:
+                    if found:
+                        break
+
+                    # Step 1: simulate W removed from d_w
+                    sim1: dict = {k: list(v) if isinstance(v, list) else v for k, v in optimized_schedule.items()}
+                    sim1[d_w] = list(sim1[d_w])
+                    sim1[d_w][post_w] = None
+
+                    # Step 2: can W take d_e in the modified schedule?
+                    if not self._can_worker_take_shift(w_name, d_e, shift_type_e, sim1, workers_data):
+                        continue
+
+                    # Step 3: simulate W placed at d_e, then find W2 to cover d_w
+                    sim2: dict = {k: list(v) if isinstance(v, list) else v for k, v in sim1.items()}
+                    sim2[d_e] = list(sim2[d_e])
+                    sim2[d_e][p_e] = w_name
+
+                    shift_type_w = f"Post_{post_w}"
+
+                    w2_candidates: list[tuple] = []
+                    for w2_data in workers_data:
+                        w2_name = str(w2_data.get("id", ""))
+                        if w2_name == w_name:
+                            continue
+                        if not self._can_worker_take_shift(w2_name, d_w, shift_type_w, sim2, workers_data):
+                            continue
+                        # Manual workers: never exceed exact target
+                        if not w2_data.get("auto_calculate_shifts", True):
+                            w2_current = sum(
+                                1
+                                for assigns_i in sim2.values()
+                                if isinstance(assigns_i, list) and w2_name in assigns_i
+                            )
+                            if w2_current >= w2_data.get("target_shifts", 0):
+                                continue
+                        w2_current = sum(
+                            1
+                            for assigns_i in sim2.values()
+                            if isinstance(assigns_i, list) and w2_name in assigns_i
+                        )
+                        w2_target = w2_data.get("target_shifts", w2_current)
+                        w2_deficit = w2_target - w2_current
+                        w2_candidates.append((w2_name, w2_deficit))
+
+                    if not w2_candidates:
+                        continue
+
+                    # Pick W2 with highest deficit (most under-target = needs the shift most)
+                    w2_candidates.sort(key=lambda x: -x[1])
+                    w2_name = w2_candidates[0][0]
+
+                    # Step 4: commit the chain to optimized_schedule
+                    optimized_schedule[d_w] = list(optimized_schedule[d_w])
+                    optimized_schedule[d_w][post_w] = w2_name
+                    optimized_schedule[d_e] = list(optimized_schedule[d_e])
+                    optimized_schedule[d_e][p_e] = w_name
+
+                    filled_count += 1
+                    found = True
+                    logging.info(
+                        f"      ⛓️  Chain: {w_name} → {d_e.strftime('%Y-%m-%d')} P{p_e} "
+                        f"(freed from {d_w.strftime('%Y-%m-%d')} P{post_w}); "
+                        f"{w2_name} → covers {d_w.strftime('%Y-%m-%d')} P{post_w}"
+                    )
+
+            logging.info(f"   ✅ CHAIN DISPLACEMENT FILL: {filled_count}/{len(empty_slots)} slots resolved")
+
+        except Exception as e:
+            logging.error(f"Error in chain displacement fill: {e}", exc_info=True)
 
         return optimized_schedule
 

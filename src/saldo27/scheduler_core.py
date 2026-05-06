@@ -2183,8 +2183,9 @@ class SchedulerCore:
         else:
             chosen = strategies[strategy_index]
         # Embed attempt_num so _perform_initial_fill_with_strategy can use it for hash seeds
-        chosen["attempt_num"] = attempt_num
-        return chosen
+        chosen_any: dict[str, Any] = dict(chosen)
+        chosen_any["attempt_num"] = attempt_num
+        return chosen_any
 
     def _perform_initial_fill_with_strategy(self, strategy: dict[str, Any]) -> bool:
         """

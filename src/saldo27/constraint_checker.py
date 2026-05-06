@@ -37,7 +37,7 @@ class ConstraintChecker:
         self.max_shifts_per_worker = scheduler.max_shifts_per_worker
 
         # Performance optimization caches
-        self._incompatibility_cache: dict[tuple[str, str], bool] = {}
+        self._incompatibility_cache: dict[tuple[str, ...], bool] = {}
         self._worker_lookup_cache: dict[str, dict[str, Any]] = {}
         self._holiday_set: set[datetime] = set(self.holidays)
 

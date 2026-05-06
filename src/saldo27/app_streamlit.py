@@ -2,13 +2,13 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 2.9 (Mayo 2026)
+Versión: 2.8 (Marzo 2026)
 """
 
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
 # Esto asegura que los calendarios muestren Lunes-Domingo (formato español/ISO 8601)
 import os
-from typing import Any
+from typing import Any, cast
 
 os.environ["LANG"] = "es_ES.utf8"
 os.environ["LC_ALL"] = "es_ES.utf8"
@@ -22,11 +22,11 @@ import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import pandas as pd  # type: ignore
-import plotly.express as px  # type: ignore
-import plotly.graph_objects as go  # type: ignore
-import streamlit as st  # type: ignore
-import streamlit.components.v1 as components  # type: ignore
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+import streamlit.components.v1 as components
 
 from saldo27.license_manager import license_manager
 from saldo27.scheduler import Scheduler
@@ -526,8 +526,8 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             "workers_data": st.session_state.workers_data,  # Pass directly, matching Kivy
             "holidays": holidays,
             "variable_shifts": variable_shifts,
-            "gap_between_shifts": st.session_state.config.get("gap_between_shifts", 4),
-            "max_consecutive_weekends": st.session_state.config.get("max_consecutive_weekends", 3),
+            "gap_between_shifts": st.session_state.config.get("gap_between_shifts", 2),
+            "max_consecutive_weekends": st.session_state.config.get("max_consecutive_weekends", 2),
             "enable_proportional_weekends": st.session_state.config.get("enable_proportional_weekends", True),
             "weekend_tolerance": st.session_state.config.get("weekend_tolerance", 1),
             "cache_enabled": st.session_state.config.get("cache_enabled", False),
@@ -537,7 +537,7 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             "last_post_adjustment_max_iterations": st.session_state.config.get(
                 "last_post_adjustment_max_iterations", 10
             ),
-            "max_complete_attempts": st.session_state.config.get("max_complete_attempts", 8),  # Match Kivy default
+            "max_complete_attempts": st.session_state.config.get("max_complete_attempts", 5),  # Match Kivy default
         }
 
         # Crear scheduler
@@ -564,7 +564,7 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
         st.session_state.generation_cancelled = False
         scheduler._cancelled = False
 
-        generation_result = {"success": False, "error": None}
+        generation_result: dict[str, bool | Exception | None] = {"success": False, "error": None}
 
         # Instalar handler de logging para capturar progreso
         sidebar_handler = SidebarLogHandler(max_messages=80)
@@ -638,7 +638,9 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             return False, "🛑 Generación cancelada"
 
         if generation_result["error"]:
-            raise generation_result["error"]
+            exc = generation_result["error"]
+            if isinstance(exc, BaseException):
+                raise exc
 
         success = generation_result["success"]
 
@@ -1440,8 +1442,8 @@ with st.sidebar:
             "Días mínimos entre guardias",
             min_value=0,
             max_value=7,
-            value=st.session_state.config.get("gap_between_shifts", 4),
-            help="Número mínimo de días entre guardias consecutivos",
+            value=st.session_state.config.get("gap_between_shifts", 3),
+            help="Número mínimo de días de descanso entre guardias consecutivos",
         )
         st.session_state.config["gap_between_shifts"] = gap_between_shifts
 
@@ -2028,8 +2030,8 @@ with tab2:
                 st.metric("Cobertura", f"{coverage:.1f}%")
             with col4:
                 # Contar PDFs generados
-                pdf_files = list(Path(".").glob("*.pdf"))
-                st.metric("PDFs generados", len(pdf_files))
+                _pdf_count = len(list(Path(".").glob("*.pdf")))
+                st.metric("PDFs generados", _pdf_count)
 
             st.markdown("---")
 
@@ -2063,14 +2065,15 @@ with tab2:
             )
 
             # Importar PDFExporter de forma segura
+            _pdf_exporter: type | None = None
             try:
                 from saldo27.pdf_exporter import PDFExporter
+                _pdf_exporter = PDFExporter
             except ImportError:
                 st.error("Error: No se encontró el módulo pdf_exporter.py")
-                PDFExporter = None
 
             if st.button("📄 Generar Informe PDF", type="primary"):
-                if st.session_state.scheduler and PDFExporter:
+                if st.session_state.scheduler and _pdf_exporter is not None:
                     with st.spinner(f"Generando {report_type}..."):
                         try:
                             # Configuración común para el exportador
@@ -2081,7 +2084,7 @@ with tab2:
                                 "num_shifts": scheduler.num_shifts,
                                 "holidays": scheduler.holidays,
                             }
-                            exporter = PDFExporter(config)
+                            exporter = _pdf_exporter(config)
                             filename = None
 
                             if report_type == "Resumen Ejecutivo (Global)":
@@ -2185,9 +2188,10 @@ with tab2:
 
             st.markdown("##### Descargas Disponibles")
 
-            pdf_files = sorted(list(Path(".").glob("*.pdf")), key=os.path.getmtime, reverse=True)
-            if pdf_files:
-                for pdf_file in pdf_files:
+            _pdf_paths: list[Path] = list(Path(".").glob("*.pdf"))
+            available_pdfs = cast(list[Path], sorted(_pdf_paths, key=lambda p: p.stat().st_mtime, reverse=True))
+            if available_pdfs:
+                for pdf_file in available_pdfs:
                     col_del, col_down = st.columns([0.2, 0.8])
                     # No delete button for simplicity, just download list
                     with open(pdf_file, "rb") as f:
@@ -3364,7 +3368,7 @@ with tab6:
             with exp_col3:
                 # Exportar Excel
                 buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                with pd.ExcelWriter(cast(Any, buffer), engine="openpyxl") as writer:
                     st.session_state.revision_stats.to_excel(writer, sheet_name="Estadísticas", index=False)
                     if st.session_state.revision_alerts is not None and not st.session_state.revision_alerts.empty:
                         st.session_state.revision_alerts.to_excel(writer, sheet_name="Alertas", index=False)

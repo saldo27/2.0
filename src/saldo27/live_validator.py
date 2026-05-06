@@ -28,8 +28,8 @@ class ValidationResult:
     severity: ValidationSeverity
     message: str
     constraint_type: str
-    affected_items: list[str] = None
-    suggestions: list[str] = None
+    affected_items: list[str] | None = None
+    suggestions: list[str] | None = None
 
     def __post_init__(self):
         if self.affected_items is None:
@@ -47,7 +47,7 @@ class ConflictInfo:
     severity: ValidationSeverity
     workers_involved: list[str]
     dates_involved: list[datetime]
-    resolution_suggestions: list[str] = None
+    resolution_suggestions: list[str] | None = None
 
     def __post_init__(self):
         if self.resolution_suggestions is None:
@@ -882,7 +882,8 @@ class LiveValidator:
         if worker_assignments:
             last_assignment = max(worker_assignments)
             days_since_last = (shift_date - last_assignment).days
-            if days_since_last > self.scheduler.gap_between_shifts:
+            effective_priority_gap = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
+            if days_since_last > effective_priority_gap:
                 priority += 0.3
         else:
             priority += 0.5  # Prefer workers with no assignments

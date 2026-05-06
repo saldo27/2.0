@@ -341,6 +341,67 @@ class WorkerEligibilityTracker:
 
         return min_target, target_weekend_count, max_target
 
+    def _would_exceed_consecutive_weekend_limit(self, worker_id: str, date) -> bool:
+        """Check if assigning this date would exceed the consecutive weekend limit."""
+        worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
+        if not worker:
+            return False
+        work_percentage = float(worker.get("work_percentage", 100))
+        if work_percentage < 70:
+            adjusted_max = max(1, int(self.max_consecutive_weekends * work_percentage / 100))
+        else:
+            adjusted_max = self.max_consecutive_weekends
+
+        all_weekend_dates = self.recent_weekends.get(worker_id, []).copy()
+        if date not in all_weekend_dates:
+            all_weekend_dates.append(date)
+        all_weekend_dates.sort()
+
+        consecutive_groups: list[list] = []
+        current_group: list = []
+        for wd in all_weekend_dates:
+            if not current_group:
+                current_group = [wd]
+            else:
+                days_between = (wd - current_group[-1]).days
+                if 5 <= days_between <= 10:
+                    current_group.append(wd)
+                else:
+                    consecutive_groups.append(current_group)
+                    current_group = [wd]
+        if current_group:
+            consecutive_groups.append(current_group)
+
+        max_consecutive = max((len(g) for g in consecutive_groups), default=0)
+        return max_consecutive > adjusted_max
+
+    def _get_worker_percentage(self, worker_id: str) -> float:
+        """Get work percentage for a worker."""
+        worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
+        return float(worker.get("work_percentage", 100)) if worker else 100.0
+
+    def _get_worker_periods(self, worker_id: str) -> list:
+        """Get parsed work periods for a worker."""
+        worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
+        if not worker:
+            return []
+        work_periods_str = worker.get("work_periods", "")
+        if not work_periods_str or not str(work_periods_str).strip():
+            return []
+        try:
+            if self.date_utils:
+                return self.date_utils.parse_date_ranges(work_periods_str)
+            if self.scheduler and hasattr(self.scheduler, "date_utils"):
+                return self.scheduler.date_utils.parse_date_ranges(work_periods_str)
+        except Exception as e:
+            logging.error(f"Error parsing work periods for worker {worker_id}: {e!s}")
+        return []
+
+    def mark_data_dirty(self) -> None:
+        """Delegate to scheduler's mark_data_dirty if available."""
+        if self.scheduler and hasattr(self.scheduler, "mark_data_dirty"):
+            self.scheduler.mark_data_dirty()
+
     def validate_weekend_assignment_with_tolerance(self, worker_id, date, force_assign=False):
         """
         Validate weekend assignment with improved tolerance and proportional checking
@@ -351,8 +412,11 @@ class WorkerEligibilityTracker:
                 return False, "Would exceed consecutive weekend limit"
 
         # Check proportional limit with tolerance
+        worker_assignments = (
+            self.scheduler.worker_assignments if self.scheduler else {}
+        )
         current_weekend_count = len(
-            [d for d in self.worker_assignments.get(worker_id, set()) if self._is_weekend_day(d)]
+            [d for d in worker_assignments.get(worker_id, set()) if self._is_weekend_day(d)]
         )
 
         min_target, target, max_target = self.calculate_proportional_weekend_target(

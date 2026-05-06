@@ -35,7 +35,7 @@ class ShiftToleranceValidator:
         self.emergency_tolerance_percentage = 12.0
 
     def calculate_tolerance_bounds(
-        self, target_shifts: int, is_weekend: bool = False, worker_id: str = None
+        self, target_shifts: int, is_weekend: bool = False, worker_id: str | None = None
     ) -> tuple[int, int]:
         """
         Calcula los límites de tolerancia para un target_shifts dado

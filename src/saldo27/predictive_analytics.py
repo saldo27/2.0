@@ -18,7 +18,7 @@ class PredictiveAnalyticsEngine:
     Main orchestration engine for predictive analytics capabilities
     """
 
-    def __init__(self, scheduler, config: dict[str, Any] = None):
+    def __init__(self, scheduler, config: dict[str, Any] | None = None):
         """
         Initialize the predictive analytics engine
 
@@ -86,7 +86,7 @@ class PredictiveAnalyticsEngine:
             logging.error(f"Error collecting and storing data: {e}")
             return {"status": "error", "message": str(e), "error_type": type(e).__name__}
 
-    def generate_demand_forecasts(self, forecast_days: int = None) -> dict[str, Any]:
+    def generate_demand_forecasts(self, forecast_days: int | None = None) -> dict[str, Any]:
         """
         Generate comprehensive demand forecasts
 
@@ -531,7 +531,7 @@ class PredictiveAnalyticsEngine:
 
         return performance
 
-    def get_optimization_suggestions(self, current_schedule_data: dict[str, Any] = None) -> list[str]:
+    def get_optimization_suggestions(self, current_schedule_data: dict[str, Any] | None = None) -> list[str]:
         """
         Get optimization suggestions based on predictive analytics
 

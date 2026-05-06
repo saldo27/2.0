@@ -142,10 +142,10 @@ class PerformanceCache:
 
             self._access_times[key] = time.time()
 
-    def cached_call(self, func: Callable, args: tuple = (), kwargs: dict = None, ttl: int | None = None) -> Any:
+    def cached_call(self, func: Callable[..., Any], args: tuple = (), kwargs: dict[str, Any] | None = None, ttl: int | None = None) -> Any:
         """Execute function with caching"""
         kwargs = kwargs or {}
-        key = self._generate_key(func.__name__, args, kwargs)
+        key = self._generate_key(getattr(func, "__name__", repr(func)), args, kwargs)
 
         # Try to get from cache first
         cached_result = self.get(key)
@@ -158,7 +158,7 @@ class PerformanceCache:
             self.set(key, result, ttl)
             return result
         except Exception as e:
-            logging.error(f"Error executing cached function {func.__name__}: {e}")
+            logging.error(f"Error executing cached function {getattr(func, '__name__', repr(func))}: {e}")
             raise
 
     def invalidate(self, pattern: str | None = None) -> int:
@@ -226,12 +226,12 @@ def cached(ttl: int = 3600, cache_instance: PerformanceCache | None = None):
         cache = cache_instance or get_cache()
 
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args, **kwargs):  # type: ignore[misc]
             return cache.cached_call(func, args, kwargs, ttl)
 
         # Add cache management methods to the wrapped function
-        wrapper.cache_invalidate = lambda pattern=None: cache.invalidate(pattern)
-        wrapper.cache_stats = lambda: cache.get_stats()
+        setattr(wrapper, "cache_invalidate", lambda pattern=None: cache.invalidate(pattern))
+        setattr(wrapper, "cache_stats", lambda: cache.get_stats())
 
         return wrapper
 
@@ -250,15 +250,13 @@ def memoize(maxsize: int = 128):
         cached_func = lru_cache(maxsize=maxsize)(func)
 
         # Add cache management methods
-        cached_func.cache_clear = cached_func.cache_clear
-        cached_func.cache_info = cached_func.cache_info
-
-        return cached_func
+        # (lru_cache already exposes cache_clear and cache_info on cached_func)
+        return cached_func  # type: ignore[return-value]
 
     return decorator
 
 
-def time_function(func: Callable) -> Callable:
+def time_function(func: Callable[..., Any]) -> Callable[..., Any]:
     """
     Decorator to measure and log function execution time
     """
@@ -272,14 +270,14 @@ def time_function(func: Callable) -> Callable:
 
             # Log performance metrics
             if execution_time > 1.0:  # Log slow operations
-                logging.info(f"PERFORMANCE: {func.__name__} took {execution_time:.3f}s")
+                logging.info(f"PERFORMANCE: {getattr(func, '__name__', repr(func))} took {execution_time:.3f}s")
             elif execution_time > 0.1:  # Debug log medium operations
-                logging.debug(f"PERFORMANCE: {func.__name__} took {execution_time:.3f}s")
+                logging.debug(f"PERFORMANCE: {getattr(func, '__name__', repr(func))} took {execution_time:.3f}s")
 
             return result
         except Exception as e:
             execution_time = time.time() - start_time
-            logging.error(f"PERFORMANCE: {func.__name__} failed after {execution_time:.3f}s: {e}")
+            logging.error(f"PERFORMANCE: {getattr(func, '__name__', repr(func))} failed after {execution_time:.3f}s: {e}")
             raise
 
     return wrapper

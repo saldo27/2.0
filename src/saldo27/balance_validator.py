@@ -138,7 +138,7 @@ class BalanceValidator:
             "is_balanced": len(violations["critical"]) == 0 and len(violations["extreme"]) == 0,
         }
 
-    def _count_worker_shifts(self, worker_id: str, schedule: dict, worker_data: dict = None) -> int:
+    def _count_worker_shifts(self, worker_id: str, schedule: dict, worker_data: dict | None = None) -> int:
         """
         Cuenta los turnos asignados a un trabajador, excluyendo mandatory si se proporciona worker_data.
 

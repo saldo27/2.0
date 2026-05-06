@@ -15,13 +15,13 @@ import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-import pandas as pd  # type: ignore
+import pandas as pd
 
 # Suprimir debug output de pdfplumber
 logging.getLogger("pdfplumber").setLevel(logging.WARNING)
 
 try:
-    import pdfplumber  # type: ignore
+    import pdfplumber
 
     PDFPLUMBER_AVAILABLE = True
 except ImportError:
@@ -29,19 +29,19 @@ except ImportError:
     logging.warning("pdfplumber no disponible - funcionalidad PDF limitada")
 
 try:
-    import openpyxl  # type: ignore
+    import openpyxl
 
     OPENPYXL_AVAILABLE = True
 except ImportError:
     OPENPYXL_AVAILABLE = False
     logging.warning("openpyxl no disponible - funcionalidad Excel limitada")
 
-from reportlab.lib import colors  # type: ignore
-from reportlab.lib.enums import TA_CENTER  # type: ignore
-from reportlab.lib.pagesizes import A4  # type: ignore
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet  # type: ignore
-from reportlab.lib.units import inch  # type: ignore
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle  # type: ignore
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from saldo27.utilities import DateTimeUtils
 

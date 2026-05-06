@@ -2169,7 +2169,7 @@ class Scheduler:
         logging.info("Calculating post rotation coverage...")
 
         # Initialize metrics
-        metrics = {"overall_score": 0, "worker_scores": {}, "post_distribution": {}}
+        metrics: dict[str, Any] = {"overall_score": 0, "worker_scores": {}, "post_distribution": {}}
 
         # Count assignments per post
         post_counts = {post: 0 for post in range(self.num_shifts)}
@@ -2951,8 +2951,8 @@ class Scheduler:
                 "success": result.success,
                 "message": result.message,
                 "operation_id": result.operation_id,
-                "validation_results": [v.__dict__ for v in result.validation_results],
-                "conflicts": [c.__dict__ for c in result.conflicts],
+                "validation_results": [v.__dict__ for v in (result.validation_results or [])],
+                "conflicts": [c.__dict__ for c in (result.conflicts or [])],
                 "suggestions": result.suggestions,
             }
 
@@ -3028,8 +3028,8 @@ class Scheduler:
                 "success": result.success,
                 "message": result.message,
                 "operation_id": result.operation_id,
-                "validation_results": [v.__dict__ for v in result.validation_results],
-                "conflicts": [c.__dict__ for c in result.conflicts],
+                "validation_results": [v.__dict__ for v in (result.validation_results or [])],
+                "conflicts": [c.__dict__ for c in (result.conflicts or [])],
             }
 
         except Exception as e:
@@ -3057,8 +3057,8 @@ class Scheduler:
                 "success": result.success,
                 "message": result.message,
                 "operation_id": result.operation_id,
-                "validation_results": [v.__dict__ for v in result.validation_results],
-                "conflicts": [c.__dict__ for c in result.conflicts],
+                "validation_results": [v.__dict__ for v in (result.validation_results or [])],
+                "conflicts": [c.__dict__ for c in (result.conflicts or [])],
             }
 
         except Exception as e:
@@ -3249,7 +3249,7 @@ class Scheduler:
             if self.predictive_analytics.latest_forecasts:
                 forecast_data = self.predictive_analytics.latest_forecasts
 
-            result = self.predictive_optimizer.predict_and_optimize(forecast_data)  # type: ignore[arg-type]
+            result = self.predictive_optimizer.predict_and_optimize(forecast_data or {})
 
             return {
                 "success": True,

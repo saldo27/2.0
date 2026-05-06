@@ -80,9 +80,9 @@ class ChangeTracker:
         description: str,
         rollback_data: dict[str, Any],
         forward_data: dict[str, Any],
-        affected_workers: list[str] = None,
-        affected_dates: list[str] = None,
-        metadata: dict[str, Any] = None,
+        affected_workers: list[str] | None = None,
+        affected_dates: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """
         Record a new change operation
@@ -178,7 +178,7 @@ class ChangeTracker:
         return change_record
 
     def get_change_history(
-        self, limit: int = 50, user_id: str = None, operation_types: list[OperationType] = None, since: datetime = None
+        self, limit: int = 50, user_id: str | None = None, operation_types: list[OperationType] | None = None, since: datetime | None = None
     ) -> list[ChangeRecord]:
         """
         Get change history with optional filtering
@@ -209,7 +209,7 @@ class ChangeTracker:
         return filtered_changes[:limit]
 
     def get_audit_trail(
-        self, worker_id: str = None, date: str = None, operation_types: list[OperationType] = None
+        self, worker_id: str | None = None, date: str | None = None, operation_types: list[OperationType] | None = None
     ) -> list[ChangeRecord]:
         """
         Get audit trail for specific worker, date, or operation types

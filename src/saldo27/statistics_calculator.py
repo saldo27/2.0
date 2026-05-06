@@ -257,9 +257,9 @@ class StatisticsCalculator:
         # Exclude mandatory shifts from count
         all_assignments = self.worker_assignments.get(worker_id, set())
         mandatory_dates = set()
-        if worker.get("mandatory_days") and hasattr(self, "date_utils"):
+        if worker.get("mandatory_days") and hasattr(self.scheduler, "date_utils"):
             try:
-                mandatory_dates = set(self.date_utils.parse_dates(worker["mandatory_days"]))
+                mandatory_dates = set(self.scheduler.date_utils.parse_dates(worker["mandatory_days"]))
             except Exception:
                 pass
         mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
@@ -274,7 +274,7 @@ class StatisticsCalculator:
 
         for worker in self.workers_data:
             worker_id = worker["id"]
-            post_counts = self._get_post_counts(worker_id)
+            post_counts = self.get_post_counts(worker_id)
             total_assignments = sum(post_counts.values())
 
             if total_assignments == 0:
@@ -326,7 +326,7 @@ class StatisticsCalculator:
 
         # Post rotation balance
         for worker_id in self.worker_assignments:
-            post_counts = self._get_post_counts(worker_id)
+            post_counts = self.get_post_counts(worker_id)
             if post_counts.values():
                 post_imbalance = max(post_counts.values()) - min(post_counts.values())
                 scores.append(max(0, 100 - (post_imbalance * 20)))
@@ -464,9 +464,9 @@ class StatisticsCalculator:
 
             # Exclude mandatory shifts from count (target already has mandatory subtracted)
             mandatory_dates = set()
-            if worker.get("mandatory_days") and hasattr(self, "date_utils"):
+            if worker.get("mandatory_days") and hasattr(self.scheduler, "date_utils"):
                 try:
-                    mandatory_dates = set(self.date_utils.parse_dates(worker["mandatory_days"]))
+                    mandatory_dates = set(self.scheduler.date_utils.parse_dates(worker["mandatory_days"]))
                 except Exception:
                     pass
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
@@ -537,7 +537,7 @@ class StatisticsCalculator:
                     output += f" (Part-time: {work_percentage}%)"
 
                 # Add post rotation info
-                post_counts = self._get_post_counts(worker_id)
+                post_counts = self.get_post_counts(worker_id)
                 output += f" [Post {i} count: {post_counts.get(i - 1, 0)}]"
 
                 output += "\n"

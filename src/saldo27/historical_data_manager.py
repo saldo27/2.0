@@ -242,7 +242,7 @@ class HistoricalDataManager:
             schedule_data = []
             for date, shifts in sorted(self.scheduler.schedule.items()):
                 schedule_data.append((date.strftime("%Y-%m-%d"), tuple(shifts)))
-            return hash(tuple(schedule_data))
+            return str(hash(tuple(schedule_data)))
         except Exception:
             # Fallback to timestamp-based key
             import time
@@ -342,7 +342,7 @@ class HistoricalDataManager:
                 violations = worker_stats.get("constraint_skips", {})
                 total_violations = sum(len(v) if isinstance(v, list) else v for v in violations.values())
                 key_data.append((worker_id, total_violations))
-            return hash(tuple(sorted(key_data)))
+            return str(hash(tuple(sorted(key_data))))
         except Exception:
             # Fallback to string representation
             return str(hash(str(stats)))
@@ -423,7 +423,7 @@ class HistoricalDataManager:
                 weekday = date.weekday()
                 filled_count = sum(1 for shift in shifts if shift is not None)
                 schedule_summary.append((month, weekday, filled_count))
-            return hash(tuple(schedule_summary))
+            return str(hash(tuple(schedule_summary)))
         except Exception:
             # Fallback to basic key
             import time
@@ -522,7 +522,7 @@ class HistoricalDataManager:
             key_data.append(stats.get("empty_shifts", 0))
             key_data.append(len(stats.get("workers", {})))
             key_data.append(stats.get("score", 0))
-            return hash(tuple(key_data))
+            return str(hash(tuple(key_data)))
         except Exception:
             # Fallback to string representation
             return str(hash(str(stats)))
@@ -615,7 +615,7 @@ class HistoricalDataManager:
         """Generate a hash key for post distribution data"""
         try:
             items = sorted(post_distribution.items())
-            return hash(tuple(items))
+            return str(hash(tuple(items)))
         except Exception:
             # Fallback to string representation
             return str(hash(str(sorted(post_distribution.items()))))
@@ -674,7 +674,7 @@ class HistoricalDataManager:
                 else:
                     v_str = str(v)
                 items.append((k, v_str))
-            return hash(tuple(items))
+            return str(hash(tuple(items)))
         except Exception:
             # Fallback to string representation
             return str(hash(str(sorted(monthly_stats.items()))))
@@ -790,11 +790,13 @@ class HistoricalDataManager:
                 history = {"records": [], "summary": {}}
 
             # Add new record
-            history["records"].append(data)
+            history_records: list[Any] = history["records"] if isinstance(history["records"], list) else []
+            history["records"] = history_records
+            history_records.append(data)
 
             # Update summary statistics
             history["summary"] = {
-                "total_records": len(history["records"]),
+                "total_records": len(history_records),
                 "date_range": {
                     "first_record": history["records"][0]["timestamp"] if history["records"] else None,
                     "last_record": history["records"][-1]["timestamp"] if history["records"] else None,
