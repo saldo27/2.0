@@ -20,7 +20,7 @@ def test_default_config_has_required_keys():
 
 
 def test_default_gap_between_shifts():
-    assert SchedulerConfig.DEFAULT_GAP_BETWEEN_SHIFTS == 3
+    assert SchedulerConfig.DEFAULT_GAP_BETWEEN_SHIFTS == 4
 
 
 def test_default_num_shifts():
