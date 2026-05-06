@@ -2220,7 +2220,7 @@ with tab2:
             st.markdown("##### Descargas Disponibles")
 
             _pdf_paths: list[Path] = list(Path(".").glob("*.pdf"))
-            available_pdfs = cast(list[Path], sorted(_pdf_paths, key=lambda p: p.stat().st_mtime, reverse=True))
+            available_pdfs = cast("list[Path]", sorted(_pdf_paths, key=lambda p: p.stat().st_mtime, reverse=True))
             if available_pdfs:
                 for pdf_file in available_pdfs:
                     col_del, col_down = st.columns([0.2, 0.8])
@@ -3399,7 +3399,7 @@ with tab6:
             with exp_col3:
                 # Exportar Excel
                 buffer = io.BytesIO()
-                with pd.ExcelWriter(cast(Any, buffer), engine="openpyxl") as writer:
+                with pd.ExcelWriter(cast("Any", buffer), engine="openpyxl") as writer:
                     st.session_state.revision_stats.to_excel(writer, sheet_name="Estadísticas", index=False)
                     if st.session_state.revision_alerts is not None and not st.session_state.revision_alerts.empty:
                         st.session_state.revision_alerts.to_excel(writer, sheet_name="Alertas", index=False)
