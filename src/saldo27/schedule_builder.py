@@ -5507,10 +5507,11 @@ class ScheduleBuilder:
                             if self._would_violate_tolerance(under_worker, over_date, allow_relaxation=True):
                                 logging.debug(f"Special day swap rejected: {under_worker} would violate ±12% limit")
                                 continue
-                            # CRITICAL: Verificación final de protección mandatory
+                            # CRITICAL: Verificación final de protección mandatory/cuota mensual
                             if not self._can_modify_assignment(over_worker, over_date, "swap_special_day"):
-                                logging.warning(
-                                    f"🔒 BLOCKED: Cannot swap MANDATORY {over_worker} on {over_date.strftime('%Y-%m-%d')}"
+                                logging.debug(
+                                    f"🔒 BLOCKED swap_special_day: {over_worker} on {over_date.strftime('%Y-%m-%d')} "
+                                    f"(monthly quota protection for manual worker)"
                                 )
                                 continue
 
@@ -5593,7 +5594,7 @@ class ScheduleBuilder:
 
         return False
 
-    def _distribute_bridge_shifts_proportionally(self):
+    def _distribute_bridge_shifts_proportionally(self, score_fn: Callable[[], float] | None = None):
         """
         Distribute bridge shifts proportionally based on work percentage.
         This complements (does not replace) the existing weekend/holiday distribution.
@@ -5658,10 +5659,14 @@ class ScheduleBuilder:
 
         # Perform redistribution
         changes_made = 0
+        reverted_swaps = 0
         max_iterations = 400
         iteration = 0
         stall_count = 0
         max_stalls = 15  # increased from 5 — constrained schedules need more attempts before giving up
+
+        # Baseline composite score for per-swap verification
+        best_score = score_fn() if score_fn else None
 
         while iteration < max_iterations and overloaded_workers and underloaded_workers:
             iteration += 1
@@ -5670,9 +5675,36 @@ class ScheduleBuilder:
             # Try all overloaded/underloaded combinations
             for over_worker_id, over_deviation in overloaded_workers[:]:
                 for under_worker_id, under_deficit in underloaded_workers[:]:
+                    # Snapshot state before swap for score-gate revert
+                    _snap_schedule: dict | None = None
+                    _snap_assignments: dict | None = None
+                    if score_fn is not None and best_score is not None:
+                        _snap_schedule = {k: list(v) for k, v in self.schedule.items()}
+                        _snap_assignments = {
+                            wid: set(assigns)
+                            for wid, assigns in self.worker_assignments.items()
+                        }
+
                     swap_made = self._attempt_bridge_swap(over_worker_id, under_worker_id)
 
                     if swap_made:
+                        # ── Score gate: revert if composite score dropped ──
+                        if score_fn is not None and best_score is not None and _snap_schedule is not None and _snap_assignments is not None:
+                            new_score = score_fn()
+                            if new_score < best_score - 1e-9:
+                                # Restore schedule and assignments, re-sync tracking
+                                for k, v in _snap_schedule.items():
+                                    self.schedule[k] = v
+                                self.worker_assignments.update(_snap_assignments)
+                                self._synchronize_tracking_data()
+                                reverted_swaps += 1
+                                logging.debug(
+                                    f"Bridge swap reverted by score gate: "
+                                    f"{over_worker_id} → {under_worker_id}"
+                                )
+                                continue
+                            best_score = new_score
+
                         changes_made += 1
                         progress_made_this_pass = True
 
@@ -5721,7 +5753,10 @@ class ScheduleBuilder:
             else:
                 stall_count = 0
 
-        logging.info(f"Bridge distribution completed: {changes_made} changes in {iteration} iterations")
+        logging.info(
+            f"Bridge distribution completed: {changes_made} changes in {iteration} iterations"
+            + (f", {reverted_swaps} reverted by score gate" if reverted_swaps else "")
+        )
 
         # Log final distribution
         for worker_id in sorted(bridge_targets.keys()):
@@ -5771,6 +5806,9 @@ class ScheduleBuilder:
             if date not in bridge_days_set:
                 continue
             if not self._can_modify_assignment(over_worker_id, date, "bridge_swap"):
+                continue
+            # Giver monthly check: don't take from a month where giver is at/below target
+            if self._would_drop_below_monthly_floor(over_worker_id, date):
                 continue
             bridge_dates_of_over.append(date)
 
@@ -7214,12 +7252,9 @@ class ScheduleBuilder:
             if d.weekday() >= 4 or d in self.scheduler.holidays
         )
 
-        # Get target weekends based on work_percentage
+        # Get target weekends proportional to each worker's target_shifts
         receiver_config = next((w for w in self.workers_data if w["id"] == receiver_worker_id), None)
         giver_config = next((w for w in self.workers_data if w["id"] == giver_worker_id), None)
-
-        receiver_work_pct = receiver_config.get("work_percentage", 100) if receiver_config else 100
-        giver_work_pct = giver_config.get("work_percentage", 100) if giver_config else 100
 
         # Calculate expected weekend ratio DYNAMICALLY from schedule period
         # Use cached weekend ratio if available

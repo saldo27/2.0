@@ -241,6 +241,11 @@ class SchedulerCore:
             cc.schedule = self.scheduler.schedule
             cc.worker_assignments = self.scheduler.worker_assignments
 
+        # Also sync balance_optimizer references
+        if self.balance_optimizer is not None:
+            self.balance_optimizer.schedule = self.scheduler.schedule
+            self.balance_optimizer.worker_assignments = self.scheduler.worker_assignments
+
     def _initialize_schedule_phase(self) -> bool:
         """
         Phase 1: Initialize schedule structure and data.
@@ -1382,6 +1387,7 @@ class SchedulerCore:
                 # reports the same violation count, causing the code to blindly
                 # keep the optimizer's (possibly worse) result.
                 self.scheduler._synchronize_tracking_data()
+                self._sync_builder_references()  # keep schedule_builder.schedule in sync
                 self.tolerance_validator.schedule = self.scheduler.schedule
 
                 # Verify tolerance after optimization
@@ -1419,6 +1425,7 @@ class SchedulerCore:
                     self.scheduler.schedule = original_schedule
                     # CRITICAL FIX: Re-sync tracking data after revert
                     self.scheduler._synchronize_tracking_data()
+                    self._sync_builder_references()  # keep schedule_builder.schedule in sync
                     self.tolerance_validator.schedule = self.scheduler.schedule
             else:
                 logging.warning("No optimized schedule available from optimizer")
@@ -1606,11 +1613,14 @@ class SchedulerCore:
                 return False
 
             if any_improvement:
-                self._sync_builder_references()
                 logging.info(
                     f"✅ Targeted weekend pass: {pre_count}→{post_count} violations, "
                     f"|dev| {pre_total_dev:.1f}%→{post_total_dev:.1f}%"
                 )
+            # Always resync builder references regardless of improvement: the
+            # loop replaces scheduler.schedule with deepcopy objects on every
+            # iteration, leaving schedule_builder.schedule stale if not synced.
+            self._sync_builder_references()
 
             logging.info("=" * 80)
             return any_improvement

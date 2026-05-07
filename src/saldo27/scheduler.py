@@ -1367,9 +1367,13 @@ class Scheduler:
     def get_bridge_objective_for_worker(self, worker_id: str) -> float:
         """
         Calculate the objective (target) number of bridge shifts for a worker
-        based on their work percentage and total bridge shifts to distribute.
+        proportional to their share of total target shifts.
 
-        Formula: (total_bridge_shifts / total_FTE) * worker_FTE
+        Manual workers have a fixed number of shifts/month (not locked slots), so
+        using work_percentage as FTE is incorrect for them.  Using target_shifts
+        as the weight gives the right proportion for both manual and auto workers.
+
+        Formula: total_bridge_shifts * (worker_target_shifts / sum_all_target_shifts)
 
         Args:
             worker_id: ID of the worker
@@ -1382,10 +1386,15 @@ class Scheduler:
         if not worker:
             return 0.0
 
-        work_percentage = worker.get("work_percentage", 100)
-        worker_fte = work_percentage / 100.0
+        worker_target = worker.get("target_shifts", 0)
 
-        # Calculate total bridge shifts (number of shifts in days that are part of bridge periods)
+        # Total target shifts across all workers
+        total_target = sum(w.get("target_shifts", 0) for w in self.workers_data)
+
+        if total_target == 0:
+            return 0.0
+
+        # Calculate total bridge shifts (number of filled shifts on bridge days)
         total_bridge_shifts = 0
         bridge_dates = set()
         for bridge_period in self.bridge_periods:
@@ -1398,14 +1407,8 @@ class Scheduler:
                 # Count only filled (non-None) slots to avoid inflating targets
                 total_bridge_shifts += sum(1 for w in self.schedule[date] if w is not None)
 
-        # Calculate total FTE of all workers
-        total_fte = sum(w.get("work_percentage", 100) / 100.0 for w in self.workers_data)
-
-        if total_fte == 0:
-            return 0.0
-
-        # Objective = (total_bridge_shifts / total_FTE) * worker_FTE
-        return (total_bridge_shifts / total_fte) * worker_fte
+        # Objective = proportional to worker's share of total target shifts
+        return total_bridge_shifts * worker_target / total_target
 
     def _get_dates_in_bridge(self, bridge_period: dict) -> list[datetime]:
         """

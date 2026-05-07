@@ -399,7 +399,9 @@ class OptimizationMetrics:
         """Calcular el desbalance de fines de semana.
 
         Uses the same definition as the score component: Fri+Sat+Sun + holidays
-        + pre-holidays, normalised by work_percentage.
+        + pre-holidays, normalised by target_shifts (not work_percentage) so that
+        workers with intentionally different shift targets (e.g. manual workers)
+        are compared fairly.
         """
         try:
             if not self.scheduler.workers_data:
@@ -410,7 +412,7 @@ class OptimizationMetrics:
 
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
-                work_percentage = worker.get("work_percentage", 100)
+                target_shifts = worker.get("target_shifts", 0)
                 assignments = self.scheduler.worker_assignments.get(worker_id, set())
 
                 weekend_count = sum(
@@ -424,8 +426,8 @@ class OptimizationMetrics:
                     )
                 )
 
-                if work_percentage > 0:
-                    weekend_counts.append(weekend_count * 100 / work_percentage)
+                if target_shifts > 0:
+                    weekend_counts.append(weekend_count / target_shifts)
 
             if not weekend_counts:
                 return 0.0

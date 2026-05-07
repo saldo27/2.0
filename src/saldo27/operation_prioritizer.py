@@ -271,10 +271,13 @@ class OperationPrioritizer:
         )
 
         if not has_urgent_bridge:
+            _score_fn_bridge = self.metrics.calculate_overall_schedule_score
             operations.append(
                 (
                     "distribute_bridge_shifts_proportionally",
-                    self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally,
+                    lambda: self.scheduler.schedule_builder._distribute_bridge_shifts_proportionally(
+                        score_fn=_score_fn_bridge
+                    ),
                     self.base_priorities["distribute_bridge_shifts_proportionally"],
                 )
             )
