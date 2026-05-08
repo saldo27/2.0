@@ -360,7 +360,7 @@
     "only_last_post": false,
     "mandatory_days": "",
     "days_off": "",
-    "work_periods": "03-07-2026 - 14-07-2026;01-08-2026-30-08-2026;16-09-2026 - 30-09-2026",
+    "work_periods": "03-07-2026 - 14-07-2026;01-08-2026 - 30-08-2026;16-09-2026 - 30-09-2026",
     "auto_calculate_shifts": true
   },
   {
