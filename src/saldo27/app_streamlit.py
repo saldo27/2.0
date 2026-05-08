@@ -1705,7 +1705,7 @@ with tab1:
             with col_inc3:
                 only_last_post = st.checkbox(
                     "Solo Rosell",
-                    help="Este médico SOLO puede ser asignado en el Rosell.",
+                    help="Este médico SOLO puede ser asignado en el último puesto (Rosell). Sus guardias quedan fuera de la contabilización y ajustes de last posts del resto.",
                     key="only_last_post_checkbox",
                     value=st.session_state.get("only_last_post_buffer", False),
                     disabled=no_last_post,
@@ -2099,6 +2099,7 @@ with tab2:
             _pdf_exporter: type | None = None
             try:
                 from saldo27.pdf_exporter import PDFExporter
+
                 _pdf_exporter = PDFExporter
             except ImportError:
                 st.error("Error: No se encontró el módulo pdf_exporter.py")

@@ -178,7 +178,11 @@ class ChangeTracker:
         return change_record
 
     def get_change_history(
-        self, limit: int = 50, user_id: str | None = None, operation_types: list[OperationType] | None = None, since: datetime | None = None
+        self,
+        limit: int = 50,
+        user_id: str | None = None,
+        operation_types: list[OperationType] | None = None,
+        since: datetime | None = None,
     ) -> list[ChangeRecord]:
         """
         Get change history with optional filtering

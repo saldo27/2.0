@@ -142,7 +142,9 @@ class PerformanceCache:
 
             self._access_times[key] = time.time()
 
-    def cached_call(self, func: Callable[..., Any], args: tuple = (), kwargs: dict[str, Any] | None = None, ttl: int | None = None) -> Any:
+    def cached_call(
+        self, func: Callable[..., Any], args: tuple = (), kwargs: dict[str, Any] | None = None, ttl: int | None = None
+    ) -> Any:
         """Execute function with caching"""
         kwargs = kwargs or {}
         key = self._generate_key(getattr(func, "__name__", repr(func)), args, kwargs)
@@ -277,7 +279,9 @@ def time_function(func: Callable[..., Any]) -> Callable[..., Any]:
             return result
         except Exception as e:
             execution_time = time.time() - start_time
-            logging.error(f"PERFORMANCE: {getattr(func, '__name__', repr(func))} failed after {execution_time:.3f}s: {e}")
+            logging.error(
+                f"PERFORMANCE: {getattr(func, '__name__', repr(func))} failed after {execution_time:.3f}s: {e}"
+            )
             raise
 
     return wrapper

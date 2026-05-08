@@ -2085,7 +2085,9 @@ class IterativeOptimizer:
             recipients.sort(key=lambda x: x[1], reverse=True)
 
             if recipients:
-                logging.info(f"      Found {len(recipients)} recipients (top: {recipients[0][0]} -{recipients[0][1]:.1f})")
+                logging.info(
+                    f"      Found {len(recipients)} recipients (top: {recipients[0][0]} -{recipients[0][1]:.1f})"
+                )
                 push_swaps = 0
                 max_push = 15
 
@@ -2116,9 +2118,7 @@ class IterativeOptimizer:
                         for we_dk, we_idx in over_weekends:
                             if swapped:
                                 break
-                            we_date_obj = (
-                                we_dk if isinstance(we_dk, datetime) else datetime.strptime(we_dk, "%Y-%m-%d")
-                            )
+                            we_date_obj = we_dk if isinstance(we_dk, datetime) else datetime.strptime(we_dk, "%Y-%m-%d")
 
                             # Only use recip weekday slots in the SAME month as we_dk
                             # so over_w's monthly count stays constant (no monthly-protection block).
@@ -2126,13 +2126,13 @@ class IterativeOptimizer:
                                 (wd_dk, wd_idx)
                                 for wd_dk, wd_idx in recip_weekdays
                                 if (
-                                    wd_dk if isinstance(wd_dk, datetime)
-                                    else datetime.strptime(wd_dk, "%Y-%m-%d")
-                                ).month == we_date_obj.month
+                                    wd_dk if isinstance(wd_dk, datetime) else datetime.strptime(wd_dk, "%Y-%m-%d")
+                                ).month
+                                == we_date_obj.month
                                 and (
-                                    wd_dk if isinstance(wd_dk, datetime)
-                                    else datetime.strptime(wd_dk, "%Y-%m-%d")
-                                ).year == we_date_obj.year
+                                    wd_dk if isinstance(wd_dk, datetime) else datetime.strptime(wd_dk, "%Y-%m-%d")
+                                ).year
+                                == we_date_obj.year
                             ]
                             if not same_month_recip_wd:
                                 continue
@@ -2162,7 +2162,7 @@ class IterativeOptimizer:
 
                                 # Execute bilateral swap atomically
                                 optimized_schedule[we_dk][we_idx] = recip_name  # recip takes weekend
-                                optimized_schedule[wd_dk][wd_idx] = over_w      # over_w takes weekday
+                                optimized_schedule[wd_dk][wd_idx] = over_w  # over_w takes weekday
 
                                 push_swaps += 1
                                 excess_left -= 1
@@ -2170,9 +2170,7 @@ class IterativeOptimizer:
 
                                 we_disp = we_dk.strftime("%Y-%m-%d") if isinstance(we_dk, datetime) else we_dk
                                 wd_disp = wd_dk.strftime("%Y-%m-%d") if isinstance(wd_dk, datetime) else wd_dk
-                                logging.info(
-                                    f"      🎯 PUSH: {over_w}(we {we_disp})↔{recip_name}(wd {wd_disp})"
-                                )
+                                logging.info(f"      🎯 PUSH: {over_w}(we {we_disp})↔{recip_name}(wd {wd_disp})")
                                 # Update slot tracking
                                 ep_worker_we_slots[over_w] = [
                                     s for s in ep_worker_we_slots.get(over_w, []) if s != (we_dk, we_idx)
@@ -2222,13 +2220,9 @@ class IterativeOptimizer:
 
             # Violations are already pre-filtered by the validator — classify by excess/shortage
             if excess > 0:
-                over_assigned.append(
-                    {"worker": worker_name, "deviation": deviation, "excess": excess}
-                )
+                over_assigned.append({"worker": worker_name, "deviation": deviation, "excess": excess})
             elif shortage > 0:
-                under_assigned.append(
-                    {"worker": worker_name, "deviation": deviation, "shortage": shortage}
-                )
+                under_assigned.append({"worker": worker_name, "deviation": deviation, "shortage": shortage})
 
         # Sort by severity with randomized tie-breaking to explore different pairs each iteration
         over_assigned.sort(key=lambda x: abs(x["deviation"]) * random.uniform(0.7, 1.3), reverse=True)
@@ -2484,10 +2478,7 @@ class IterativeOptimizer:
                 assignments = optimized_schedule[d]
                 if isinstance(assignments, list):
                     for idx, w in enumerate(assignments):
-                        if (
-                            w == over_worker
-                            and not self._is_mandatory_shift(over_worker, d, workers_data)
-                        ):
+                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data):
                             over_we_shifts.append((d, idx))
 
             if not over_we_shifts:
@@ -2530,8 +2521,12 @@ class IterativeOptimizer:
                         # over_worker loses we_date, gains wd_date.
                         # If they are in different months AND over_worker's we_date
                         # month is at the floor, skip (would drop below target).
-                        we_date_obj = we_date if isinstance(we_date, datetime) else datetime.strptime(we_date, "%Y-%m-%d")
-                        wd_date_obj = wd_date if isinstance(wd_date, datetime) else datetime.strptime(wd_date, "%Y-%m-%d")
+                        we_date_obj = (
+                            we_date if isinstance(we_date, datetime) else datetime.strptime(we_date, "%Y-%m-%d")
+                        )
+                        wd_date_obj = (
+                            wd_date if isinstance(wd_date, datetime) else datetime.strptime(wd_date, "%Y-%m-%d")
+                        )
                         if (we_date_obj.year, we_date_obj.month) != (wd_date_obj.year, wd_date_obj.month):
                             if self._is_monthly_protected(over_worker, we_date, optimized_schedule, workers_data):
                                 continue  # Cross-month swap would drop monthly count below target
@@ -2844,10 +2839,7 @@ class IterativeOptimizer:
                 asgn = optimized_schedule[d]
                 if isinstance(asgn, list):
                     for idx, w in enumerate(asgn):
-                        if (
-                            w == over_worker
-                            and not self._is_mandatory_shift(over_worker, d, workers_data)
-                        ):
+                        if w == over_worker and not self._is_mandatory_shift(over_worker, d, workers_data):
                             over_we_shifts.append((d, idx))
             random.shuffle(over_we_shifts)
 
@@ -4046,11 +4038,7 @@ class IterativeOptimizer:
                         if w_name is None:
                             continue
                         w_data = next(
-                            (
-                                w
-                                for w in workers_data
-                                if str(w.get("id", "")) == str(w_name) or w.get("id") == w_name
-                            ),
+                            (w for w in workers_data if str(w.get("id", "")) == str(w_name) or w.get("id") == w_name),
                             None,
                         )
                         if w_data is None:
@@ -4107,16 +4095,12 @@ class IterativeOptimizer:
                         # Manual workers: never exceed exact target
                         if not w2_data.get("auto_calculate_shifts", True):
                             w2_current = sum(
-                                1
-                                for assigns_i in sim2.values()
-                                if isinstance(assigns_i, list) and w2_name in assigns_i
+                                1 for assigns_i in sim2.values() if isinstance(assigns_i, list) and w2_name in assigns_i
                             )
                             if w2_current >= w2_data.get("target_shifts", 0):
                                 continue
                         w2_current = sum(
-                            1
-                            for assigns_i in sim2.values()
-                            if isinstance(assigns_i, list) and w2_name in assigns_i
+                            1 for assigns_i in sim2.values() if isinstance(assigns_i, list) and w2_name in assigns_i
                         )
                         w2_target = w2_data.get("target_shifts", w2_current)
                         w2_deficit = w2_target - w2_current

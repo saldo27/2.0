@@ -412,12 +412,8 @@ class WorkerEligibilityTracker:
                 return False, "Would exceed consecutive weekend limit"
 
         # Check proportional limit with tolerance
-        worker_assignments = (
-            self.scheduler.worker_assignments if self.scheduler else {}
-        )
-        current_weekend_count = len(
-            [d for d in worker_assignments.get(worker_id, set()) if self._is_weekend_day(d)]
-        )
+        worker_assignments = self.scheduler.worker_assignments if self.scheduler else {}
+        current_weekend_count = len([d for d in worker_assignments.get(worker_id, set()) if self._is_weekend_day(d)])
 
         min_target, target, max_target = self.calculate_proportional_weekend_target(
             worker_id, self._get_worker_percentage(worker_id), self._get_worker_periods(worker_id)

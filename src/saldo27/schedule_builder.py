@@ -2383,7 +2383,9 @@ class ScheduleBuilder:
         # =========================================================================
         is_last_post = post == self.num_shifts - 1  # 0-indexed, so P4 = index 3
 
-        if self.num_shifts > 1 and not worker.get("no_last_post", False) and not worker.get("only_last_post", False):  # Only relevant when there are multiple posts
+        if (
+            self.num_shifts > 1 and not worker.get("no_last_post", False) and not worker.get("only_last_post", False)
+        ):  # Only relevant when there are multiple posts
             # Get current post distribution for this worker
             post_counts = {}
             for assignment_date in self.worker_assignments[worker_id]:
@@ -3580,9 +3582,7 @@ class ScheduleBuilder:
 
         # Manual workers have fixed monthly targets — exclude them from the
         # average so their lower normalized counts don't distort the baseline.
-        auto_worker_ids = {
-            w["id"] for w in self.workers_data if w.get("auto_calculate_shifts", True)
-        }
+        auto_worker_ids = {w["id"] for w in self.workers_data if w.get("auto_calculate_shifts", True)}
         auto_counts = [data["normalized_count"] for wid, data in assignment_counts.items() if wid in auto_worker_ids]
         avg_normalized = sum(auto_counts) / len(auto_counts) if auto_counts else 0
 
@@ -3824,9 +3824,7 @@ class ScheduleBuilder:
         # Build auto-worker set: manual workers have fixed targets by design and
         # cannot participate in workload swaps (their monthly counts are at target,
         # so _can_modify_assignment always blocks them).
-        auto_workers = {
-            w["id"] for w in self.workers_data if w.get("auto_calculate_shifts", True)
-        }
+        auto_workers = {w["id"] for w in self.workers_data if w.get("auto_calculate_shifts", True)}
 
         avg_norm = sum(worker_norm[wid] for wid in auto_workers if wid in worker_norm) / max(len(auto_workers), 1)
 
@@ -5680,16 +5678,18 @@ class ScheduleBuilder:
                     _snap_assignments: dict | None = None
                     if score_fn is not None and best_score is not None:
                         _snap_schedule = {k: list(v) for k, v in self.schedule.items()}
-                        _snap_assignments = {
-                            wid: set(assigns)
-                            for wid, assigns in self.worker_assignments.items()
-                        }
+                        _snap_assignments = {wid: set(assigns) for wid, assigns in self.worker_assignments.items()}
 
                     swap_made = self._attempt_bridge_swap(over_worker_id, under_worker_id)
 
                     if swap_made:
                         # ── Score gate: revert if composite score dropped ──
-                        if score_fn is not None and best_score is not None and _snap_schedule is not None and _snap_assignments is not None:
+                        if (
+                            score_fn is not None
+                            and best_score is not None
+                            and _snap_schedule is not None
+                            and _snap_assignments is not None
+                        ):
                             new_score = score_fn()
                             if new_score < best_score - 1e-9:
                                 # Restore schedule and assignments, re-sync tracking
@@ -5699,8 +5699,7 @@ class ScheduleBuilder:
                                 self._synchronize_tracking_data()
                                 reverted_swaps += 1
                                 logging.debug(
-                                    f"Bridge swap reverted by score gate: "
-                                    f"{over_worker_id} → {under_worker_id}"
+                                    f"Bridge swap reverted by score gate: {over_worker_id} → {under_worker_id}"
                                 )
                                 continue
                             best_score = new_score
@@ -7629,7 +7628,9 @@ class ScheduleBuilder:
                                 w_going_to_last = w_i if j == last_post else w_j
                                 w_going_to_nonlast = w_j if j == last_post else w_i
                                 cfg_last = next((w for w in self.workers_data if w["id"] == w_going_to_last), None)
-                                cfg_nonlast = next((w for w in self.workers_data if w["id"] == w_going_to_nonlast), None)
+                                cfg_nonlast = next(
+                                    (w for w in self.workers_data if w["id"] == w_going_to_nonlast), None
+                                )
                                 if cfg_last and cfg_last.get("no_last_post", False):
                                     continue
                                 if cfg_nonlast and cfg_nonlast.get("only_last_post", False):
@@ -8022,8 +8023,7 @@ class ScheduleBuilder:
                 if total_shifts > 0:
                     # Each eligible worker's expected last posts = their share of eligible work × total last post slots
                     expected_last_posts = (
-                        (total_shifts / total_eligible_worker_shifts_in_period)
-                        * shared_last_post_slots
+                        (total_shifts / total_eligible_worker_shifts_in_period) * shared_last_post_slots
                         if total_eligible_worker_shifts_in_period > 0
                         else 0
                     )
