@@ -345,7 +345,7 @@
     "incompatible_with": [],
     "no_last_post": false,
     "only_last_post": false,
-    "mandatory_days": "06-07-2026;13-07-2026",
+    "mandatory_days": "06-07-2026;14-07-2026",
     "days_off": "09-07-2026;10-07-2026",
     "work_periods": "01-07-2026 - 30-08-2026",
     "auto_calculate_shifts": true
