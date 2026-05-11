@@ -740,6 +740,10 @@ class ScheduleBuilder:
             if not worker:
                 return False
 
+            # CRITICAL: Check work_periods and days_off — worker must be available on this date
+            if self._is_worker_unavailable(worker_id, date):
+                return False
+
             # CRITICAL: no_last_post workers cannot be assigned to the last post
             if post == self.num_shifts - 1 and worker.get("no_last_post", False):
                 return False
@@ -4753,13 +4757,51 @@ class ScheduleBuilder:
                         f"{d_over.strftime('%d-%b')}"
                     )
                     return True
+
+        # Fallback: move wid directly to an empty d_under slot (no swap partner needed).
+        # The d_over slot becomes empty, keeping net coverage neutral while fixing balance.
+        for d_over in dates_over:
+            if not self._can_modify_assignment(wid, d_over, "monthly_repair"):
+                continue
+            if d_over not in self.schedule or wid not in self.schedule[d_over]:
+                continue
+            try:
+                post_over = self.schedule[d_over].index(wid)
+            except ValueError:
+                continue
+            for d_under in dates_under:
+                for post_under in range(len(self.schedule.get(d_under, []))):
+                    if self.schedule[d_under][post_under] is not None:
+                        continue
+                    if not self._can_assign_worker(wid, d_under, post_under, replacing_worker=None):
+                        continue
+                    others_on_under = [
+                        w for i, w in enumerate(self.schedule[d_under]) if w is not None and i != post_under
+                    ]
+                    if not self._check_incompatibility_with_list(wid, others_on_under):
+                        continue
+                    if self._is_weekend_or_holiday(d_under):
+                        if self._would_exceed_weekend_limit_simulated(wid, d_under, self.scheduler.worker_assignments):
+                            continue
+                    # Move wid: vacate d_over, fill empty d_under
+                    self.schedule[d_over][post_over] = None
+                    self.schedule[d_under][post_under] = wid
+                    self.worker_assignments[wid].discard(d_over)
+                    self.worker_assignments[wid].add(d_under)
+                    self.scheduler._update_tracking_data(wid, d_over, post_over, removing=True)
+                    self.scheduler._update_tracking_data(wid, d_under, post_under, removing=False)
+                    logging.info(
+                        f"🔧 Cross-month move: {wid}@{d_over.strftime('%d-%b')} → "
+                        f"{d_under.strftime('%d-%b')} (empty slot)"
+                    )
+                    return True
         return False
 
     def _monthly_fill_deficit(self, wid, worker_config, under_ym, strict_donor=True):
         """Fill one shift deficit in under_ym for a worker.
 
-        Takes a shift from a worker who is above their monthly target
-        in that month. Protects manual workers from being used as donors.
+        First tries to fill genuinely empty (None) slots in the under-month before
+        looking for over-target donors.  Protects manual workers from being used as donors.
 
         Args:
             strict_donor: If True, donor must be above overall target AND monthly target.
@@ -4772,6 +4814,30 @@ class ScheduleBuilder:
         ]
         random.shuffle(dates_in_month)
 
+        # Pass 1: fill genuinely empty (None) slots — improves both coverage AND balance
+        for d in dates_in_month:
+            for post in range(len(self.schedule.get(d, []))):
+                if self.schedule[d][post] is not None:
+                    continue
+                if not self._can_assign_worker(wid, d, post, replacing_worker=None):
+                    continue
+                others_on_date = [
+                    w for i, w in enumerate(self.schedule[d]) if w is not None and i != post
+                ]
+                if not self._check_incompatibility_with_list(wid, others_on_date):
+                    continue
+                if self._is_weekend_or_holiday(d):
+                    if self._would_exceed_weekend_limit_simulated(wid, d, self.scheduler.worker_assignments):
+                        continue
+                self.schedule[d][post] = wid
+                self.worker_assignments[wid].add(d)
+                self.scheduler._update_tracking_data(wid, d, post, removing=False)
+                logging.info(
+                    f"🔧 Fill empty slot: {wid} → {d.strftime('%d-%b')} P{post} (month {under_ym[1]:02d})"
+                )
+                return True
+
+        # Pass 2: replace an over-target donor
         for d in dates_in_month:
             for post in range(len(self.schedule.get(d, []))):
                 donor_wid = self.schedule[d][post]

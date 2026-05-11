@@ -2003,8 +2003,11 @@ class Scheduler:
         scheduler_core = SchedulerCore(self)
         self._scheduler_core = scheduler_core
 
+        # Read max_complete_attempts from config (default 1 for backwards compatibility)
+        max_complete_attempts = self.config.get("max_complete_attempts", 1)
+
         # Use orchestrated workflow
-        return scheduler_core.orchestrate_schedule_generation(max_improvement_loops)
+        return scheduler_core.orchestrate_schedule_generation(max_improvement_loops, max_complete_attempts)
 
     def _get_date_range(self, start_date, end_date):
         """
