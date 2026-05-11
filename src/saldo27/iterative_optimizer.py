@@ -597,24 +597,7 @@ class IterativeOptimizer:
                 )
 
             # Extract worker names safely
-            worker_names = []
-            for i, w in enumerate(workers_data):
-                if isinstance(w, dict):
-                    if "id" in w:
-                        # Handle both string and numeric IDs
-                        worker_id = w["id"]
-                        if isinstance(worker_id, str) and worker_id.startswith("Worker"):
-                            worker_names.append(worker_id)  # Already has "Worker" prefix
-                        else:
-                            worker_names.append(f"Worker {worker_id}")  # Add prefix for numeric
-                    elif "name" in w:
-                        worker_names.append(w["name"])
-                    else:
-                        worker_names.append(f"Worker {i + 1}")  # Fallback
-                        logging.warning(f"Worker {i} missing id/name, using fallback")
-                else:
-                    worker_names.append(f"Worker {i + 1}")  # Fallback for non-dict
-                    logging.warning(f"Worker {i} is not a dict: {type(w)}")
+            worker_names = [str(w.get("id", w.get("name", f"Worker {i + 1}"))) for i, w in enumerate(workers_data) if isinstance(w, dict)]
 
             # Debug: Log the structures
             logging.info(f"Debug: Worker names extracted: {worker_names[:5]}...")  # First 5
@@ -1065,29 +1048,8 @@ class IterativeOptimizer:
             # Extract worker ID from worker name - Enhanced logic
             worker_id = worker_name  # Start with the full name
 
-            # Find worker data using flexible matching
-            worker_data = None
-            for w in workers_data:
-                w_id = w.get("id", "")
-
-                # Try exact match first
-                if w_id == worker_name or str(w_id) == str(worker_name):
-                    worker_data = w
-                    break
-                # Try "Worker X" format matching - extract number from worker_name
-                elif worker_name.startswith("Worker "):
-                    # Extract number from "Worker 23" -> "23"
-                    try:
-                        worker_number = worker_name.split(" ")[1]
-                        if str(w_id) == worker_number:
-                            worker_data = w
-                            break
-                    except (IndexError, ValueError):
-                        continue
-                # Try reverse: if w_id is numeric and worker_name is "Worker X"
-                elif str(w_id).isdigit() and worker_name == f"Worker {w_id}":
-                    worker_data = w
-                    break
+            # Find worker data by exact ID match
+            worker_data = next((w for w in workers_data if str(w.get("id", "")) == worker_name), None)
 
             if not worker_data:
                 logging.debug(
@@ -1514,28 +1476,8 @@ class IterativeOptimizer:
             else:
                 shift_date = datetime.strptime(date_key, "%Y-%m-%d")
 
-            # Find worker data using flexible matching (same as _can_worker_take_shift)
-            worker_data = None
-            for w in workers_data:
-                w_id = w.get("id", "")
-
-                # Try exact match first
-                if w_id == worker_name or str(w_id) == str(worker_name):
-                    worker_data = w
-                    break
-                # Try "Worker X" format matching
-                elif worker_name.startswith("Worker "):
-                    try:
-                        worker_number = worker_name.split(" ")[1]
-                        if str(w_id) == worker_number:
-                            worker_data = w
-                            break
-                    except (IndexError, ValueError):
-                        continue
-                # Try reverse: if w_id is numeric and worker_name is "Worker X"
-                elif str(w_id).isdigit() and worker_name == f"Worker {w_id}":
-                    worker_data = w
-                    break
+            # Find worker data by exact ID match
+            worker_data = next((w for w in workers_data if str(w.get("id", "")) == worker_name), None)
 
             if not worker_data:
                 return False
@@ -2830,16 +2772,7 @@ class IterativeOptimizer:
         gap = int(schedule_config.get("gap_between_shifts", getattr(self.scheduler, "gap_between_shifts", 3)))
 
         # Build worker name list for replacement candidates
-        all_worker_names = []
-        for i, w in enumerate(workers_data):
-            if isinstance(w, dict):
-                wid = w.get("id", "")
-                if isinstance(wid, str) and wid.startswith("Worker"):
-                    all_worker_names.append(wid)
-                else:
-                    all_worker_names.append(f"Worker {wid}")
-            else:
-                all_worker_names.append(f"Worker {i + 1}")
+        all_worker_names = [str(w.get("id", w.get("name", f"Worker {i + 1}"))) for i, w in enumerate(workers_data) if isinstance(w, dict)]
 
         swaps_made = 0
         max_swaps = min(20, len(weekend_violations) * 2)
@@ -3007,22 +2940,17 @@ class IterativeOptimizer:
         for i, w in enumerate(workers_data):
             if isinstance(w, dict):
                 if "id" in w:
-                    worker_id = w["id"]
-                    if isinstance(worker_id, str) and worker_id.startswith("Worker"):
-                        wname = worker_id
-                    else:
-                        wname = f"Worker {worker_id}"
+                    wname = str(w["id"])
                 elif "name" in w:
-                    wname = w["name"]
+                    wname = str(w["name"])
                 else:
-                    wname = f"Worker {i + 1}"
-                    logging.warning(f"Worker {i} missing id/name in random perturbations, using fallback")
+                    logging.warning(f"Worker {i} missing id/name in random perturbations, skipping")
+                    continue
             else:
-                wname = f"Worker {i + 1}"
-                logging.warning(f"Worker {i} is not a dict in random perturbations: {type(w)}")
+                logging.warning(f"Worker {i} is not a dict in random perturbations: {type(w)}, skipping")
+                continue
             worker_names.append(wname)
-            if isinstance(w, dict):
-                worker_targets[wname] = float(w.get("target_shifts", 0))
+            worker_targets[wname] = float(w.get("target_shifts", 0))
 
         logging.info(f"Debug: Extracted {len(worker_names)} worker names for SA perturbations")
 
@@ -3365,21 +3293,7 @@ class IterativeOptimizer:
         optimized_schedule = copy.deepcopy(schedule)
 
         # Extract worker names safely (reuse existing logic)
-        worker_names = []
-        for i, w in enumerate(workers_data):
-            if isinstance(w, dict):
-                if "id" in w:
-                    worker_id = w["id"]
-                    if isinstance(worker_id, str) and worker_id.startswith("Worker"):
-                        worker_names.append(worker_id)
-                    else:
-                        worker_names.append(f"Worker {worker_id}")
-                elif "name" in w:
-                    worker_names.append(w["name"])
-                else:
-                    worker_names.append(f"Worker {i + 1}")
-            else:
-                worker_names.append(f"Worker {i + 1}")
+        worker_names = [str(w.get("id", w.get("name", f"Worker {i + 1}"))) for i, w in enumerate(workers_data) if isinstance(w, dict)]
 
         # Group violations by type
         general_violations = [v for v in violations if "weekend" not in v.get("type", "")]
@@ -3802,7 +3716,7 @@ class IterativeOptimizer:
 
             for worker_info in general_outside:
                 worker_id = worker_info.get("worker_id", "Unknown")
-                worker_name = f"Worker {worker_id}" if str(worker_id).isdigit() else str(worker_id)
+                worker_name = str(worker_id)
 
                 # Calculate difference (assigned - target)
                 assigned = worker_info.get("assigned_shifts", 0)
@@ -3824,7 +3738,7 @@ class IterativeOptimizer:
 
             for worker_info in weekend_outside:
                 worker_id = worker_info.get("worker_id", "Unknown")
-                worker_name = f"Worker {worker_id}" if str(worker_id).isdigit() else str(worker_id)
+                worker_name = str(worker_id)
 
                 # Calculate difference (assigned - target)
                 assigned = worker_info.get("assigned_shifts", 0)
@@ -3925,11 +3839,7 @@ class IterativeOptimizer:
 
                 for worker in workers_data:
                     worker_id = worker.get("id")
-                    worker_name = (
-                        f"Worker {worker_id}"
-                        if isinstance(worker_id, (int, str)) and str(worker_id).isdigit()
-                        else str(worker_id)
-                    )
+                    worker_name = str(worker_id)
 
                     # Check if worker can take this shift
                     # Derive shift_type for full constraint validation
@@ -4161,11 +4071,7 @@ class IterativeOptimizer:
 
         for worker in workers_data:
             worker_id = worker.get("id")
-            worker_name = (
-                f"Worker {worker_id}"
-                if isinstance(worker_id, (int, str)) and str(worker_id).isdigit()
-                else str(worker_id)
-            )
+            worker_name = str(worker_id)
             stats[worker_name] = {"total_shifts": 0, "weekend_shifts": 0}
 
         # Count assignments
@@ -4275,8 +4181,7 @@ class IterativeOptimizer:
                 # Find worker in workers_data to get target_shifts
                 for w in workers_data:
                     w_id = w.get("id")
-                    w_name = f"Worker {w_id}" if isinstance(w_id, (int, str)) and str(w_id).isdigit() else str(w_id)
-                    if w_name == worker_name:
+                    if str(w_id) == worker_name:
                         worker_data = w
                         break
 

@@ -4,6 +4,7 @@ Valida que los shifts asignados estén dentro del rango de tolerancia +/-10% del
 """
 
 import logging
+import math
 from datetime import timedelta
 from typing import Any
 
@@ -65,8 +66,10 @@ class ShiftToleranceValidator:
         else:
             # For general shifts: use percentage-based tolerance
             tolerance_amount = target_shifts * (self.tolerance_percentage / 100.0)
-            min_shifts = max(0, int(target_shifts - tolerance_amount))
-            max_shifts = int(target_shifts + tolerance_amount)  # Use int() to truncate, consistent with enforcement
+            # Use ceil for min_shifts: e.g. target=12, tol=10% → 10.8 → ceil → 11
+            # int() would give 10, incorrectly allowing workers at 10/12 (-16.7%) to pass
+            min_shifts = max(0, math.ceil(target_shifts - tolerance_amount))
+            max_shifts = int(target_shifts + tolerance_amount)  # floor (int truncation), consistent with enforcement
 
         return (min_shifts, max_shifts)
 
