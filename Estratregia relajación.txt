@@ -39,3 +39,12 @@ Patrón 7/14	Sin condicional de relajación en código real
 Tolerancia ±12%	Límite absoluto, no superado por ningún nivel
 no_last_post / only_last_post	_check_hard_constraints()
 max_consecutive_weekends	Comentario: "NEVER RELAX THIS"
+
+
+***** dos bugs que causan la convergencia prematura:
+
+BalanceValidator._count_worker_shifts divide mandatory_days por comas, pero el formato de la app usa puntos y coma — DAVID aparece con falsa violación de +16.7%
+
+ShiftToleranceValidator.calculate_tolerance_bounds usa int() (truncado a suelo) para el límite inferior, cuando debería usar math.ceil(). Para target=12, tolerancia 10%: int(10.8) = 10 → PAULA a 10 turnos parece válida. Con ceil(10.8) = 11 → correctamente es violación.
+
+Por eso el redistribuidor intenta corregir AGUEDA/MARIA (violaciones 11.1%) e ignora completamente a PAULA (-16.7%). Al fallar en AGUEDA/MARIA durante 6 iteraciones, el no_change_counter llega a 6 y el optimizador para.
