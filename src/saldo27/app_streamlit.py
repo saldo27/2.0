@@ -527,8 +527,8 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             "workers_data": st.session_state.workers_data,  # Pass directly, matching Kivy
             "holidays": holidays,
             "variable_shifts": variable_shifts,
-            "gap_between_shifts": st.session_state.config.get("gap_between_shifts", 2),
-            "max_consecutive_weekends": st.session_state.config.get("max_consecutive_weekends", 2),
+            "gap_between_shifts": st.session_state.config.get("gap_between_shifts", 3),
+            "max_consecutive_weekends": st.session_state.config.get("max_consecutive_weekends", 3),
             "enable_proportional_weekends": st.session_state.config.get("enable_proportional_weekends", True),
             "weekend_tolerance": st.session_state.config.get("weekend_tolerance", 1),
             "cache_enabled": st.session_state.config.get("cache_enabled", False),
@@ -1705,7 +1705,7 @@ with tab1:
             with col_inc3:
                 only_last_post = st.checkbox(
                     "Solo Rosell",
-                    help="Este médico SOLO puede ser asignado en el último puesto (Rosell). Sus guardias quedan fuera de la contabilización y ajustes de last posts del resto.",
+                    help="Este médico SOLO puede ser asignado en el Rosell.",
                     key="only_last_post_checkbox",
                     value=st.session_state.get("only_last_post_buffer", False),
                     disabled=no_last_post,
@@ -2099,7 +2099,6 @@ with tab2:
             _pdf_exporter: type | None = None
             try:
                 from saldo27.pdf_exporter import PDFExporter
-
                 _pdf_exporter = PDFExporter
             except ImportError:
                 st.error("Error: No se encontró el módulo pdf_exporter.py")

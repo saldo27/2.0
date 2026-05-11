@@ -1891,8 +1891,8 @@ class ScheduleBuilder:
             if days_between < min_gap:
                 return False
 
-            # Special rule: No Friday + Monday (3-day gap) — only if effective gap > 3
-            if relaxation_level == 0 and hard_floor > 3:
+            # Special rule: No Friday + Monday (3-day gap) — only if effective gap >= 3
+            if relaxation_level == 0 and hard_floor >= 3:
                 if (prev_date.weekday() == 4 and date.weekday() == 0) or (
                     date.weekday() == 4 and prev_date.weekday() == 0
                 ):

@@ -11,10 +11,11 @@ from saldo27.performance_cache import cached
 def get_effective_min_gap(worker_data: dict | None, gap_between_shifts: int) -> int:
     """Return the effective minimum gap (calendar days) between shifts for a worker.
 
-    Three tiers based on worker type:
-    - Auto workers at 100%+ work: gap_between_shifts - 1 (relaxed)
-    - Manual workers with ≤3 guardias/mes OR any worker with <60% work: gap_between_shifts + 1 (strict)
-    - Everyone else: gap_between_shifts (standard)
+    Relaxed gap (gap - 1) when:
+    - Auto workers at 60%+ work, OR
+    - Manual workers with >3 guardias/mes
+
+    Standard gap otherwise (auto <60%, or manual ≤3 guardias/mes).
 
     Returns at least 1 (minimum 1 calendar day between shifts).
     """
@@ -24,22 +25,51 @@ def get_effective_min_gap(worker_data: dict | None, gap_between_shifts: int) -> 
     work_percentage = worker_data.get("work_percentage", 100)
     is_auto = worker_data.get("auto_calculate_shifts", True)
 
-    # Rule B (strict): work <60% — applies to ALL workers
-    if work_percentage < 60:
-        return gap_between_shifts + 1
-
-    # Rule B (strict): manual workers with ≤3 guardias/mes
-    if not is_auto:
-        guardias_mes = worker_data.get("_original_target_shifts", worker_data.get("target_shifts", 0))
-        if guardias_mes <= 3:
-            return gap_between_shifts + 1
-
-    # Rule A (relaxed): auto workers at 100%+
-    if is_auto and work_percentage >= 100:
+    # Relaxed: auto workers at 60%+
+    if is_auto and work_percentage >= 60:
         return max(1, gap_between_shifts - 1)
 
-    # Standard
+    # Relaxed: manual workers with >3 guardias/mes
+    if not is_auto:
+        guardias_mes = worker_data.get("_original_target_shifts", worker_data.get("target_shifts", 0))
+        if guardias_mes > 3:
+            return max(1, gap_between_shifts - 1)
+
+    # Standard: auto <60%, or manual ≤3 guardias/mes
     return gap_between_shifts
+
+
+def is_date_in_ranges(date: datetime, ranges_str: str) -> bool:
+    """Return True if *date* falls within any period defined in *ranges_str*.
+
+    *ranges_str* uses the same semicolon-separated format as ``work_periods``
+    and ``days_off``:
+    - ``"DD-MM-YYYY - DD-MM-YYYY"`` for an inclusive range
+    - ``"DD-MM-YYYY"`` for a single day
+
+    An empty string (no restrictions) returns False.
+    """
+    if not ranges_str or not ranges_str.strip():
+        return False
+
+    for part in ranges_str.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if " - " in part:
+                start_str, end_str = part.split(" - ", 1)
+                start = datetime.strptime(start_str.strip(), "%d-%m-%Y")
+                end = datetime.strptime(end_str.strip(), "%d-%m-%Y")
+                if start <= date <= end:
+                    return True
+            else:
+                single = datetime.strptime(part, "%d-%m-%Y")
+                if single.date() == date.date():
+                    return True
+        except ValueError:
+            continue
+    return False
 
 
 def numeric_sort_key(item):

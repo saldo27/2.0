@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 from saldo27.balance_validator import BalanceValidator
 from saldo27.performance_cache import time_function
-from saldo27.utilities import get_effective_min_gap
+from saldo27.utilities import get_effective_min_gap, is_date_in_ranges
 
 
 @dataclass
@@ -1097,6 +1097,23 @@ class IterativeOptimizer:
 
             logging.debug(f"Found worker data for {worker_name}: {worker_data.get('id')}")
 
+            # CRITICAL: Check work_periods — worker can only be assigned within defined periods
+            work_periods_str = worker_data.get("work_periods", "")
+            if work_periods_str and work_periods_str.strip():
+                if not is_date_in_ranges(shift_date, work_periods_str):
+                    logging.debug(
+                        f"❌ {worker_name} blocked: {shift_date.date()} outside work_periods"
+                    )
+                    return False
+
+            # CRITICAL: Check days_off — worker is unavailable on these dates
+            days_off_str = worker_data.get("days_off", "")
+            if days_off_str and is_date_in_ranges(shift_date, days_off_str):
+                logging.debug(
+                    f"❌ {worker_name} blocked: {shift_date.date()} is in days_off"
+                )
+                return False
+
             # Check no_last_post constraint: worker cannot be assigned to the last post
             if worker_data.get("no_last_post", False) and shift_type.startswith("Post_"):
                 try:
@@ -1914,6 +1931,8 @@ class IterativeOptimizer:
                     if not isinstance(w, str):
                         continue
                     w_str = w
+                    if self._is_mandatory_shift(w_str, dk, workers_data):
+                        continue  # Never move mandatory shifts
                     if is_we:
                         worker_we_counts[w_str] = worker_we_counts.get(w_str, 0) + 1
                         worker_we_slots.setdefault(w_str, []).append((dk, idx))
@@ -2055,6 +2074,8 @@ class IterativeOptimizer:
                 for idx, w in enumerate(assigns):
                     if w is None or not isinstance(w, str):
                         continue
+                    if self._is_mandatory_shift(w, dk, workers_data):
+                        continue  # Never move mandatory shifts
                     if is_we:
                         ep_worker_we_counts[w] = ep_worker_we_counts.get(w, 0) + 1
                         ep_worker_we_slots.setdefault(w, []).append((dk, idx))
@@ -4188,6 +4209,28 @@ class IterativeOptimizer:
         CRITICAL: This function MUST validate tolerance to prevent violations during optimization.
         """
         try:
+            # CRITICAL: Resolve worker_data early for period/availability checks
+            early_worker_data = next(
+                (w for w in workers_data if str(w.get("id", "")) == str(worker_id)), None
+            )
+            if early_worker_data:
+                # Check work_periods — worker can only be assigned within defined periods
+                wp_str = early_worker_data.get("work_periods", "")
+                if wp_str and wp_str.strip():
+                    if not is_date_in_ranges(date, wp_str):
+                        logging.debug(
+                            f"❌ {worker_name} blocked (greedy): {date.date()} outside work_periods"
+                        )
+                        return False
+
+                # Check days_off — worker is unavailable on these dates
+                do_str = early_worker_data.get("days_off", "")
+                if do_str and is_date_in_ranges(date, do_str):
+                    logging.debug(
+                        f"❌ {worker_name} blocked (greedy): {date.date()} is in days_off"
+                    )
+                    return False
+
             # Check if worker already has a shift on this date
             if isinstance(schedule.get(date), list):
                 if worker_name in schedule[date]:
