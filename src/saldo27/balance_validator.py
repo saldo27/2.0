@@ -156,7 +156,7 @@ class BalanceValidator:
         # Si hay worker_data, obtener las fechas mandatory para excluirlas
         if worker_data and worker_data.get("mandatory_days"):
             mandatory_str = worker_data.get("mandatory_days", "")
-            mandatory_dates = set(p.strip() for p in mandatory_str.split(",") if p.strip())
+            mandatory_dates = set(p.strip() for p in mandatory_str.replace(";", ",").split(",") if p.strip())
 
         for date, assignments in schedule.items():
             if assignments:
@@ -176,7 +176,7 @@ class BalanceValidator:
                 if not is_mandatory:
                     for worker in assignments:
                         # Comparar con diferentes formatos de ID
-                        if worker == worker_id or worker == f"Worker {worker_id}" or str(worker) == str(worker_id):
+                        if worker == worker_id or str(worker) == str(worker_id):
                             count += 1
 
         return count
