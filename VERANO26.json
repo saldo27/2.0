@@ -223,7 +223,7 @@
   {
     "id": "PAULA",
     "target_shifts": 0,
-    "work_percentage": 70,
+    "work_percentage": 100,
     "is_incompatible": false,
     "incompatible_with": [],
     "no_last_post": false,
@@ -249,7 +249,7 @@
   {
     "id": "CAROL",
     "target_shifts": 0,
-    "work_percentage": 80,
+    "work_percentage": 90,
     "is_incompatible": false,
     "incompatible_with": [],
     "no_last_post": false,
@@ -314,7 +314,7 @@
   {
     "id": "LAURA",
     "target_shifts": 0,
-    "work_percentage": 80,
+    "work_percentage": 90,
     "is_incompatible": false,
     "incompatible_with": [],
     "no_last_post": false,
