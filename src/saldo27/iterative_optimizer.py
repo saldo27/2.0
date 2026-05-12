@@ -476,10 +476,17 @@ class IterativeOptimizer:
                 optimized_schedule = self._redistribute_general_shifts(
                     optimized_schedule, general_violations, workers_data, schedule_config
                 )
-                # Second pass for better coverage
-                optimized_schedule = self._redistribute_general_shifts(
-                    optimized_schedule, general_violations, workers_data, schedule_config
-                )
+                # Second pass with FRESH violations to avoid stale-data oscillations
+                # (e.g. a donor who reached target in pass 1 being treated as excess again)
+                if validator:
+                    fresh_report = self._create_validation_report(validator, optimized_schedule)
+                    fresh_general = fresh_report.get("general_shift_violations", [])
+                else:
+                    fresh_general = general_violations
+                if fresh_general:
+                    optimized_schedule = self._redistribute_general_shifts(
+                        optimized_schedule, fresh_general, workers_data, schedule_config
+                    )
 
             # Strategy 2B: Cross-redistribution - apply weekend swaps even in normal mode
             if weekend_violations and len(weekend_violations) >= 2:
@@ -528,13 +535,14 @@ class IterativeOptimizer:
                 )
                 logging.error(f"   ⚠️  Max deviation: {balance_result['stats']['max_deviation']:.1f}%")
 
-                # Get rebalancing recommendations
+                # Apply targeted rebalancing for persistent extreme violations
                 recommendations = self.balance_validator.get_rebalancing_recommendations(
                     optimized_schedule, workers_data
                 )
                 if recommendations:
-                    logging.info(f"   💡 Applying {len(recommendations[:3])} top rebalancing recommendations")
-                    # Apply will be done in next iteration
+                    optimized_schedule = self._apply_rebalancing_recommendations(
+                        optimized_schedule, recommendations, workers_data
+                    )
         else:
             logging.info("   ✅ Balance validation PASSED")
 
@@ -895,20 +903,27 @@ class IterativeOptimizer:
 
             # Build target lookup
             worker_target_map: dict[str, int] = {}
+            worker_raw_target_map: dict[str, int] = {}
             for wd in workers_data:
                 wname = str(wd.get("id", wd.get("name", "")))
                 worker_target_map[wname] = wd.get("target_shifts", 0)
+                # _raw_target includes mandatory shifts (same as the actual total count)
+                worker_raw_target_map[wname] = wd.get("_raw_target", wd.get("target_shifts", 0))
 
             violating_names = {n["worker"] for n in remaining_need}
 
-            # Find donors: non-violating workers with count > target
+            # Find donors: non-violating workers with count > raw_target.
+            # CRITICAL: compare against _raw_target (which includes mandatory shifts)
+            # because count also includes mandatory shifts.  Using target_shifts here
+            # would make workers like KIKO (target_shifts=12, 2 mandatory, total=14)
+            # appear as donors with surplus=2, causing their Sep shifts to be stolen.
             donors = []
             for wname, count in worker_shift_counts.items():
                 if wname in violating_names:
                     continue
-                target = worker_target_map.get(wname, 0)
-                if target > 0 and count > target:
-                    donors.append((wname, count - target))
+                raw_target = worker_raw_target_map.get(wname, 0) or worker_target_map.get(wname, 0)
+                if raw_target > 0 and count > raw_target:
+                    donors.append((wname, count - raw_target))
             donors.sort(key=lambda x: x[1], reverse=True)
 
             if donors:
@@ -1018,6 +1033,78 @@ class IterativeOptimizer:
             top_added = sorted(balance_tracker["shifts_added"].items(), key=lambda x: x[1], reverse=True)[:3]
             logging.info(f"      Top increases: {', '.join([f'{w}: +{c}' for w, c in top_added])}")
 
+        return optimized_schedule
+
+    def _apply_rebalancing_recommendations(
+        self,
+        schedule: dict,
+        recommendations: list[dict],
+        workers_data: list[dict],
+    ) -> dict:
+        """
+        Apply targeted transfers from ``get_rebalancing_recommendations``.
+
+        Each recommendation is:  {from_worker, to_worker, shifts_to_transfer, priority, ...}
+
+        For every recommended (donor → recipient) pair, we iterate over the
+        donor's shifts and find the first one the recipient can legally take,
+        then execute the swap.  We cap at the requested ``shifts_to_transfer``
+        per recommendation and apply only the top-5 by priority.
+        """
+        logging.info(f"   🎯 Applying {min(len(recommendations), 5)} targeted rebalancing recommendations")
+        optimized_schedule = copy.deepcopy(schedule)
+        applied = 0
+
+        for rec in recommendations[:5]:
+            donor = rec["from_worker"]
+            recipient = rec["to_worker"]
+            n_to_transfer = rec["shifts_to_transfer"]
+            transferred = 0
+
+            # Collect all shifts currently assigned to the donor
+            donor_shifts = []
+            for date_key, assignments in optimized_schedule.items():
+                if not isinstance(assignments, list):
+                    continue
+                for post_idx, w in enumerate(assignments):
+                    if w == donor:
+                        donor_shifts.append((date_key, post_idx))
+
+            # Sort later dates first — prefer moving recent shifts
+            donor_shifts.sort(key=lambda x: x[0], reverse=True)
+
+            for date_key, post_idx in donor_shifts:
+                if transferred >= n_to_transfer:
+                    break
+
+                # Skip mandatory assignments for the donor
+                if self._is_mandatory_shift(donor, date_key, workers_data):
+                    continue
+
+                shift_type = f"Post_{post_idx}"
+
+                # Check if recipient can take this slot (all constraints including gap + monthly)
+                if not self._can_worker_take_shift(recipient, date_key, shift_type, optimized_schedule, workers_data):
+                    continue
+
+                # Execute the transfer
+                optimized_schedule[date_key] = list(optimized_schedule[date_key])
+                optimized_schedule[date_key][post_idx] = recipient
+
+                transferred += 1
+                applied += 1
+                date_display = date_key.strftime("%Y-%m-%d") if isinstance(date_key, datetime) else str(date_key)
+                logging.info(
+                    f"   ✅ Targeted transfer: {donor} → {recipient} on {date_display} P{post_idx} "
+                    f"(from {rec['from_deviation']:+.1f}% to {rec['to_deviation']:+.1f}%)"
+                )
+
+            if transferred == 0:
+                logging.debug(
+                    f"   ⚠️  Targeted transfer {donor}→{recipient}: no eligible slot found"
+                )
+
+        logging.info(f"   🎯 Targeted rebalancing: {applied} transfers applied")
         return optimized_schedule
 
     def _can_worker_take_shift(
@@ -1299,7 +1386,17 @@ class IterativeOptimizer:
                 else:
                     # Add tolerance for monthly (part-time: 0%, full-time: 10%)
                     monthly_tolerance = 0.10 if work_percentage >= 1.0 else 0.0
-                    max_monthly = expected_monthly_rough * (1 + monthly_tolerance)
+
+                    # CRITICAL: Use per-worker monthly_targets if available.
+                    # Workers with work_periods have targets concentrated in fewer months,
+                    # so raw_target / months_in_period dramatically underestimates their
+                    # per-month allowance (e.g. VALLE: 7/3=2.3 but actual Sep target=7).
+                    month_key = shift_date.strftime("%Y-%m")
+                    monthly_targets = worker_data.get("monthly_targets", {})
+                    if month_key in monthly_targets:
+                        max_monthly = monthly_targets[month_key]
+                    else:
+                        max_monthly = expected_monthly_rough * (1 + monthly_tolerance)
 
                     # Check if adding this shift would exceed monthly limit
                     if shifts_this_month + 1 > max_monthly + 1:  # +1 for rounding tolerance
@@ -3947,6 +4044,11 @@ class IterativeOptimizer:
 
             logging.info(f"   📊 Chain fill: {len(empty_slots)} empty slots to attempt")
 
+            candidates_w: list[tuple] = []
+            found = False
+            d_e = next(iter(optimized_schedule), datetime.min)
+            p_e = 0
+            shift_type_e = "Post_0"
             for slot in empty_slots:
                 d_e = slot["date"]
                 p_e = slot["post"]
@@ -3955,7 +4057,7 @@ class IterativeOptimizer:
 
                 # Build list of (w_name, d_w, post_w, w_data, diff) where W is gap-blocked
                 # from d_e but could potentially work it if removed from d_w.
-                candidates_w: list[tuple] = []
+                candidates_w = []
                 for d_w, assigns in optimized_schedule.items():
                     if d_w == d_e or not isinstance(assigns, list):
                         continue
@@ -4057,6 +4159,102 @@ class IterativeOptimizer:
                         f"(freed from {d_w.strftime('%Y-%m-%d')} P{post_w}); "
                         f"{w2_name} → covers {d_w.strftime('%Y-%m-%d')} P{post_w}"
                     )
+
+            # 3-worker chain: when 2-worker chain can't resolve the slot,
+            # try displacing W2's gap-conflicting shift to a third date covered by W3.
+            if not found:
+                for w_name, d_w, post_w, w_data, _diff in candidates_w:
+                    if found:
+                        break
+                    sim1 = {k: list(v) if isinstance(v, list) else v for k, v in optimized_schedule.items()}
+                    sim1[d_w] = list(sim1[d_w])
+                    sim1[d_w][post_w] = None
+                    if not self._can_worker_take_shift(w_name, d_e, shift_type_e, sim1, workers_data):
+                        continue
+                    sim2 = {k: list(v) if isinstance(v, list) else v for k, v in sim1.items()}
+                    sim2[d_e] = list(sim2[d_e])
+                    sim2[d_e][p_e] = w_name
+
+                    # For each candidate W2 who is gap-blocked from d_w (needs W3 to cover d_w2)
+                    for w2_data in workers_data:
+                        if found:
+                            break
+                        w2_name = str(w2_data.get("id", ""))
+                        if w2_name == w_name:
+                            continue
+                        if not w2_data.get("auto_calculate_shifts", True):
+                            continue
+                        # W2 must be gap-blocked from d_w
+                        w2_dists_to_dw = [
+                            abs((d_w - d_candidates).days)
+                            for d_candidates, a_candidates in sim2.items()
+                            if isinstance(a_candidates, list) and w2_name in a_candidates
+                        ]
+                        if not w2_dists_to_dw:
+                            continue  # W2 has no assignments — handled by 2-chain
+                        diff_w2_dw = min(w2_dists_to_dw)
+                        min_gap_w2 = get_effective_min_gap(w2_data, gap_between_shifts)
+                        if diff_w2_dw >= min_gap_w2:
+                            # W2 can directly cover d_w: fall back to 2-chain logic
+                            if self._can_worker_take_shift(w2_name, d_w, f"Post_{post_w}", sim2, workers_data):
+                                w2_current = sum(
+                                    1 for a in sim2.values() if isinstance(a, list) and w2_name in a
+                                )
+                                # Always consider — already handled by the 2-chain above; skip here
+                                pass
+                            continue
+                        # W2 has a conflict at d_w2 within gap of d_w; find that conflicting date
+                        for d_w2, assigns_w2 in sim2.items():
+                            if found:
+                                break
+                            if not isinstance(assigns_w2, list) or w2_name not in assigns_w2:
+                                continue
+                            try:
+                                diff_check = abs((d_w - d_w2).days)
+                            except Exception:
+                                continue
+                            if diff_check == 0 or diff_check >= min_gap_w2:
+                                continue
+                            post_w2 = assigns_w2.index(w2_name)
+                            shift_type_w2 = f"Post_{post_w2}"
+                            # Build sim3: remove W2 from d_w2
+                            sim3 = {k: list(v) if isinstance(v, list) else v for k, v in sim2.items()}
+                            sim3[d_w2] = list(sim3[d_w2])
+                            sim3[d_w2][post_w2] = None
+                            # Check W2 can take d_w in sim3
+                            if not self._can_worker_take_shift(w2_name, d_w, f"Post_{post_w}", sim3, workers_data):
+                                continue
+                            # Find W3 to cover d_w2
+                            sim4 = {k: list(v) if isinstance(v, list) else v for k, v in sim3.items()}
+                            sim4[d_w] = list(sim4[d_w])
+                            sim4[d_w][post_w] = w2_name
+                            for w3_data in workers_data:
+                                w3_name = str(w3_data.get("id", ""))
+                                if w3_name in (w_name, w2_name):
+                                    continue
+                                if not self._can_worker_take_shift(w3_name, d_w2, shift_type_w2, sim4, workers_data):
+                                    continue
+                                if not w3_data.get("auto_calculate_shifts", True):
+                                    w3_current = sum(
+                                        1 for a in sim4.values() if isinstance(a, list) and w3_name in a
+                                    )
+                                    if w3_current >= w3_data.get("target_shifts", 0):
+                                        continue
+                                # Commit 3-chain
+                                optimized_schedule[d_w2] = list(optimized_schedule[d_w2])
+                                optimized_schedule[d_w2][post_w2] = w3_name
+                                optimized_schedule[d_w] = list(optimized_schedule[d_w])
+                                optimized_schedule[d_w][post_w] = w2_name
+                                optimized_schedule[d_e] = list(optimized_schedule[d_e])
+                                optimized_schedule[d_e][p_e] = w_name
+                                filled_count += 1
+                                found = True
+                                logging.info(
+                                    f"      ⛓️⛓️  3-Chain: {w_name}→{d_e.strftime('%Y-%m-%d')} P{p_e}; "
+                                    f"{w2_name}→{d_w.strftime('%Y-%m-%d')} P{post_w}; "
+                                    f"{w3_name}→{d_w2.strftime('%Y-%m-%d')} P{post_w2}"
+                                )
+                                break
 
             logging.info(f"   ✅ CHAIN DISPLACEMENT FILL: {filled_count}/{len(empty_slots)} slots resolved")
 

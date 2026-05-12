@@ -1181,6 +1181,9 @@ class Scheduler:
                         else:
                             logging.info(f"Worker {w['id']} (AUTO): target_shifts={adjusted}")
 
+            # Once all targets are set, compute work_periods-aware monthly targets
+            self._calculate_monthly_targets()
+
             return True
 
         except Exception as e:
@@ -1223,7 +1226,45 @@ class Scheduler:
             if "_original_target_shifts" not in w:
                 w["_original_target_shifts"] = w.get("target_shifts", 0)
             guardias_per_mes = w["_original_target_shifts"]
-            raw_target = round(guardias_per_mes * proportional_months)
+
+            # Si el médico tiene work_periods, calcular sus meses proporcionales
+            # solo sobre los periodos en que está disponible (e.g. MONICA: jul+sep = 2 meses)
+            work_periods_str = w.get("work_periods", "").strip()
+            if work_periods_str:
+                try:
+                    work_ranges = self.date_utils.parse_date_ranges(work_periods_str)
+                except Exception:
+                    work_ranges = []
+
+                if work_ranges:
+                    worker_months = 0.0
+                    cur_year, cur_month = self.start_date.year, self.start_date.month
+                    end_year, end_month = self.end_date.year, self.end_date.month
+                    while (cur_year, cur_month) <= (end_year, end_month):
+                        days_in_month = calendar.monthrange(cur_year, cur_month)[1]
+                        month_start = datetime(cur_year, cur_month, 1)
+                        month_end = datetime(cur_year, cur_month, days_in_month)
+                        # Días de este mes cubiertos por work_periods (interseción con cada rango)
+                        covered = 0
+                        for rng_start, rng_end in work_ranges:
+                            overlap_start = max(month_start, rng_start, self.start_date)
+                            overlap_end = min(month_end, rng_end, self.end_date)
+                            if overlap_end >= overlap_start:
+                                covered += (overlap_end - overlap_start).days + 1
+                        worker_months += covered / days_in_month
+                        cur_month += 1
+                        if cur_month > 12:
+                            cur_month = 1
+                            cur_year += 1
+                    logging.debug(
+                        f"Worker {wid}: work_periods → {worker_months:.2f} effective months"
+                    )
+                else:
+                    worker_months = proportional_months
+            else:
+                worker_months = proportional_months
+
+            raw_target = round(guardias_per_mes * worker_months)
 
             mand_count = 0
             mand_str = w.get("mandatory_days", "").strip()
@@ -1241,7 +1282,7 @@ class Scheduler:
             total_manual_slots += raw_target
 
             logging.info(
-                f"Worker {wid} (MANUAL): {guardias_per_mes} guardias/mes * {proportional_months:.2f} meses = {raw_target}, "
+                f"Worker {wid} (MANUAL): {guardias_per_mes} guardias/mes * {worker_months:.2f} meses = {raw_target}, "
                 f"Mandatory={mand_count}, Adjusted target_shifts={adjusted}"
             )
 
@@ -1250,49 +1291,96 @@ class Scheduler:
     def _calculate_monthly_targets(self):
         """
         Calculate monthly target shifts for each worker based on their overall targets
+        and their individual work_periods availability per month.
         """
+        import calendar as cal_mod
+
         logging.info("Calculating monthly target distribution...")
 
-        # Calculate available days per month
+        # Calculate schedule months (keys like "2026-07")
         month_days = self._get_schedule_months()
-        total_days = (self.end_date - self.start_date).days + 1
 
         # Initialize monthly targets for each worker
         for worker in self.workers_data:
             worker_id = worker["id"]
             overall_target = worker.get("target_shifts", 0)
 
-            # Initialize or reset monthly targets
-            if "monthly_targets" not in worker:
-                worker["monthly_targets"] = {}
+            worker["monthly_targets"] = {}  # always reset to avoid stale data
 
-            # Distribute target shifts proportionally by month
+            # Use raw target (incl. mandatory) for monthly cap, matching _get_expected_monthly_target
+            if "_raw_target" in worker:
+                overall_target = worker["_raw_target"]
+            else:
+                overall_target = worker.get("target_shifts", 0)
+
+            # Compute available days per month for this worker (respecting work_periods)
+            work_periods_str = worker.get("work_periods", "").strip()
+            if work_periods_str:
+                try:
+                    work_ranges = self.date_utils.parse_date_ranges(work_periods_str)
+                except Exception:
+                    work_ranges = []
+            else:
+                work_ranges = []
+
+            worker_month_avail = {}  # month_key → available days for this worker
+            for month_key in month_days:
+                year_m, month_m = int(month_key[:4]), int(month_key[5:])
+                days_in_month = cal_mod.monthrange(year_m, month_m)[1]
+                month_start = datetime(year_m, month_m, 1)
+                month_end = datetime(year_m, month_m, days_in_month)
+
+                if work_ranges:
+                    avail = 0
+                    for rng_start, rng_end in work_ranges:
+                        overlap_start = max(month_start, rng_start, self.start_date)
+                        overlap_end = min(month_end, rng_end, self.end_date)
+                        if overlap_end >= overlap_start:
+                            avail += (overlap_end - overlap_start).days + 1
+                else:
+                    # No work_periods restriction — all schedule days in this month count
+                    overlap_start = max(month_start, self.start_date)
+                    overlap_end = min(month_end, self.end_date)
+                    avail = max(0, (overlap_end - overlap_start).days + 1)
+
+                worker_month_avail[month_key] = avail
+
+            total_avail_days = sum(worker_month_avail.values())
+
+            # Distribute target proportionally over available days only
             remaining_target = overall_target
-            for month_key, days_in_month in month_days.items():
-                # Calculate proportion of shifts for this month
-                month_proportion = days_in_month / total_days
-                month_target = round(overall_target * month_proportion)
+            if total_avail_days > 0:
+                # First pass: proportional allocation
+                for month_key in month_days:
+                    avail = worker_month_avail.get(month_key, 0)
+                    if avail == 0:
+                        worker["monthly_targets"][month_key] = 0
+                    else:
+                        month_target = round(overall_target * avail / total_avail_days)
+                        month_target = min(month_target, remaining_target)
+                        worker["monthly_targets"][month_key] = month_target
+                        remaining_target -= month_target
+                        logging.debug(
+                            f"Worker {worker_id}: {month_key} → {month_target} shifts "
+                            f"({avail}/{total_avail_days} avail days)"
+                        )
 
-                # Ensure we don't exceed overall target
-                month_target = min(month_target, remaining_target)
-                worker["monthly_targets"][month_key] = month_target
-                remaining_target -= month_target
+                # Distribute rounding remainder to months with most availability
+                if remaining_target > 0:
+                    sorted_months = sorted(
+                        [(k, v) for k, v in worker_month_avail.items() if v > 0],
+                        key=lambda x: x[1], reverse=True,
+                    )
+                    for month_key, _ in sorted_months:
+                        if remaining_target <= 0:
+                            break
+                        worker["monthly_targets"][month_key] += 1
+                        remaining_target -= 1
+            else:
+                for month_key in month_days:
+                    worker["monthly_targets"][month_key] = 0
 
-                logging.debug(f"Worker {worker_id}: {month_key} → {month_target} shifts")
-
-            # Handle any remaining shifts due to rounding
-            if remaining_target > 0:
-                # Distribute remaining shifts to months with most days first
-                sorted_months = sorted(month_days.items(), key=lambda x: x[1], reverse=True)
-                for month_key, _ in sorted_months:
-                    if remaining_target <= 0:
-                        break
-                    worker["monthly_targets"][month_key] += 1
-                    remaining_target -= 1
-                    logging.debug(f"Worker {worker_id}: Added +1 to {month_key} for rounding")
-
-        # Log the results
-        logging.info("Monthly targets calculated")
+        logging.info("Monthly targets calculated (work_periods-aware)")
         return True
 
     def _get_schedule_months(self):

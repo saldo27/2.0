@@ -200,8 +200,12 @@ class StrictBalanceOptimizer:
                     worker_name = next(
                         (w.get("name", w["id"]) for w in self.workers_data if w["id"] == worker_id), worker_id
                     )
+                    # Display total (including mandatory) for clarity
+                    mandatory_cnt = info.get("mandatory", 0)
+                    display_assigned = info["total_assigned"]
+                    display_target = info["target"] + mandatory_cnt
                     logging.warning(
-                        f"  - {worker_name}: {info['assigned']}/{info['target']} (deviation: {info['deviation']:+d})"
+                        f"  - {worker_name}: {display_assigned}/{display_target} (deviation: {info['deviation']:+d})"
                     )
 
         return final_analysis["workers_outside_tolerance"] == 0

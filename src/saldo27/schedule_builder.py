@@ -370,14 +370,14 @@ class ScheduleBuilder:
         """
         # Verificar locked mandatory
         if (worker_id, date) in self._locked_mandatory:
-            logging.info(
+            logging.debug(
                 f"🚫 BLOCKED {operation_name}: Cannot modify LOCKED MANDATORY assignment for {worker_id} on {date.strftime('%Y-%m-%d')}"
             )
             return False
 
         # Verificar config mandatory
         if self._is_mandatory(worker_id, date):
-            logging.info(
+            logging.debug(
                 f"🚫 BLOCKED {operation_name}: Cannot modify CONFIG MANDATORY assignment for {worker_id} on {date.strftime('%Y-%m-%d')}"
             )
             return False
@@ -1457,7 +1457,8 @@ class ScheduleBuilder:
         # Verificar si hay objetivo mensual específico configurado
         month_key = f"{year}-{month:02d}"
         monthly_targets_config = worker_config.get("monthly_targets", {})
-        if monthly_targets_config.get(month_key, 0) > 0:
+        if month_key in monthly_targets_config:
+            # Valor pre-calculado (puede ser 0 si el médico no trabaja ese mes)
             return monthly_targets_config[month_key]
 
         # Manual workers: use their exact guardias/mes directly (no rounding needed)

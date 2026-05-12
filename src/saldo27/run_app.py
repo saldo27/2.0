@@ -32,7 +32,7 @@ streamlit_hello.__path__ = []
 # Crear streamlit_app como MÓDULO, no función
 streamlit_app_module = types.ModuleType("streamlit_app")
 streamlit_app_module.__file__ = "<dummy_app>"
-streamlit_hello.streamlit_app = streamlit_app_module
+streamlit_hello.streamlit_app = streamlit_app_module  # type: ignore[attr-defined]
 
 sys.modules["streamlit.hello"] = streamlit_hello
 sys.modules["streamlit.hello. streamlit_app"] = streamlit_app_module

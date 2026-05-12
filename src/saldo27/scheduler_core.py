@@ -899,6 +899,16 @@ class SchedulerCore:
 
             if self.balance_optimizer:
                 try:
+                    # Save score checkpoint before strict balance optimizer
+                    score_before_strict = self.metrics.calculate_overall_schedule_score()
+                    state_before_strict = {
+                        "schedule": copy.deepcopy(self.scheduler.schedule),
+                        "assignments": copy.deepcopy(self.scheduler.worker_assignments),
+                        "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
+                        "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
+                        "posts": copy.deepcopy(self.scheduler.worker_posts),
+                    }
+
                     # Aplicar optimización de balance estricto
                     # Primero intentamos con tolerancia ±1
                     balance_achieved = self.balance_optimizer.optimize_balance(
@@ -917,7 +927,20 @@ class SchedulerCore:
                         if balance_achieved:
                             self.balance_optimizer.optimize_balance(max_iterations=200, target_tolerance=1)
 
-                    if balance_achieved:
+                    # Protect score: revert if strict optimizer significantly worsened it
+                    score_after_strict = self.metrics.calculate_overall_schedule_score()
+                    if score_after_strict < score_before_strict - 1.0:
+                        logging.warning(
+                            f"⚠️ Phase 3.6 strict optimizer WORSENED score "
+                            f"({score_before_strict:.2f} → {score_after_strict:.2f}). Reverting."
+                        )
+                        self.scheduler.schedule = state_before_strict["schedule"]
+                        self.scheduler.worker_assignments = state_before_strict["assignments"]
+                        self.scheduler.worker_shift_counts = state_before_strict["counts"]
+                        self.scheduler.worker_weekend_counts = state_before_strict["weekend_counts"]
+                        self.scheduler.worker_posts = state_before_strict["posts"]
+                        self._sync_builder_references()
+                    elif balance_achieved:
                         logging.info("✅ Perfect balance achieved: All workers within ±1 shift of target")
                     else:
                         logging.warning("⚠️ Some workers still outside ±1 tolerance")
@@ -1048,6 +1071,16 @@ class SchedulerCore:
                 logging.info("FINAL PHASE: Strict Balance Optimization (Post-Finalization)")
                 logging.info("=" * 80)
                 try:
+                    # Save score checkpoint before FINAL strict balance optimizer
+                    score_before_final_strict = self.metrics.calculate_overall_schedule_score()
+                    state_before_final_strict = {
+                        "schedule": copy.deepcopy(self.scheduler.schedule),
+                        "assignments": copy.deepcopy(self.scheduler.worker_assignments),
+                        "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
+                        "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
+                        "posts": copy.deepcopy(self.scheduler.worker_posts),
+                    }
+
                     # Ejecutar balance estricto final con más iteraciones
                     final_balance = self.balance_optimizer.optimize_balance(max_iterations=250, target_tolerance=1)
                     if final_balance:
@@ -1056,6 +1089,20 @@ class SchedulerCore:
                         # Intentar con tolerancia más flexible
                         logging.info("🔄 Retrying with tolerance ±2...")
                         self.balance_optimizer.optimize_balance(max_iterations=180, target_tolerance=2)
+
+                    # Protect score: revert if FINAL strict optimizer significantly worsened it
+                    score_after_final_strict = self.metrics.calculate_overall_schedule_score()
+                    if score_after_final_strict < score_before_final_strict - 1.0:
+                        logging.warning(
+                            f"⚠️ FINAL strict optimizer WORSENED score "
+                            f"({score_before_final_strict:.2f} → {score_after_final_strict:.2f}). Reverting."
+                        )
+                        self.scheduler.schedule = state_before_final_strict["schedule"]
+                        self.scheduler.worker_assignments = state_before_final_strict["assignments"]
+                        self.scheduler.worker_shift_counts = state_before_final_strict["counts"]
+                        self.scheduler.worker_weekend_counts = state_before_final_strict["weekend_counts"]
+                        self.scheduler.worker_posts = state_before_final_strict["posts"]
+                        self._sync_builder_references()
                 except Exception as e:
                     logging.error(f"Error in final balance optimization: {e}", exc_info=True)
 
@@ -1085,11 +1132,16 @@ class SchedulerCore:
             pre_composite = pre_workload_imbalance + (pre_weekend_imbalance * 0.5)
             post_composite = post_workload_imbalance + (post_weekend_imbalance * 0.5)
 
-            # Allow small degradation (0.5) but reject significant degradation
-            if post_composite > pre_composite + 0.5:
-                logging.warning("⚠️ FINALIZATION DEGRADED THE SCHEDULE!")
-                logging.warning(f"   Pre-finalization composite: {pre_composite:.2f}")
-                logging.warning(f"   Post-finalization composite: {post_composite:.2f}")
+            # Revert if composite worsened significantly OR overall score dropped notably
+            score_degraded = post_score < pre_score - 1.5
+            composite_degraded = post_composite > pre_composite + 0.1
+            if score_degraded or composite_degraded:
+                reason = []
+                if score_degraded:
+                    reason.append(f"score {pre_score:.2f}→{post_score:.2f}")
+                if composite_degraded:
+                    reason.append(f"composite {pre_composite:.2f}→{post_composite:.2f}")
+                logging.warning(f"⚠️ FINALIZATION DEGRADED THE SCHEDULE! ({', '.join(reason)})")
                 logging.warning("   RESTORING pre-finalization state...")
 
                 # Restore pre-finalization state
@@ -1104,7 +1156,13 @@ class SchedulerCore:
 
                 logging.info("✅ Pre-finalization state restored successfully")
             else:
-                logging.info("✅ Finalization improved or maintained schedule quality")
+                if post_score >= pre_score - 0.1:
+                    logging.info(f"✅ Finalization improved or maintained schedule quality (score: {post_score:.2f})")
+                else:
+                    logging.info(
+                        f"ℹ️ Finalization: minor score change ({pre_score:.2f}→{post_score:.2f}), "
+                        f"composite OK ({pre_composite:.2f}→{post_composite:.2f})"
+                    )
 
             # Get the best schedule
             final_schedule_data = self.scheduler.schedule_builder.get_best_schedule()

@@ -68,15 +68,22 @@ class BalanceValidator:
             # CRITICAL: target_shifts ya tiene mandatory restados
             assigned_shifts = self._count_worker_shifts(worker_id, schedule, worker)
 
-            # Calcular desviación
+            # Calcular desviación (siempre sobre non-mandatory vs adjusted target)
             deviation = assigned_shifts - target_shifts
             deviation_percentage = (deviation / target_shifts * 100) if target_shifts > 0 else 0
             abs_deviation = abs(deviation_percentage)
+
+            # Para el display: mostrar totales incluyendo mandatory
+            mandatory_count = self._count_mandatory_shifts(worker_id, schedule, worker)
+            display_assigned = assigned_shifts + mandatory_count
+            display_target = target_shifts + mandatory_count
 
             worker_info = {
                 "worker_id": worker_id,
                 "target": target_shifts,
                 "assigned": assigned_shifts,
+                "display_assigned": display_assigned,
+                "display_target": display_target,
                 "deviation": deviation,
                 "deviation_percentage": deviation_percentage,
                 "abs_deviation": abs_deviation,
@@ -121,7 +128,7 @@ class BalanceValidator:
             for worker_info in violations["critical"]:
                 logging.error(
                     f"      {worker_info['worker_id']}: {worker_info['deviation_percentage']:+.1f}% "
-                    f"({worker_info['assigned']}/{worker_info['target']} shifts)"
+                    f"({worker_info['display_assigned']}/{worker_info['display_target']} shifts)"
                 )
 
         if violations["critical"]:
@@ -129,7 +136,7 @@ class BalanceValidator:
             for worker_info in violations["critical"]:
                 logging.warning(
                     f"      {worker_info['worker_id']}: {worker_info['deviation_percentage']:+.1f}% "
-                    f"({worker_info['assigned']}/{worker_info['target']} shifts)"
+                    f"({worker_info['display_assigned']}/{worker_info['display_target']} shifts)"
                 )
 
         return {
@@ -179,6 +186,31 @@ class BalanceValidator:
                         if worker == worker_id or str(worker) == str(worker_id):
                             count += 1
 
+        return count
+
+    def _count_mandatory_shifts(self, worker_id: str, schedule: dict, worker_data: dict | None = None) -> int:
+        """Cuenta únicamente los turnos mandatory asignados a un trabajador."""
+        if not worker_data or not worker_data.get("mandatory_days"):
+            return 0
+        mandatory_str = worker_data.get("mandatory_days", "")
+        mandatory_dates = set(p.strip() for p in mandatory_str.replace(";", ",").split(",") if p.strip())
+        count = 0
+        for date, assignments in schedule.items():
+            if not assignments:
+                continue
+            is_mandatory = False
+            try:
+                check_date = date if isinstance(date, datetime) else datetime.strptime(str(date), "%Y-%m-%d")
+                date_str1 = check_date.strftime("%d-%m-%Y")
+                date_str2 = check_date.strftime("%Y-%m-%d")
+                if date_str1 in mandatory_dates or date_str2 in mandatory_dates:
+                    is_mandatory = True
+            except (ValueError, TypeError):
+                pass
+            if is_mandatory:
+                for worker in assignments:
+                    if worker == worker_id or str(worker) == str(worker_id):
+                        count += 1
         return count
 
     def get_rebalancing_recommendations(self, schedule: dict, workers_data: list[dict]) -> list[dict]:
