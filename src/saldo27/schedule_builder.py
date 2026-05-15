@@ -3253,6 +3253,239 @@ class ScheduleBuilder:
                     if _dbg:
                         logging.debug(f"No swap for empty {date_empty.strftime('%Y-%m-%d')} P{post_empty}")
 
+        # ── Pass 3: Last-resort fills for shifts still empty after Pass 1 and Pass 2 ──
+        # Pass 3A: For a vacant last-post slot, rotate an already-assigned worker to
+        #          that last post and fill the freed post with a replacement, accepting
+        #          a gap that is one day shorter than the normal minimum (last resort).
+        # Pass 3B: Cross-day chain — find worker Z already scheduled somewhere, move Z
+        #          to the empty slot (gap OK after removing date_Z), then plug date_Z
+        #          with a deficit worker D.
+        remaining_after_pass2 = [
+            (d, p)
+            for d, p in remaining_empty_shifts_after_pass1
+            if self.schedule.get(d, [None] * self.num_shifts)[p] is None
+        ]
+        if remaining_after_pass2:
+            logging.info(f"--- Finished Pass 2. Starting Pass 3: {len(remaining_after_pass2)} empty shifts remain ---")
+            for _rslot in remaining_after_pass2:
+                logging.debug(f"  [Pass 3] Still empty: {_rslot[0].strftime('%Y-%m-%d')} P{_rslot[1]}")
+
+            # ── Pass 3A ───────────────────────────────────────────────────────────────
+            remaining_for_3b: list[tuple] = []
+            for date_e, post_e in remaining_after_pass2:
+                if self.schedule[date_e][post_e] is not None:
+                    continue  # filled by a prior 3A iteration
+
+                if post_e != self.num_shifts - 1:
+                    remaining_for_3b.append((date_e, post_e))
+                    continue  # 3A only handles last-post vacancies
+
+                day_schedule = self.schedule.get(date_e, [])
+                found_3a = False
+                for post_w, worker_W_id in enumerate(day_schedule):
+                    if worker_W_id is None or post_w == post_e:
+                        continue
+                    if not self._can_modify_assignment(worker_W_id, date_e, "pass3a_rotate"):
+                        continue
+                    W_data = next((w for w in self.workers_data if w["id"] == worker_W_id), None)
+                    if W_data is None or W_data.get("no_last_post", False):
+                        continue  # W cannot take last post
+
+                    # Build the "future" day after W moves from post_w to post_e.
+                    # post_e (last post) gets worker_W_id; post_w is freed (None).
+                    future_day = [
+                        worker_W_id if i == post_e else (None if i == post_w else w) for i, w in enumerate(day_schedule)
+                    ]
+                    # Workers Y would see at post_w (all posts except post_w itself)
+                    others_for_Y = [w for i, w in enumerate(future_day) if w is not None and i != post_w]
+
+                    best_Y_id: str | None = None
+                    best_Y_deficit = -1
+                    for Y_data in self.workers_data:
+                        worker_Y_id = Y_data["id"]
+                        if worker_Y_id == worker_W_id:
+                            continue
+                        if worker_Y_id in day_schedule:
+                            continue  # already assigned that day
+                        if self._is_worker_unavailable(worker_Y_id, date_e):
+                            continue
+                        # Post constraints for the freed post_w
+                        if post_w == self.num_shifts - 1 and Y_data.get("no_last_post", False):
+                            continue
+                        if post_w != self.num_shifts - 1 and Y_data.get("only_last_post", False):
+                            continue
+                        # Incompatibility with others on the day after W's lateral move
+                        if not self._check_incompatibility_with_list(worker_Y_id, others_for_Y):
+                            continue
+                        # Tolerance check (relaxed)
+                        if self._would_violate_tolerance(worker_Y_id, date_e, allow_relaxation=True):
+                            continue
+                        # Gap check — relaxed by 1 day (last resort only)
+                        Y_min_gap = get_effective_min_gap(Y_data, self.gap_between_shifts)
+                        relaxed_gap_Y = max(1, Y_min_gap - 1)
+                        Y_asgn = self.worker_assignments.get(worker_Y_id, set())
+                        if any(0 < abs((date_e - d).days) < relaxed_gap_Y for d in Y_asgn):
+                            continue
+                        # Prefer worker with the highest shift deficit
+                        Y_deficit = Y_data.get("target_shifts", len(Y_asgn)) - len(Y_asgn)
+                        if Y_deficit > best_Y_deficit:
+                            best_Y_deficit = Y_deficit
+                            best_Y_id = worker_Y_id
+
+                    if best_Y_id is None:
+                        continue
+
+                    logging.info(
+                        f"[Pass 3A] {date_e.strftime('%Y-%m-%d')}: "
+                        f"W:{worker_W_id} P{post_w}→P{post_e}; Y:{best_Y_id}→P{post_w}"
+                    )
+                    # Execute: W moves post_w → post_e (same day; worker_assignments unchanged)
+                    self.schedule[date_e][post_w] = None
+                    self.schedule[date_e][post_e] = worker_W_id
+                    # W's lateral same-day move is net-zero for tracking; no _update_tracking_data needed
+                    # Y takes the freed post_w
+                    self.schedule[date_e][post_w] = best_Y_id
+                    self.worker_assignments.setdefault(best_Y_id, set()).add(date_e)
+                    self.scheduler._update_tracking_data(best_Y_id, date_e, post_w, removing=False)
+
+                    shifts_filled_this_pass_total += 1
+                    made_change_overall = True
+                    found_3a = True
+                    break  # W found; stop iterating posts for this date
+
+                if not found_3a:
+                    remaining_for_3b.append((date_e, post_e))
+
+            # ── Pass 3B ───────────────────────────────────────────────────────────────
+            for date_e, post_e in remaining_for_3b:
+                if self.schedule[date_e][post_e] is not None:
+                    continue  # filled by an earlier 3B iteration
+
+                others_at_e = [w for w in self.schedule.get(date_e, []) if w is not None]
+                chain_found = False
+                # Try workers closest to their target first as Z (neutral movers)
+                for Z_data in sorted(
+                    self.workers_data,
+                    key=lambda w: abs(w.get("target_shifts", 0) - len(self.worker_assignments.get(w["id"], set()))),
+                ):
+                    worker_Z_id = Z_data["id"]
+                    if not self.worker_assignments.get(worker_Z_id):
+                        continue
+                    if self._is_worker_unavailable(worker_Z_id, date_e):
+                        continue
+                    if date_e in self.worker_assignments.get(worker_Z_id, set()):
+                        continue  # already assigned that day
+                    # Post constraints for post_e
+                    if post_e == self.num_shifts - 1 and Z_data.get("no_last_post", False):
+                        continue
+                    if post_e != self.num_shifts - 1 and Z_data.get("only_last_post", False):
+                        continue
+                    # Incompatibility at date_e
+                    if not self._check_incompatibility_with_list(worker_Z_id, others_at_e):
+                        continue
+
+                    Z_min_gap = get_effective_min_gap(Z_data, self.gap_between_shifts)
+                    for date_z in sorted(self.worker_assignments.get(worker_Z_id, set())):
+                        if not self._can_modify_assignment(worker_Z_id, date_z, "pass3b_move_Z"):
+                            continue
+                        try:
+                            post_z = self.schedule[date_z].index(worker_Z_id)
+                        except (ValueError, KeyError, IndexError):
+                            continue
+
+                        # Verify Z can reach date_e after removing date_z from their assignments
+                        Z_asgn_minus_z = self.worker_assignments[worker_Z_id] - {date_z}
+                        if any(0 < abs((date_e - d).days) < Z_min_gap for d in Z_asgn_minus_z):
+                            continue  # gap still violated even without date_z
+
+                        # Find deficit worker D to cover (date_z, post_z)
+                        others_at_z_no_Z = [
+                            w for w in self.schedule.get(date_z, []) if w is not None and w != worker_Z_id
+                        ]
+                        best_D_id: str | None = None
+                        best_D_deficit = -1  # accept workers at-or-below target
+                        for D_data in self.workers_data:
+                            worker_D_id = D_data["id"]
+                            if worker_D_id == worker_Z_id:
+                                continue
+                            if date_z in self.worker_assignments.get(worker_D_id, set()):
+                                continue  # already on that day
+                            if self._is_worker_unavailable(worker_D_id, date_z):
+                                continue
+                            # Post constraints for post_z
+                            if post_z == self.num_shifts - 1 and D_data.get("no_last_post", False):
+                                continue
+                            if post_z != self.num_shifts - 1 and D_data.get("only_last_post", False):
+                                continue
+                            if not self._check_incompatibility_with_list(worker_D_id, others_at_z_no_Z):
+                                continue
+                            if self._would_violate_tolerance(worker_D_id, date_z, allow_relaxation=True):
+                                continue
+                            # Standard gap check for D
+                            D_min_gap = get_effective_min_gap(D_data, self.gap_between_shifts)
+                            D_asgn = self.worker_assignments.get(worker_D_id, set())
+                            if any(0 < abs((date_z - d).days) < D_min_gap for d in D_asgn):
+                                continue
+                            # Select D with highest deficit (workers at-or-below target)
+                            D_deficit = D_data.get("target_shifts", len(D_asgn)) - len(D_asgn)
+                            if D_deficit > best_D_deficit:
+                                best_D_deficit = D_deficit
+                                best_D_id = worker_D_id
+
+                        if best_D_id is None:
+                            continue
+
+                        logging.info(
+                            f"[Pass 3B] Z:{worker_Z_id} ({date_z.strftime('%Y-%m-%d')},P{post_z})"
+                            f"→({date_e.strftime('%Y-%m-%d')},P{post_e}); "
+                            f"D:{best_D_id}→({date_z.strftime('%Y-%m-%d')},P{post_z})"
+                        )
+                        # Snapshots for rollback
+                        _snap_z_day = self.schedule[date_z][:]
+                        _snap_e_day = self.schedule[date_e][:]
+                        _snap_Z_asgn = set(self.worker_assignments.get(worker_Z_id, set()))
+                        _snap_D_asgn = set(self.worker_assignments.get(best_D_id, set()))
+                        _pre_Z = len(_snap_Z_asgn)
+                        _pre_D = len(_snap_D_asgn)
+
+                        # Remove Z from date_z
+                        self.schedule[date_z][post_z] = None
+                        self.worker_assignments[worker_Z_id].discard(date_z)
+                        self.scheduler._update_tracking_data(worker_Z_id, date_z, post_z, removing=True)
+
+                        # Assign Z to date_e
+                        self.schedule[date_e][post_e] = worker_Z_id
+                        self.worker_assignments.setdefault(worker_Z_id, set()).add(date_e)
+                        self.scheduler._update_tracking_data(worker_Z_id, date_e, post_e, removing=False)
+
+                        # Assign D to date_z
+                        self.schedule[date_z][post_z] = best_D_id
+                        self.worker_assignments.setdefault(best_D_id, set()).add(date_z)
+                        self.scheduler._update_tracking_data(best_D_id, date_z, post_z, removing=False)
+
+                        # Verify count accounting: Z neutral, D gains 1
+                        _post_Z = len(self.worker_assignments.get(worker_Z_id, set()))
+                        _post_D = len(self.worker_assignments.get(best_D_id, set()))
+                        if _post_Z != _pre_Z or _post_D != _pre_D + 1:
+                            logging.warning(
+                                f"[Pass 3B] Count mismatch — rolling back. "
+                                f"Z:{_pre_Z}→{_post_Z} (exp {_pre_Z}), "
+                                f"D:{_pre_D}→{_post_D} (exp {_pre_D + 1})"
+                            )
+                            self.schedule[date_z][:] = _snap_z_day
+                            self.schedule[date_e][:] = _snap_e_day
+                            self.worker_assignments[worker_Z_id] = _snap_Z_asgn
+                            self.worker_assignments[best_D_id] = _snap_D_asgn
+                            continue
+
+                        shifts_filled_this_pass_total += 1
+                        made_change_overall = True
+                        chain_found = True
+                        break  # stop trying date_z for this Z
+
+                    if chain_found:
+                        break  # stop trying Z workers for this slot
+
         logging.info(f"--- Finished _try_fill_empty_shifts. Total filled/swapped: {shifts_filled_this_pass_total} ---")
         if made_change_overall:
             self._synchronize_tracking_data()  # Ensure builder's and scheduler's data are aligned
