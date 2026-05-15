@@ -4822,9 +4822,7 @@ class ScheduleBuilder:
                     continue
                 if not self._can_assign_worker(wid, d, post, replacing_worker=None):
                     continue
-                others_on_date = [
-                    w for i, w in enumerate(self.schedule[d]) if w is not None and i != post
-                ]
+                others_on_date = [w for i, w in enumerate(self.schedule[d]) if w is not None and i != post]
                 if not self._check_incompatibility_with_list(wid, others_on_date):
                     continue
                 if self._is_weekend_or_holiday(d):
@@ -4833,9 +4831,7 @@ class ScheduleBuilder:
                 self.schedule[d][post] = wid
                 self.worker_assignments[wid].add(d)
                 self.scheduler._update_tracking_data(wid, d, post, removing=False)
-                logging.info(
-                    f"🔧 Fill empty slot: {wid} → {d.strftime('%d-%b')} P{post} (month {under_ym[1]:02d})"
-                )
+                logging.info(f"🔧 Fill empty slot: {wid} → {d.strftime('%d-%b')} P{post} (month {under_ym[1]:02d})")
                 return True
 
         # Pass 2: replace an over-target donor

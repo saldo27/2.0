@@ -605,7 +605,11 @@ class IterativeOptimizer:
                 )
 
             # Extract worker names safely
-            worker_names = [str(w.get("id", w.get("name", f"Worker {i + 1}"))) for i, w in enumerate(workers_data) if isinstance(w, dict)]
+            worker_names = [
+                str(w.get("id", w.get("name", f"Worker {i + 1}")))
+                for i, w in enumerate(workers_data)
+                if isinstance(w, dict)
+            ]
 
             # Debug: Log the structures
             logging.info(f"Debug: Worker names extracted: {worker_names[:5]}...")  # First 5
@@ -1100,9 +1104,7 @@ class IterativeOptimizer:
                 )
 
             if transferred == 0:
-                logging.debug(
-                    f"   ⚠️  Targeted transfer {donor}→{recipient}: no eligible slot found"
-                )
+                logging.debug(f"   ⚠️  Targeted transfer {donor}→{recipient}: no eligible slot found")
 
         logging.info(f"   🎯 Targeted rebalancing: {applied} transfers applied")
         return optimized_schedule
@@ -1150,17 +1152,13 @@ class IterativeOptimizer:
             work_periods_str = worker_data.get("work_periods", "")
             if work_periods_str and work_periods_str.strip():
                 if not is_date_in_ranges(shift_date, work_periods_str):
-                    logging.debug(
-                        f"❌ {worker_name} blocked: {shift_date.date()} outside work_periods"
-                    )
+                    logging.debug(f"❌ {worker_name} blocked: {shift_date.date()} outside work_periods")
                     return False
 
             # CRITICAL: Check days_off — worker is unavailable on these dates
             days_off_str = worker_data.get("days_off", "")
             if days_off_str and is_date_in_ranges(shift_date, days_off_str):
-                logging.debug(
-                    f"❌ {worker_name} blocked: {shift_date.date()} is in days_off"
-                )
+                logging.debug(f"❌ {worker_name} blocked: {shift_date.date()} is in days_off")
                 return False
 
             # Check no_last_post constraint: worker cannot be assigned to the last post
@@ -2869,7 +2867,11 @@ class IterativeOptimizer:
         gap = int(schedule_config.get("gap_between_shifts", getattr(self.scheduler, "gap_between_shifts", 3)))
 
         # Build worker name list for replacement candidates
-        all_worker_names = [str(w.get("id", w.get("name", f"Worker {i + 1}"))) for i, w in enumerate(workers_data) if isinstance(w, dict)]
+        all_worker_names = [
+            str(w.get("id", w.get("name", f"Worker {i + 1}")))
+            for i, w in enumerate(workers_data)
+            if isinstance(w, dict)
+        ]
 
         swaps_made = 0
         max_swaps = min(20, len(weekend_violations) * 2)
@@ -3390,7 +3392,11 @@ class IterativeOptimizer:
         optimized_schedule = copy.deepcopy(schedule)
 
         # Extract worker names safely (reuse existing logic)
-        worker_names = [str(w.get("id", w.get("name", f"Worker {i + 1}"))) for i, w in enumerate(workers_data) if isinstance(w, dict)]
+        worker_names = [
+            str(w.get("id", w.get("name", f"Worker {i + 1}")))
+            for i, w in enumerate(workers_data)
+            if isinstance(w, dict)
+        ]
 
         # Group violations by type
         general_violations = [v for v in violations if "weekend" not in v.get("type", "")]
@@ -4197,9 +4203,7 @@ class IterativeOptimizer:
                         if diff_w2_dw >= min_gap_w2:
                             # W2 can directly cover d_w: fall back to 2-chain logic
                             if self._can_worker_take_shift(w2_name, d_w, f"Post_{post_w}", sim2, workers_data):
-                                w2_current = sum(
-                                    1 for a in sim2.values() if isinstance(a, list) and w2_name in a
-                                )
+                                w2_current = sum(1 for a in sim2.values() if isinstance(a, list) and w2_name in a)
                                 # Always consider — already handled by the 2-chain above; skip here
                                 pass
                             continue
@@ -4235,9 +4239,7 @@ class IterativeOptimizer:
                                 if not self._can_worker_take_shift(w3_name, d_w2, shift_type_w2, sim4, workers_data):
                                     continue
                                 if not w3_data.get("auto_calculate_shifts", True):
-                                    w3_current = sum(
-                                        1 for a in sim4.values() if isinstance(a, list) and w3_name in a
-                                    )
+                                    w3_current = sum(1 for a in sim4.values() if isinstance(a, list) and w3_name in a)
                                     if w3_current >= w3_data.get("target_shifts", 0):
                                         continue
                                 # Commit 3-chain
@@ -4314,25 +4316,19 @@ class IterativeOptimizer:
         """
         try:
             # CRITICAL: Resolve worker_data early for period/availability checks
-            early_worker_data = next(
-                (w for w in workers_data if str(w.get("id", "")) == str(worker_id)), None
-            )
+            early_worker_data = next((w for w in workers_data if str(w.get("id", "")) == str(worker_id)), None)
             if early_worker_data:
                 # Check work_periods — worker can only be assigned within defined periods
                 wp_str = early_worker_data.get("work_periods", "")
                 if wp_str and wp_str.strip():
                     if not is_date_in_ranges(date, wp_str):
-                        logging.debug(
-                            f"❌ {worker_name} blocked (greedy): {date.date()} outside work_periods"
-                        )
+                        logging.debug(f"❌ {worker_name} blocked (greedy): {date.date()} outside work_periods")
                         return False
 
                 # Check days_off — worker is unavailable on these dates
                 do_str = early_worker_data.get("days_off", "")
                 if do_str and is_date_in_ranges(date, do_str):
-                    logging.debug(
-                        f"❌ {worker_name} blocked (greedy): {date.date()} is in days_off"
-                    )
+                    logging.debug(f"❌ {worker_name} blocked (greedy): {date.date()} is in days_off")
                     return False
 
             # Check if worker already has a shift on this date

@@ -2099,6 +2099,7 @@ with tab2:
             _pdf_exporter: type | None = None
             try:
                 from saldo27.pdf_exporter import PDFExporter
+
                 _pdf_exporter = PDFExporter
             except ImportError:
                 st.error("Error: No se encontró el módulo pdf_exporter.py")

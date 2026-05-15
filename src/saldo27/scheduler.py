@@ -1256,9 +1256,7 @@ class Scheduler:
                         if cur_month > 12:
                             cur_month = 1
                             cur_year += 1
-                    logging.debug(
-                        f"Worker {wid}: work_periods → {worker_months:.2f} effective months"
-                    )
+                    logging.debug(f"Worker {wid}: work_periods → {worker_months:.2f} effective months")
                 else:
                     worker_months = proportional_months
             else:
@@ -1369,7 +1367,8 @@ class Scheduler:
                 if remaining_target > 0:
                     sorted_months = sorted(
                         [(k, v) for k, v in worker_month_avail.items() if v > 0],
-                        key=lambda x: x[1], reverse=True,
+                        key=lambda x: x[1],
+                        reverse=True,
                     )
                     for month_key, _ in sorted_months:
                         if remaining_target <= 0:
