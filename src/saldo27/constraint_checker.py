@@ -388,7 +388,7 @@ class ConstraintChecker:
             # Use weekend_tolerance from config (in shifts, e.g., ±1, ±2)
             # This replaces the old percentage-based tolerance
             weekend_tolerance_shifts = getattr(self.scheduler, "weekend_tolerance", 1)
-            max_target = int(raw_target) + weekend_tolerance_shifts
+            max_target = round(raw_target) + weekend_tolerance_shifts
 
             # Count current-period weekend assignments (including the prospective one).
             # prior_weekend is added ONLY to the cap so that workers who already

@@ -1,5 +1,6 @@
 # Imports
 import logging
+import math
 import random
 from datetime import datetime, timedelta
 
@@ -605,7 +606,7 @@ class ScheduleBuilder:
 
             # Use weekend_tolerance from config (in shifts, not percentage)
             weekend_tolerance_shifts = getattr(self.scheduler, "weekend_tolerance", 1)
-            max_weekend_allowed = int(weekend_target) + weekend_tolerance_shifts
+            max_weekend_allowed = round(weekend_target) + weekend_tolerance_shifts
 
             # ONLY check UPPER bound for weekends
             if weekend_after > max_weekend_allowed:
@@ -820,18 +821,6 @@ class ScheduleBuilder:
             # Using allow_relaxation=True to enforce the absolute 12% limit
             if self._would_violate_tolerance(worker_id, date, allow_relaxation=True):
                 return False
-
-            # Check monthly targets cap
-            monthly_targets = worker.get("monthly_targets", {})
-            month_key = date.strftime("%Y-%m")
-            if month_key in monthly_targets:
-                monthly_target = monthly_targets[month_key]
-                if monthly_target > 0:
-                    is_manual_worker = not worker.get("auto_calculate_shifts", True)
-                    monthly_tolerance = 0 if is_manual_worker else 1
-                    shifts_this_month = sum(1 for d in assignments if d.year == date.year and d.month == date.month)
-                    if shifts_this_month + 1 > monthly_target + monthly_tolerance:
-                        return False
 
             # If we've made it this far, the worker can be assigned
             return True
@@ -1141,7 +1130,10 @@ class ScheduleBuilder:
                             if d.year == date.year and d.month == date.month
                         )
                         work_pct = worker_data_month.get("work_percentage", 100)
-                        monthly_tolerance = 1 if work_pct >= 100 else 0
+                        _is_manual = not worker_data_month.get("auto_calculate_shifts", True)
+                        _mk = f"{date.year}-{date.month:02d}"
+                        _ceil = worker_data_month.get("monthly_targets_ceil", {}).get(_mk, expected_monthly)
+                        monthly_tolerance = max(0, _ceil - expected_monthly) if work_pct >= 100 and not _is_manual else 0
                         if month_count_sim > expected_monthly + monthly_tolerance:
                             if _dbg:
                                 logging.debug(
@@ -1356,7 +1348,7 @@ class ScheduleBuilder:
 
         # Use weekend_tolerance from config (in shifts, e.g., ±1)
         weekend_tolerance_shifts = getattr(self.scheduler, "weekend_tolerance", 1)
-        max_allowed_weekends = int(raw_target) + weekend_tolerance_shifts
+        max_allowed_weekends = round(raw_target) + weekend_tolerance_shifts
 
         current_weekend_count = len(weekend_dates)
 
@@ -1674,8 +1666,17 @@ class ScheduleBuilder:
             if self.use_strict_mode:
                 base_tolerance = 0
             else:
-                # Relaxed mode (improvement/rebalance phases): allow ±1
-                base_tolerance = 1
+                # Relaxed mode: ceiling-based cap.
+                # ceil(fractional_target) gives +1 when the target rounded down,
+                # and 0 when it rounded up — so tolerance naturally matches the fraction.
+                # E.g. fraction=3.32 → round=3, ceil=4 → tolerance=1 (can have 4 shifts).
+                # E.g. fraction=3.56 → round=4, ceil=4 → tolerance=0 (already rounded up).
+                _mk = f"{date.year}-{date.month:02d}"
+                base_tolerance = max(
+                    0,
+                    (worker_config or {}).get("monthly_targets_ceil", {}).get(_mk, expected_monthly_target)
+                    - expected_monthly_target,
+                )
 
         # Calculate effective monthly max (STRICT)
         # The expected_monthly_target is already the TOTAL for this month.
@@ -2229,8 +2230,8 @@ class ScheduleBuilder:
                     # This replaces the old percentage-based tolerance
                     weekend_tolerance_shifts = getattr(self.scheduler, "weekend_tolerance", 1)
 
-                    min_weekend_allowed = max(0, int(weekend_target) - weekend_tolerance_shifts)
-                    max_weekend_allowed = int(weekend_target) + weekend_tolerance_shifts
+                    min_weekend_allowed = max(0, round(weekend_target) - weekend_tolerance_shifts)
+                    max_weekend_allowed = round(weekend_target) + weekend_tolerance_shifts
 
                     # Count after potential assignment
                     weekend_after = weekend_assignments + 1
@@ -3715,7 +3716,10 @@ class ScheduleBuilder:
                             )
                             # Allow up to expected + tolerance, not just expected
                             work_pct = under_worker_obj.get("work_percentage", 100)
-                            monthly_tolerance = 1 if work_pct >= 100 else 0
+                            _is_manual = not under_worker_obj.get("auto_calculate_shifts", True)
+                            _mk = f"{date_val.year}-{date_val.month:02d}"
+                            _ceil = under_worker_obj.get("monthly_targets_ceil", {}).get(_mk, expected_monthly)
+                            monthly_tolerance = max(0, _ceil - expected_monthly) if work_pct >= 100 and not _is_manual else 0
                             max_monthly = expected_monthly + monthly_tolerance
 
                             # Reject if would exceed monthly cap
@@ -4280,7 +4284,10 @@ class ScheduleBuilder:
                             )
                             # Allow up to expected + tolerance
                             work_pct = other_worker_obj.get("work_percentage", 100)
-                            monthly_tolerance = 1 if work_pct >= 100 else 0
+                            _is_manual = not other_worker_obj.get("auto_calculate_shifts", True)
+                            _mk = f"{date.year}-{date.month:02d}"
+                            _ceil = other_worker_obj.get("monthly_targets_ceil", {}).get(_mk, expected_monthly)
+                            monthly_tolerance = max(0, _ceil - expected_monthly) if work_pct >= 100 and not _is_manual else 0
                             max_monthly = expected_monthly + monthly_tolerance
 
                             # Reject if would exceed monthly cap
@@ -4692,23 +4699,41 @@ class ScheduleBuilder:
                         changes += 1
                         surplus -= 1
 
-                # Step B: fill under-target months only within overall target budget
+                # Step B: fill under-target months only within overall target budget.
+                # When budget is exhausted (worker already at overall target), still try
+                # Pass 2 redistribution (replace over-monthly-target donors) without
+                # adding new slots — this preserves total count while fixing monthly spread.
                 overall_target = worker.get("_raw_target", worker.get("target_shifts", 0))
                 current_total = len(self.worker_assignments.get(wid, set()))
                 total_budget = max(0, overall_target - current_total)
 
                 for under_ym, _ in sorted(remaining_under_2, key=lambda x: x[1], reverse=True):
-                    if changes >= max_changes or total_budget <= 0:
+                    if changes >= max_changes:
                         break
                     target = self._get_expected_monthly_target(worker, under_ym[0], under_ym[1])
                     current = month_counts_2.get(under_ym, 0)
-                    while current < target and total_budget > 0 and changes < max_changes:
-                        filled = self._monthly_fill_deficit(wid, worker, under_ym)
+                    while current < target and changes < max_changes:
+                        if total_budget > 0:
+                            # Budget available: try strict fill first (empty slot or donor over
+                            # total target), then fall back to loose donor (over monthly target)
+                            filled = self._monthly_fill_deficit(wid, worker, under_ym)
+                            if not filled:
+                                # No empty slot or donor over total target; try donor over monthly target
+                                filled = self._monthly_fill_deficit(
+                                    wid, worker, under_ym, strict_donor=False
+                                )
+                        else:
+                            # Budget exhausted: only redistribute from over-monthly donors
+                            # (strict_donor=False: donor just needs to be over MONTHLY target)
+                            filled = self._monthly_fill_deficit(
+                                wid, worker, under_ym, strict_donor=False, allow_empty=False
+                            )
                         if not filled:
                             break
                         changes += 1
                         current += 1
-                        total_budget -= 1
+                        if total_budget > 0:
+                            total_budget -= 1
 
         if changes > 0:
             logging.info(f"✅ Monthly target enforcement: {changes} changes")
@@ -4840,7 +4865,7 @@ class ScheduleBuilder:
                     return True
         return False
 
-    def _monthly_fill_deficit(self, wid, worker_config, under_ym, strict_donor=True):
+    def _monthly_fill_deficit(self, wid, worker_config, under_ym, strict_donor=True, allow_empty=True):
         """Fill one shift deficit in under_ym for a worker.
 
         First tries to fill genuinely empty (None) slots in the under-month before
@@ -4850,6 +4875,9 @@ class ScheduleBuilder:
             strict_donor: If True, donor must be above overall target AND monthly target.
                 If False (used for manual worker enforcement), donor only needs to be
                 above their monthly target in the specific month.
+            allow_empty: If False, skip Pass 1 (empty slot fills) and only attempt
+                Pass 2 (replace over-monthly-target donor). Use when the caller does
+                not want to increase the worker's total shift count.
         Returns True if filled.
         """
         dates_in_month = [
@@ -4858,23 +4886,24 @@ class ScheduleBuilder:
         random.shuffle(dates_in_month)
 
         # Pass 1: fill genuinely empty (None) slots — improves both coverage AND balance
-        for d in dates_in_month:
-            for post in range(len(self.schedule.get(d, []))):
-                if self.schedule[d][post] is not None:
-                    continue
-                if not self._can_assign_worker(wid, d, post, replacing_worker=None):
-                    continue
-                others_on_date = [w for i, w in enumerate(self.schedule[d]) if w is not None and i != post]
-                if not self._check_incompatibility_with_list(wid, others_on_date):
-                    continue
-                if self._is_weekend_or_holiday(d):
-                    if self._would_exceed_weekend_limit_simulated(wid, d, self.scheduler.worker_assignments):
+        if allow_empty:
+            for d in dates_in_month:
+                for post in range(len(self.schedule.get(d, []))):
+                    if self.schedule[d][post] is not None:
                         continue
-                self.schedule[d][post] = wid
-                self.worker_assignments[wid].add(d)
-                self.scheduler._update_tracking_data(wid, d, post, removing=False)
-                logging.info(f"🔧 Fill empty slot: {wid} → {d.strftime('%d-%b')} P{post} (month {under_ym[1]:02d})")
-                return True
+                    if not self._can_assign_worker(wid, d, post, replacing_worker=None):
+                        continue
+                    others_on_date = [w for i, w in enumerate(self.schedule[d]) if w is not None and i != post]
+                    if not self._check_incompatibility_with_list(wid, others_on_date):
+                        continue
+                    if self._is_weekend_or_holiday(d):
+                        if self._would_exceed_weekend_limit_simulated(wid, d, self.scheduler.worker_assignments):
+                            continue
+                    self.schedule[d][post] = wid
+                    self.worker_assignments[wid].add(d)
+                    self.scheduler._update_tracking_data(wid, d, post, removing=False)
+                    logging.info(f"🔧 Fill empty slot: {wid} → {d.strftime('%d-%b')} P{post} (month {under_ym[1]:02d})")
+                    return True
 
         # Pass 2: replace an over-target donor
         for d in dates_in_month:

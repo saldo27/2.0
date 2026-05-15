@@ -1,6 +1,7 @@
 # Imports
 import json
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -1304,6 +1305,7 @@ class Scheduler:
             overall_target = worker.get("target_shifts", 0)
 
             worker["monthly_targets"] = {}  # always reset to avoid stale data
+            worker["monthly_targets_ceil"] = {}  # ceiling of fractional target — used for monthly cap enforcement
 
             # Use raw target (incl. mandatory) for monthly cap, matching _get_expected_monthly_target
             if "_raw_target" in worker:
@@ -1353,10 +1355,13 @@ class Scheduler:
                     avail = worker_month_avail.get(month_key, 0)
                     if avail == 0:
                         worker["monthly_targets"][month_key] = 0
+                        worker["monthly_targets_ceil"][month_key] = 0
                     else:
-                        month_target = round(overall_target * avail / total_avail_days)
+                        raw_fraction = overall_target * avail / total_avail_days
+                        month_target = round(raw_fraction)
                         month_target = min(month_target, remaining_target)
                         worker["monthly_targets"][month_key] = month_target
+                        worker["monthly_targets_ceil"][month_key] = math.ceil(raw_fraction)
                         remaining_target -= month_target
                         logging.debug(
                             f"Worker {worker_id}: {month_key} → {month_target} shifts "
@@ -1378,6 +1383,7 @@ class Scheduler:
             else:
                 for month_key in month_days:
                     worker["monthly_targets"][month_key] = 0
+                    worker["monthly_targets_ceil"][month_key] = 0
 
         logging.info("Monthly targets calculated (work_periods-aware)")
         return True

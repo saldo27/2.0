@@ -2365,15 +2365,18 @@ with tab3:
                     months_in_schedule[key] = f"{month_names_es[date.month]} {date.year}"
 
             # Build per-worker, per-month counts
+            # Use the schedule as single source of truth (same as calculate_statistics)
+            # to stay in sync with the per-worker table above.
             monthly_rows = []
             for worker in scheduler.workers_data:
                 wid = worker["id"]
                 row = {"Médico": wid}
-                worker_dates = scheduler.worker_assignments.get(wid, [])
-                month_counts = {}
-                for d in worker_dates:
-                    key = (d.year, d.month)
-                    month_counts[key] = month_counts.get(key, 0) + 1
+                month_counts: dict[tuple[int, int], int] = {}
+                for d, shifts in scheduler.schedule.items():
+                    count = shifts.count(wid)
+                    if count:
+                        key = (d.year, d.month)
+                        month_counts[key] = month_counts.get(key, 0) + count
                 total = 0
                 for mkey, mname in months_in_schedule.items():
                     cnt = month_counts.get(mkey, 0)
