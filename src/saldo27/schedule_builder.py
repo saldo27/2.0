@@ -1133,7 +1133,9 @@ class ScheduleBuilder:
                         _is_manual = not worker_data_month.get("auto_calculate_shifts", True)
                         _mk = f"{date.year}-{date.month:02d}"
                         _ceil = worker_data_month.get("monthly_targets_ceil", {}).get(_mk, expected_monthly)
-                        monthly_tolerance = max(0, _ceil - expected_monthly) if work_pct >= 100 and not _is_manual else 0
+                        monthly_tolerance = (
+                            max(0, _ceil - expected_monthly) if work_pct >= 100 and not _is_manual else 0
+                        )
                         if month_count_sim > expected_monthly + monthly_tolerance:
                             if _dbg:
                                 logging.debug(
@@ -3719,7 +3721,9 @@ class ScheduleBuilder:
                             _is_manual = not under_worker_obj.get("auto_calculate_shifts", True)
                             _mk = f"{date_val.year}-{date_val.month:02d}"
                             _ceil = under_worker_obj.get("monthly_targets_ceil", {}).get(_mk, expected_monthly)
-                            monthly_tolerance = max(0, _ceil - expected_monthly) if work_pct >= 100 and not _is_manual else 0
+                            monthly_tolerance = (
+                                max(0, _ceil - expected_monthly) if work_pct >= 100 and not _is_manual else 0
+                            )
                             max_monthly = expected_monthly + monthly_tolerance
 
                             # Reject if would exceed monthly cap
@@ -4287,7 +4291,9 @@ class ScheduleBuilder:
                             _is_manual = not other_worker_obj.get("auto_calculate_shifts", True)
                             _mk = f"{date.year}-{date.month:02d}"
                             _ceil = other_worker_obj.get("monthly_targets_ceil", {}).get(_mk, expected_monthly)
-                            monthly_tolerance = max(0, _ceil - expected_monthly) if work_pct >= 100 and not _is_manual else 0
+                            monthly_tolerance = (
+                                max(0, _ceil - expected_monthly) if work_pct >= 100 and not _is_manual else 0
+                            )
                             max_monthly = expected_monthly + monthly_tolerance
 
                             # Reject if would exceed monthly cap
@@ -4719,9 +4725,7 @@ class ScheduleBuilder:
                             filled = self._monthly_fill_deficit(wid, worker, under_ym)
                             if not filled:
                                 # No empty slot or donor over total target; try donor over monthly target
-                                filled = self._monthly_fill_deficit(
-                                    wid, worker, under_ym, strict_donor=False
-                                )
+                                filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False)
                         else:
                             # Budget exhausted: only redistribute from over-monthly donors
                             # (strict_donor=False: donor just needs to be over MONTHLY target)
