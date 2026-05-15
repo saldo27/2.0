@@ -829,10 +829,7 @@ class ScheduleBuilder:
                 if monthly_target > 0:
                     is_manual_worker = not worker.get("auto_calculate_shifts", True)
                     monthly_tolerance = 0 if is_manual_worker else 1
-                    shifts_this_month = sum(
-                        1 for d in assignments
-                        if d.year == date.year and d.month == date.month
-                    )
+                    shifts_this_month = sum(1 for d in assignments if d.year == date.year and d.month == date.month)
                     if shifts_this_month + 1 > monthly_target + monthly_tolerance:
                         return False
 
