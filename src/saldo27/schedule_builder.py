@@ -529,9 +529,7 @@ class ScheduleBuilder:
         if is_manual_worker and hasattr(self, "_get_expected_monthly_target"):
             expected_monthly = self._get_expected_monthly_target(worker_data, date.year, date.month)
             if expected_monthly > 0:
-                current_month_count = sum(
-                    1 for d in all_assignments if d.year == date.year and d.month == date.month
-                )
+                current_month_count = sum(1 for d in all_assignments if d.year == date.year and d.month == date.month)
                 if current_month_count >= expected_monthly:
                     logging.debug(
                         f"🚫 BLOCKED: {worker_id} (manual) monthly target {expected_monthly} already met "
@@ -3038,9 +3036,7 @@ class ScheduleBuilder:
                         # CRITICAL: Final check - is slot protected by mandatory?
                         if self.schedule[date_val][post_val] is not None:
                             existing = self.schedule[date_val][post_val]
-                            if (existing, date_val) in self._locked_mandatory or self._is_mandatory(
-                                existing, date_val
-                            ):
+                            if (existing, date_val) in self._locked_mandatory or self._is_mandatory(existing, date_val):
                                 logging.warning(
                                     f"🔒 BLOCKED Pass1: Cannot overwrite MANDATORY {existing} on {date_val.strftime('%Y-%m-%d')} post {post_val}"
                                 )
@@ -3048,9 +3044,7 @@ class ScheduleBuilder:
 
                         self.schedule[date_val][post_val] = worker_id_to_assign
                         self.worker_assignments.setdefault(worker_id_to_assign, set()).add(date_val)
-                        self.scheduler._update_tracking_data(
-                            worker_id_to_assign, date_val, post_val, removing=False
-                        )
+                        self.scheduler._update_tracking_data(worker_id_to_assign, date_val, post_val, removing=False)
                         logging.info(
                             f"[Pass 1 Direct Fill] Filled empty shift on {date_val.strftime('%Y-%m-%d')} Post {post_val} with W:{worker_id_to_assign} (Score: {candidate_score:.2f}, Relax: {relax_lvl_attempt})"
                         )
