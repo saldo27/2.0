@@ -3320,9 +3320,12 @@ class ScheduleBuilder:
                         # Tolerance check (relaxed)
                         if self._would_violate_tolerance(worker_Y_id, date_e, allow_relaxation=True):
                             continue
-                        # Gap check — relaxed by 1 day (last resort only)
+                        # Gap check — uses each worker's effective min gap (no additional relaxation).
+                        # get_effective_min_gap already applies the correct policy:
+                        #   auto ≥60%  → gap - 1  (already relaxed by work-percentage rule)
+                        #   auto ≤60%  → gap as defined in the UI (no relaxation)
                         Y_min_gap = get_effective_min_gap(Y_data, self.gap_between_shifts)
-                        relaxed_gap_Y = max(1, Y_min_gap - 1)
+                        relaxed_gap_Y = Y_min_gap
                         Y_asgn = self.worker_assignments.get(worker_Y_id, set())
                         if any(0 < abs((date_e - d).days) < relaxed_gap_Y for d in Y_asgn):
                             continue
@@ -4861,8 +4864,23 @@ class ScheduleBuilder:
             wid = worker["id"]
             is_manual = not worker.get("auto_calculate_shifts", True)
 
+            # Compute per-month shift counts EXCLUDING mandatory shifts.
+            # monthly_targets distributes only non-mandatory shifts, so mandatory
+            # dates must not count toward the monthly quota (otherwise a mandatory
+            # shift in a month would incorrectly satisfy the non-mandatory target,
+            # leaving the worker one shift short overall — e.g. MARIA in July).
+            _mandatory_dates: set = set()
+            _mandatory_str = worker.get("mandatory_days", "")
+            if _mandatory_str:
+                try:
+                    _mandatory_dates = set(self.date_utils.parse_dates(_mandatory_str))
+                except Exception:
+                    pass
+
             month_counts = {}
             for d in self.worker_assignments.get(wid, set()):
+                if d in _mandatory_dates:
+                    continue
                 key = (d.year, d.month)
                 month_counts[key] = month_counts.get(key, 0) + 1
 
@@ -4907,9 +4925,11 @@ class ScheduleBuilder:
             # More flexible than cross-month swap: operations are independent,
             # so the replacement workers don't need to be the same person.
             if is_manual:
-                # Re-compute over/under months after Strategy 1
+                # Re-compute over/under months after Strategy 1 (excluding mandatory shifts)
                 month_counts_2 = {}
                 for d in self.worker_assignments.get(wid, set()):
+                    if d in _mandatory_dates:
+                        continue
                     key = (d.year, d.month)
                     month_counts_2[key] = month_counts_2.get(key, 0) + 1
 
@@ -4946,9 +4966,11 @@ class ScheduleBuilder:
                 # Strategy 2 (auto workers): shed over-target months first, then fill
                 # under-target months. Total shifts must not exceed overall target.
 
-                # Re-compute over/under months after Strategy 1
+                # Re-compute over/under months after Strategy 1 (excluding mandatory shifts)
                 month_counts_2 = {}
                 for d in self.worker_assignments.get(wid, set()):
+                    if d in _mandatory_dates:
+                        continue
                     key = (d.year, d.month)
                     month_counts_2[key] = month_counts_2.get(key, 0) + 1
 
