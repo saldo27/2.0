@@ -1452,7 +1452,7 @@ with st.sidebar:
             min_value=0,
             max_value=7,
             value=st.session_state.config.get("gap_between_shifts", 3),
-            help="Número mínimo de días de descanso entre guardias consecutivos",
+            help="Número mínimo de días entre guardias",
         )
         st.session_state.config["gap_between_shifts"] = gap_between_shifts
 
