@@ -1361,7 +1361,7 @@ class Scheduler:
                         month_target = round(raw_fraction)
                         month_target = min(month_target, remaining_target)
                         worker["monthly_targets"][month_key] = month_target
-                        worker["monthly_targets_ceil"][month_key] = math.ceil(raw_fraction)
+                        worker["monthly_targets_ceil"][month_key] = round(raw_fraction) + 1
                         remaining_target -= month_target
                         logging.debug(
                             f"Worker {worker_id}: {month_key} → {month_target} shifts "
