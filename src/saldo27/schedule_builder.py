@@ -522,6 +522,23 @@ class ScheduleBuilder:
             )
             return True
 
+        # Manual workers: also enforce monthly distribution to prevent front-loading one month.
+        # MARIA (3/mes) must not receive a 4th shift in September even if the overall budget
+        # (target_shifts=5) still has room. Without this check the initial fill assigns all
+        # remaining shifts into whichever month has the most open slots.
+        if is_manual_worker and hasattr(self, "_get_expected_monthly_target"):
+            expected_monthly = self._get_expected_monthly_target(worker_data, date.year, date.month)
+            if expected_monthly > 0:
+                current_month_count = sum(
+                    1 for d in all_assignments if d.year == date.year and d.month == date.month
+                )
+                if current_month_count >= expected_monthly:
+                    logging.debug(
+                        f"🚫 BLOCKED: {worker_id} (manual) monthly target {expected_monthly} already met "
+                        f"in {date.year}-{date.month:02d} (has {current_month_count})"
+                    )
+                    return True
+
         # Phase-based tolerance system:
         # Phase 1 (objective): ±10% tolerance
         # Phase 2 (limit): ±12% tolerance (ABSOLUTE LIMIT)
@@ -2991,14 +3008,24 @@ class ScheduleBuilder:
                 if pass1_candidates:
                     pass1_candidates.sort(key=lambda x: x[1], reverse=True)
 
-                    # Try the top candidate that is valid at this relaxation level
-                    candidate_worker_data, candidate_score = pass1_candidates[0]
-                    worker_id_to_assign = candidate_worker_data["id"]
+                    # Iterate through ALL scored candidates (best-first) until one
+                    # passes every secondary gate.  The old code tried only [0] which
+                    # left slots empty whenever the top scorer failed the redundant
+                    # double-check (e.g. slight tolerance discrepancy between
+                    # _calculate_worker_score and _would_violate_tolerance).
+                    if self.schedule[date_val][post_val] is not None:
+                        # Slot already filled between the outer loop and here
+                        logging.warning(
+                            f"    [Pass 1] Slot ({date_val.strftime('%Y-%m-%d')}, {post_val}) was unexpectedly filled before assignment at Relax {relax_lvl_attempt}. Current: {self.schedule[date_val][post_val]}"
+                        )
+                        assigned_this_post_pass1 = True  # Consider it "handled" to break relaxation attempts
+                        break
 
-                    if self.schedule[date_val][post_val] is None:
-                        others_now = [
-                            w for i, w in enumerate(self.schedule.get(date_val, [])) if i != post_val and w is not None
-                        ]
+                    others_now = [
+                        w for i, w in enumerate(self.schedule.get(date_val, [])) if i != post_val and w is not None
+                    ]
+                    for candidate_worker_data, candidate_score in pass1_candidates:
+                        worker_id_to_assign = candidate_worker_data["id"]
                         if (
                             not self._check_incompatibility_with_list(worker_id_to_assign, others_now)
                             or not self._can_assign_worker(worker_id_to_assign, date_val, post_val)
@@ -3006,39 +3033,34 @@ class ScheduleBuilder:
                                 worker_id_to_assign, date_val, allow_relaxation=(relax_lvl_attempt >= 2)
                             )
                         ):
-                            pass
-                        else:
-                            # CRITICAL: Final check - is slot protected by mandatory?
-                            if self.schedule[date_val][post_val] is not None:
-                                existing = self.schedule[date_val][post_val]
-                                if (existing, date_val) in self._locked_mandatory or self._is_mandatory(
-                                    existing, date_val
-                                ):
-                                    logging.warning(
-                                        f"🔒 BLOCKED Pass1: Cannot overwrite MANDATORY {existing} on {date_val.strftime('%Y-%m-%d')} post {post_val}"
-                                    )
-                                    continue  # Skip this assignment
+                            continue  # try next candidate
 
-                            self.schedule[date_val][post_val] = worker_id_to_assign
-                            self.worker_assignments.setdefault(worker_id_to_assign, set()).add(date_val)
-                            self.scheduler._update_tracking_data(
-                                worker_id_to_assign, date_val, post_val, removing=False
-                            )
-                            logging.info(
-                                f"[Pass 1 Direct Fill] Filled empty shift on {date_val.strftime('%Y-%m-%d')} Post {post_val} with W:{worker_id_to_assign} (Score: {candidate_score:.2f}, Relax: {relax_lvl_attempt})"
-                            )
-                            shifts_filled_this_pass_total += 1
-                            made_change_overall = True
-                            assigned_this_post_pass1 = True
-                            break  # Break from the relaxation_level attempts for this slot, as it's filled
-                    else:
-                        # Slot was filled by a previous iteration (should not happen if logic is sequential for a slot)
-                        # or by another process if this method is called concurrently (not expected here)
-                        logging.warning(
-                            f"    [Pass 1] Slot ({date_val.strftime('%Y-%m-%d')}, {post_val}) was unexpectedly filled before assignment at Relax {relax_lvl_attempt}. Current: {self.schedule[date_val][post_val]}"
+                        # CRITICAL: Final check - is slot protected by mandatory?
+                        if self.schedule[date_val][post_val] is not None:
+                            existing = self.schedule[date_val][post_val]
+                            if (existing, date_val) in self._locked_mandatory or self._is_mandatory(
+                                existing, date_val
+                            ):
+                                logging.warning(
+                                    f"🔒 BLOCKED Pass1: Cannot overwrite MANDATORY {existing} on {date_val.strftime('%Y-%m-%d')} post {post_val}"
+                                )
+                                break  # mandatory in slot — stop trying candidates
+
+                        self.schedule[date_val][post_val] = worker_id_to_assign
+                        self.worker_assignments.setdefault(worker_id_to_assign, set()).add(date_val)
+                        self.scheduler._update_tracking_data(
+                            worker_id_to_assign, date_val, post_val, removing=False
                         )
-                        assigned_this_post_pass1 = True  # Consider it "handled" to break relaxation attempts
-                        break
+                        logging.info(
+                            f"[Pass 1 Direct Fill] Filled empty shift on {date_val.strftime('%Y-%m-%d')} Post {post_val} with W:{worker_id_to_assign} (Score: {candidate_score:.2f}, Relax: {relax_lvl_attempt})"
+                        )
+                        shifts_filled_this_pass_total += 1
+                        made_change_overall = True
+                        assigned_this_post_pass1 = True
+                        break  # candidate accepted — stop iterating candidates
+
+                    if assigned_this_post_pass1:
+                        break  # break from the relaxation_level loop for this slot
 
             if not assigned_this_post_pass1 and self.schedule[date_val][post_val] is None:
                 remaining_empty_shifts_after_pass1.append((date_val, post_val))
