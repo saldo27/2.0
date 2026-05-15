@@ -3326,6 +3326,9 @@ class ScheduleBuilder:
                         Y_asgn = self.worker_assignments.get(worker_Y_id, set())
                         if any(0 < abs((date_e - d).days) < relaxed_gap_Y for d in Y_asgn):
                             continue
+                        # 7/14 pattern check for Y
+                        if self._violates_7_14_pattern(worker_Y_id, date_e):
+                            continue
                         # Prefer worker with the highest shift deficit
                         Y_deficit = Y_data.get("target_shifts", len(Y_asgn)) - len(Y_asgn)
                         if Y_deficit > best_Y_deficit:
@@ -3363,10 +3366,12 @@ class ScheduleBuilder:
 
                 others_at_e = [w for w in self.schedule.get(date_e, []) if w is not None]
                 chain_found = False
-                # Try workers closest to their target first as Z (neutral movers)
+                # Prefer Z workers with surplus (over target) — they can be moved without
+                # harming their own balance. Surplus = negative deficit → sort descending.
                 for Z_data in sorted(
                     self.workers_data,
-                    key=lambda w: abs(w.get("target_shifts", 0) - len(self.worker_assignments.get(w["id"], set()))),
+                    key=lambda w: len(self.worker_assignments.get(w["id"], set())) - w.get("target_shifts", 0),
+                    reverse=True,
                 ):
                     worker_Z_id = Z_data["id"]
                     if not self.worker_assignments.get(worker_Z_id):
@@ -3385,7 +3390,12 @@ class ScheduleBuilder:
                         continue
 
                     Z_min_gap = get_effective_min_gap(Z_data, self.gap_between_shifts)
-                    for date_z in sorted(self.worker_assignments.get(worker_Z_id, set())):
+                    # Prefer date_z closest to date_e — minimises disruption and
+                    # aligns with "days near the empty slot" preference.
+                    for date_z in sorted(
+                        self.worker_assignments.get(worker_Z_id, set()),
+                        key=lambda d: abs((date_e - d).days),
+                    ):
                         if not self._can_modify_assignment(worker_Z_id, date_z, "pass3b_move_Z"):
                             continue
                         try:
@@ -3397,6 +3407,12 @@ class ScheduleBuilder:
                         Z_asgn_minus_z = self.worker_assignments[worker_Z_id] - {date_z}
                         if any(0 < abs((date_e - d).days) < Z_min_gap for d in Z_asgn_minus_z):
                             continue  # gap still violated even without date_z
+                        # 7/14 check for Z at date_e (simulated without date_z)
+                        if any(
+                            abs((date_e - d).days) in (7, 14) and date_e.weekday() == d.weekday()
+                            for d in Z_asgn_minus_z
+                        ):
+                            continue
 
                         # Find deficit worker D to cover (date_z, post_z)
                         others_at_z_no_Z = [
@@ -3425,6 +3441,9 @@ class ScheduleBuilder:
                             D_min_gap = get_effective_min_gap(D_data, self.gap_between_shifts)
                             D_asgn = self.worker_assignments.get(worker_D_id, set())
                             if any(0 < abs((date_z - d).days) < D_min_gap for d in D_asgn):
+                                continue
+                            # 7/14 check for D at date_z
+                            if self._violates_7_14_pattern(worker_D_id, date_z):
                                 continue
                             # Select D with highest deficit (workers at-or-below target)
                             D_deficit = D_data.get("target_shifts", len(D_asgn)) - len(D_asgn)

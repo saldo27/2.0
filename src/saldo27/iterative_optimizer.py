@@ -1202,9 +1202,9 @@ class IterativeOptimizer:
                     if shift_type in assignments and worker_name in assignments[shift_type]:
                         return False  # Worker already assigned to THIS specific shift
                 elif isinstance(assignments, list):
-                    # List format: more complex - need to determine position/shift mapping
-                    # For now, be more permissive in list format during redistribution
-                    pass  # Allow reassignments in list format
+                    # Check if worker already appears at any post on this date (avoid double-booking)
+                    if worker_name in assignments:
+                        return False
 
             # CRITICAL: Check incompatibilities with other workers on the same date
             if date_key in schedule:
