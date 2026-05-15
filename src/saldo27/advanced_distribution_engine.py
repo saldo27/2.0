@@ -696,9 +696,9 @@ class AdvancedDistributionEngine:
                 monthly_tolerance = 1 if work_pct >= 100 else 0
                 max_monthly = expected_monthly + monthly_tolerance
 
-                if shifts_this_month + 1 > max_monthly + 1:  # +1 for rounding
+                if shifts_this_month + 1 > max_monthly:
                     logging.debug(
-                        f"Advanced engine: {worker_id} blocked by monthly limit ({shifts_this_month + 1} > {max_monthly + 1})"
+                        f"Advanced engine: {worker_id} blocked by monthly limit ({shifts_this_month + 1} > {max_monthly})"
                     )
                     return False
 

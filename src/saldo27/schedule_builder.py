@@ -821,6 +821,21 @@ class ScheduleBuilder:
             if self._would_violate_tolerance(worker_id, date, allow_relaxation=True):
                 return False
 
+            # Check monthly targets cap
+            monthly_targets = worker.get("monthly_targets", {})
+            month_key = date.strftime("%Y-%m")
+            if month_key in monthly_targets:
+                monthly_target = monthly_targets[month_key]
+                if monthly_target > 0:
+                    is_manual_worker = not worker.get("auto_calculate_shifts", True)
+                    monthly_tolerance = 0 if is_manual_worker else 1
+                    shifts_this_month = sum(
+                        1 for d in assignments
+                        if d.year == date.year and d.month == date.month
+                    )
+                    if shifts_this_month + 1 > monthly_target + monthly_tolerance:
+                        return False
+
             # If we've made it this far, the worker can be assigned
             return True
 
@@ -1684,9 +1699,9 @@ class ScheduleBuilder:
                     f"raising effective_max to {effective_max_monthly}"
                 )
 
-        # Si no hay objetivo, permitir al menos algunos turnos
+        # Si no hay objetivo, permitir como máximo 1 turno (worker disponible muy pocos días)
         if expected_monthly_target == 0:
-            effective_max_monthly = 3 + relaxation_level
+            effective_max_monthly = 1
 
         # BLOCK monthly limit violations — no deficit-based overrides.
         # The ratio-based scoring ensures that workers with global deficit are
@@ -4650,23 +4665,53 @@ class ScheduleBuilder:
                         changes += 1
                         deficit -= 1
             else:
-                # Strategy 2 (auto workers): fill short months by taking from over-target donors
+                # Strategy 2 (auto workers): shed over-target months first, then fill
+                # under-target months. Total shifts must not exceed overall target.
+
+                # Re-compute over/under months after Strategy 1
                 month_counts_2 = {}
                 for d in self.worker_assignments.get(wid, set()):
                     key = (d.year, d.month)
                     month_counts_2[key] = month_counts_2.get(key, 0) + 1
 
-                for under_ym, _ in sorted(under_months, key=lambda x: x[1], reverse=True):
-                    if changes >= max_changes:
+                remaining_over_2 = []
+                remaining_under_2 = []
+                for ym in all_months:
+                    t = self._get_expected_monthly_target(worker, ym[0], ym[1])
+                    if t <= 0:
+                        continue
+                    c = month_counts_2.get(ym, 0)
+                    if c > t:
+                        remaining_over_2.append((ym, c - t))
+                    elif c < t:
+                        remaining_under_2.append((ym, t - c))
+
+                # Step A: shed excess from over-target months to free total budget
+                for over_ym, surplus in sorted(remaining_over_2, key=lambda x: x[1], reverse=True):
+                    while surplus > 0 and changes < max_changes:
+                        shed = self._monthly_shed_excess(wid, worker, over_ym)
+                        if not shed:
+                            break
+                        changes += 1
+                        surplus -= 1
+
+                # Step B: fill under-target months only within overall target budget
+                overall_target = worker.get("_raw_target", worker.get("target_shifts", 0))
+                current_total = len(self.worker_assignments.get(wid, set()))
+                total_budget = max(0, overall_target - current_total)
+
+                for under_ym, _ in sorted(remaining_under_2, key=lambda x: x[1], reverse=True):
+                    if changes >= max_changes or total_budget <= 0:
                         break
                     target = self._get_expected_monthly_target(worker, under_ym[0], under_ym[1])
                     current = month_counts_2.get(under_ym, 0)
-                    while current < target and changes < max_changes:
+                    while current < target and total_budget > 0 and changes < max_changes:
                         filled = self._monthly_fill_deficit(wid, worker, under_ym)
                         if not filled:
                             break
                         changes += 1
                         current += 1
+                        total_budget -= 1
 
         if changes > 0:
             logging.info(f"✅ Monthly target enforcement: {changes} changes")
