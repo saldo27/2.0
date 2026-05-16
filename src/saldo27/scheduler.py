@@ -1307,11 +1307,13 @@ class Scheduler:
             worker["monthly_targets"] = {}  # always reset to avoid stale data
             worker["monthly_targets_ceil"] = {}  # ceiling of fractional target — used for monthly cap enforcement
 
-            # Use raw target (incl. mandatory) for monthly cap, matching _get_expected_monthly_target
-            if "_raw_target" in worker:
-                overall_target = worker["_raw_target"]
-            else:
-                overall_target = worker.get("target_shifts", 0)
+            # Always use target_shifts (non-mandatory budget) for monthly proportional distribution.
+            # Monthly counts exclude mandatory shifts throughout the codebase (see
+            # _would_violate_tolerance and _enforce_monthly_target_distribution), so both the
+            # floor target and the ceiling must be based on the same non-mandatory budget.
+            # Using _raw_target (which includes mandatory) would inflate quotas by the number
+            # of mandatory shifts in each month, causing over-assignment of non-mandatory shifts.
+            overall_target = worker.get("target_shifts", 0)
 
             # Compute available days per month for this worker (respecting work_periods)
             work_periods_str = worker.get("work_periods", "").strip()

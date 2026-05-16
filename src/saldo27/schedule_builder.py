@@ -392,10 +392,19 @@ class ScheduleBuilder:
             if worker_config and not worker_config.get("auto_calculate_shifts", True):
                 monthly_target = self._get_expected_monthly_target(worker_config, date.year, date.month)
                 if monthly_target > 0:
+                    # Exclude mandatory shifts: monthly_targets is now non-mandatory based,
+                    # so the count must also exclude mandatory to keep the comparison consistent.
+                    _mand_set: set = set()
+                    _mand_str = worker_config.get("mandatory_days", "")
+                    if _mand_str:
+                        try:
+                            _mand_set = set(self.date_utils.parse_dates(_mand_str))
+                        except Exception:
+                            pass
                     current_month_count = sum(
                         1
                         for d in self.worker_assignments.get(worker_id, set())
-                        if d.year == date.year and d.month == date.month
+                        if d.year == date.year and d.month == date.month and d not in _mand_set
                     )
                     if current_month_count <= monthly_target:
                         logging.debug(
@@ -528,7 +537,8 @@ class ScheduleBuilder:
                 # only. Counting the mandatory shift in July for MARIA would falsely fill her
                 # quota and prevent adding the required extra non-mandatory shift that month.
                 current_month_count = sum(
-                    1 for d in all_assignments
+                    1
+                    for d in all_assignments
                     if d.year == date.year and d.month == date.month and d not in mandatory_dates_set
                 )
                 if current_month_count >= expected_monthly:
@@ -541,7 +551,10 @@ class ScheduleBuilder:
         # Auto workers: enforce monthly ceiling (monthly_targets_ceil) to prevent front-loading
         # all shifts into one month. This check runs during both the initial fill and optimizer
         # passes, guaranteeing that no auto worker exceeds the proportional ceiling per month.
-        if not is_manual_worker and hasattr(self, "_calculate_monthly_targets"):
+        # NOTE: monthly_targets_ceil is populated by Scheduler._calculate_monthly_targets before
+        # ScheduleBuilder is invoked. The hasattr guard was removed because _calculate_monthly_targets
+        # lives in Scheduler, not ScheduleBuilder, so hasattr(self, ...) was always False.
+        if not is_manual_worker:
             month_key = f"{date.year}-{date.month:02d}"
             ceil_map = worker_data.get("monthly_targets_ceil", {})
             if month_key in ceil_map and ceil_map[month_key] > 0:
@@ -551,7 +564,8 @@ class ScheduleBuilder:
                 # mandatory shifts, preventing the worker from reaching the non-mandatory
                 # ceiling (e.g. 5 mandatory + ceiling 6 → only 1 non-mandatory instead of 6).
                 current_month_count = sum(
-                    1 for d in all_assignments
+                    1
+                    for d in all_assignments
                     if d.year == date.year and d.month == date.month and d not in mandatory_dates_set
                 )
                 if current_month_count >= ceil_map[month_key]:
@@ -3427,7 +3441,8 @@ class ScheduleBuilder:
                     _ceil_e = Z_data.get("monthly_targets_ceil", {}).get(_month_key_e, 0)
                     if _ceil_e > 0:
                         _current_e_month = sum(
-                            1 for _d in self.worker_assignments.get(worker_Z_id, set())
+                            1
+                            for _d in self.worker_assignments.get(worker_Z_id, set())
                             if _d.year == date_e.year and _d.month == date_e.month
                         )
                         if _current_e_month >= _ceil_e:
