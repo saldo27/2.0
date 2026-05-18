@@ -538,6 +538,7 @@ class ScheduleBuilder:
                     if d.year == date.year and d.month == date.month and d not in mandatory_dates_set
                 )
                 from calendar import monthrange as _mrange
+
                 _days_in_month = _mrange(date.year, date.month)[1]
                 # Proportional max with zero tolerance: ceil(T * elapsed / days)
                 _prop_max = math.ceil(expected_monthly * date.day / _days_in_month)
@@ -572,6 +573,7 @@ class ScheduleBuilder:
                     return True
                 # Proportional intra-month check: max = ceil(T * elapsed_days/days_in_month + 0.5)
                 from calendar import monthrange as _mrange
+
                 _days_in_month = _mrange(date.year, date.month)[1]
                 _prop_max = math.ceil(monthly_floor * date.day / _days_in_month + 0.5)
                 if current_month_count >= _prop_max:
@@ -1685,7 +1687,8 @@ class ScheduleBuilder:
         shifts_this_month = sum(
             1
             for assigned_date in all_assignments
-            if assigned_date.year == date.year and assigned_date.month == date.month
+            if assigned_date.year == date.year
+            and assigned_date.month == date.month
             and assigned_date not in mandatory_dates
         )
 
@@ -1763,6 +1766,7 @@ class ScheduleBuilder:
             monthly_floor = int((worker_config or {}).get("monthly_targets", {}).get(_mk, 0))
             if monthly_floor > 0:
                 from calendar import monthrange as _mrange
+
                 _days_in_month = _mrange(date.year, date.month)[1]
                 _prop_max = math.ceil(monthly_floor * date.day / _days_in_month + 0.5)
                 if shifts_this_month + 1 > _prop_max:
