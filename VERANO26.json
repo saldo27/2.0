@@ -269,7 +269,7 @@
     "only_last_post": false,
     "mandatory_days": "",
     "days_off": "",
-    "work_periods": "01-07-2026 - 30-07-2026;16-09-2026 - 30-09-2026",
+    "work_periods": "01-07-2026 - 30-07-2026",
     "auto_calculate_shifts": true
   },
   {
@@ -399,7 +399,20 @@
     "only_last_post": false,
     "mandatory_days": "",
     "days_off": "",
-    "work_periods": "01-07-2026 - 30-09-2026",
+    "work_periods": "01-07-2026 - 20-08-2026",
     "auto_calculate_shifts": false
+  },
+  {
+    "id": "GABRIEL",
+    "target_shifts": 0,
+    "work_percentage": 100,
+    "is_incompatible": false,
+    "incompatible_with": [],
+    "no_last_post": true,
+    "only_last_post": false,
+    "mandatory_days": "",
+    "days_off": "",
+    "work_periods": "22-08-2026 - 30-09-2026",
+    "auto_calculate_shifts": true
   }
 ]
