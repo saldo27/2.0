@@ -1339,6 +1339,7 @@ class IterativeOptimizer:
 
             # NEW: Check monthly balance - reject if would exceed monthly target
             shifts_this_month = 0
+            mandatory_shifts_this_month = 0
             for date, assignments in schedule.items():
                 try:
                     check_date = date if isinstance(date, datetime) else datetime.strptime(date, "%Y-%m-%d")
@@ -1349,8 +1350,23 @@ class IterativeOptimizer:
                                     shifts_this_month += 1
                         elif isinstance(assignments, list):
                             shifts_this_month += assignments.count(worker_name)
+                        # Count mandatory shifts this month to get non-mandatory count
+                        # (target_shifts already has mandatory subtracted)
+                        if mandatory_str:
+                            date_str_ddmm = check_date.strftime("%d-%m-%Y")
+                            date_str_iso = check_date.strftime("%Y-%m-%d")
+                            if date_str_ddmm in mandatory_parts or date_str_iso in mandatory_parts:
+                                assigns = schedule.get(date, [])
+                                if isinstance(assigns, list) and worker_name in assigns:
+                                    mandatory_shifts_this_month += 1
+                                elif isinstance(assigns, dict):
+                                    for shift_workers in assigns.values():
+                                        if isinstance(shift_workers, list) and worker_name in shift_workers:
+                                            mandatory_shifts_this_month += 1
                 except (KeyError, ValueError, AttributeError):
                     continue  # Skip invalid schedule data
+
+            non_mandatory_shifts_this_month = shifts_this_month - mandatory_shifts_this_month
 
             # Calculate expected monthly target (simplified version)
             # Use _raw_target if available, otherwise use target_shifts
@@ -1374,10 +1390,11 @@ class IterativeOptimizer:
                     guardias_mes = worker_data.get("_original_target_shifts", 0)
                     if guardias_mes > 0:
                         # Exact monthly enforcement: no tolerance for manual workers
-                        if shifts_this_month + 1 > guardias_mes:
+                        # CRITICAL: Use non-mandatory count — target already has mandatory subtracted
+                        if non_mandatory_shifts_this_month + 1 > guardias_mes:
                             logging.debug(
                                 f"❌ {worker_name} blocked: MANUAL monthly limit - "
-                                f"{shifts_this_month + 1} would exceed {guardias_mes} guardias/mes "
+                                f"{non_mandatory_shifts_this_month + 1} non-mandatory would exceed {guardias_mes} guardias/mes "
                                 f"(month: {shift_date.strftime('%Y-%m')})"
                             )
                             return False
@@ -1397,10 +1414,11 @@ class IterativeOptimizer:
                         max_monthly = expected_monthly_rough * (1 + monthly_tolerance)
 
                     # Check if adding this shift would exceed monthly limit
-                    if shifts_this_month + 1 > max_monthly + 1:  # +1 for rounding tolerance
+                    # CRITICAL: Use non-mandatory count — target already has mandatory subtracted
+                    if non_mandatory_shifts_this_month + 1 > max_monthly + 1:  # +1 for rounding tolerance
                         logging.debug(
                             f"❌ {worker_name} blocked: Monthly limit - "
-                            f"{shifts_this_month + 1} would exceed {max_monthly:.1f} "
+                            f"{non_mandatory_shifts_this_month + 1} non-mandatory would exceed {max_monthly:.1f} "
                             f"(month: {shift_date.strftime('%Y-%m')})"
                         )
                         return False
