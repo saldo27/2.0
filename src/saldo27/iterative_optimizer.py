@@ -6,7 +6,9 @@ Automatically retries and optimizes schedule assignments until tolerance require
 
 import copy
 import logging
+import math
 import random
+from calendar import monthrange as _monthrange
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -1308,6 +1310,7 @@ class IterativeOptimizer:
             # target_shifts ya tiene mandatory restados
             mandatory_count = 0
             mandatory_str = worker_data.get("mandatory_days", "")
+            mandatory_parts: list[str] = []
             if mandatory_str:
                 try:
                     # Parsear las fechas mandatory
@@ -1383,45 +1386,79 @@ class IterativeOptimizer:
                         pass
                 expected_monthly_rough = raw_target / months_in_period
 
-                # Manual workers: guardias/mes with ZERO tolerance (exact monthly count)
+                # Manual workers: proportional monthly target (from monthly_targets), zero tolerance
                 is_manual_worker = not worker_data.get("auto_calculate_shifts", True)
 
                 if is_manual_worker:
-                    guardias_mes = worker_data.get("_original_target_shifts", 0)
-                    if guardias_mes > 0:
-                        # Exact monthly enforcement: no tolerance for manual workers
-                        # CRITICAL: Use non-mandatory count — target already has mandatory subtracted
-                        if non_mandatory_shifts_this_month + 1 > guardias_mes:
+                    month_key = shift_date.strftime("%Y-%m")
+                    monthly_targets_map = worker_data.get("monthly_targets", {})
+                    # Use pre-computed proportional monthly target (respects work_periods)
+                    # Fallback to original guardias/mes if not available
+                    if month_key in monthly_targets_map:
+                        manual_monthly_max = monthly_targets_map[month_key]
+                    else:
+                        manual_monthly_max = worker_data.get("_original_target_shifts", 0)
+                    if manual_monthly_max > 0:
+                        # Zero tolerance: exact proportional limit
+                        if non_mandatory_shifts_this_month + 1 > manual_monthly_max:
                             logging.debug(
                                 f"❌ {worker_name} blocked: MANUAL monthly limit - "
-                                f"{non_mandatory_shifts_this_month + 1} non-mandatory would exceed {guardias_mes} guardias/mes "
+                                f"{non_mandatory_shifts_this_month + 1} non-mandatory would exceed {manual_monthly_max} "
                                 f"(month: {shift_date.strftime('%Y-%m')})"
                             )
                             return False
+                        # Proportional intra-month check (zero tolerance for manual)
+                        _days_in_month = _monthrange(shift_date.year, shift_date.month)[1]
+                        _prop_max = math.ceil(manual_monthly_max * shift_date.day / _days_in_month)
+                        _prop_max = max(_prop_max, 1)  # allow at least 1 when target > 0
+                        if non_mandatory_shifts_this_month + 1 > _prop_max:
+                            logging.debug(
+                                f"❌ {worker_name} blocked: MANUAL proportional intra-month limit - "
+                                f"{non_mandatory_shifts_this_month + 1} would exceed {_prop_max} "
+                                f"(day {shift_date.day}/{_days_in_month}, monthly_max={manual_monthly_max})"
+                            )
+                            return False
                 else:
-                    # Add tolerance for monthly (part-time: 0%, full-time: 10%)
-                    monthly_tolerance = 0.10 if work_percentage >= 1.0 else 0.0
-
-                    # CRITICAL: Use per-worker monthly_targets if available.
-                    # Workers with work_periods have targets concentrated in fewer months,
-                    # so raw_target / months_in_period dramatically underestimates their
-                    # per-month allowance (e.g. VALLE: 7/3=2.3 but actual Sep target=7).
+                    # Auto workers: monthly tolerance +1, plus proportional intra-month pacing
                     month_key = shift_date.strftime("%Y-%m")
                     monthly_targets = worker_data.get("monthly_targets", {})
                     if month_key in monthly_targets:
                         max_monthly = monthly_targets[month_key]
                     else:
-                        max_monthly = expected_monthly_rough * (1 + monthly_tolerance)
+                        # Fallback: estimate from raw_target / months
+                        months_in_period = 4.0
+                        if hasattr(self, "scheduler") and self.scheduler:
+                            try:
+                                sd = self.scheduler.start_date
+                                ed = self.scheduler.end_date
+                                months_in_period = (ed.year - sd.year) * 12 + ed.month - sd.month + 1
+                            except Exception:
+                                pass
+                        max_monthly = raw_target / months_in_period
 
-                    # Check if adding this shift would exceed monthly limit
-                    # CRITICAL: Use non-mandatory count — target already has mandatory subtracted
-                    if non_mandatory_shifts_this_month + 1 > max_monthly + 1:  # +1 for rounding tolerance
+                    # Monthly tolerance: +1 (consistent with schedule_builder)
+                    if non_mandatory_shifts_this_month + 1 > max_monthly + 1:
                         logging.debug(
                             f"❌ {worker_name} blocked: Monthly limit - "
-                            f"{non_mandatory_shifts_this_month + 1} non-mandatory would exceed {max_monthly:.1f} "
+                            f"{non_mandatory_shifts_this_month + 1} non-mandatory would exceed {max_monthly:.1f}+1 "
                             f"(month: {shift_date.strftime('%Y-%m')})"
                         )
                         return False
+
+                    # Proportional intra-month check: max = ceil(T * elapsed/days + 0.5)
+                    # Only for full-time auto workers; part-time already handled above
+                    if work_percentage >= 1.0 and month_key in monthly_targets:
+                        monthly_floor = monthly_targets[month_key]
+                        if monthly_floor > 0:
+                            _days_in_month = _monthrange(shift_date.year, shift_date.month)[1]
+                            _prop_max = math.ceil(monthly_floor * shift_date.day / _days_in_month + 0.5)
+                            if non_mandatory_shifts_this_month + 1 > _prop_max:
+                                logging.debug(
+                                    f"❌ {worker_name} blocked: Proportional intra-month limit - "
+                                    f"{non_mandatory_shifts_this_month + 1} would exceed {_prop_max} "
+                                    f"(day {shift_date.day}/{_days_in_month}, monthly_floor={monthly_floor})"
+                                )
+                                return False
 
             # NEW: Check weekend consecutive limits (if this is a weekend/holiday shift)
             # CRITICAL: Include holidays and pre-holidays for consistency with other parts of code

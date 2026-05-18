@@ -526,52 +526,59 @@ class ScheduleBuilder:
             )
             return True
 
-        # Manual workers: also enforce monthly distribution to prevent front-loading one month.
-        # MARIA (3/mes) must not receive a 4th shift in September even if the overall budget
-        # (target_shifts=5) still has room. Without this check the initial fill assigns all
-        # remaining shifts into whichever month has the most open slots.
+        # Manual workers: enforce proportional intra-month distribution (zero tolerance).
+        # MARIA (3/mes) in a 31-day July: by day 10 → max=ceil(3*10/31)=1; by day 21 → max=3.
+        # Uses non-mandatory count vs non-mandatory monthly target (mandatory never blocks).
         if is_manual_worker and hasattr(self, "_get_expected_monthly_target"):
             expected_monthly = self._get_expected_monthly_target(worker_data, date.year, date.month)
             if expected_monthly > 0:
-                # Exclude mandatory shifts: monthly_targets distributes the non-mandatory budget
-                # only. Counting the mandatory shift in July for MARIA would falsely fill her
-                # quota and prevent adding the required extra non-mandatory shift that month.
                 current_month_count = sum(
                     1
                     for d in all_assignments
                     if d.year == date.year and d.month == date.month and d not in mandatory_dates_set
                 )
-                if current_month_count >= expected_monthly:
+                from calendar import monthrange as _mrange
+                _days_in_month = _mrange(date.year, date.month)[1]
+                # Proportional max with zero tolerance: ceil(T * elapsed / days)
+                _prop_max = math.ceil(expected_monthly * date.day / _days_in_month)
+                _prop_max = max(_prop_max, 1) if expected_monthly > 0 else 0  # allow at least 1 when T>0
+                if current_month_count >= _prop_max:
                     logging.debug(
-                        f"🚫 BLOCKED: {worker_id} (manual) monthly target {expected_monthly} already met "
-                        f"in {date.year}-{date.month:02d} (has {current_month_count} non-mandatory)"
+                        f"🚫 BLOCKED: {worker_id} (manual) proportional monthly limit {_prop_max} reached "
+                        f"at day {date.day}/{_days_in_month} in {date.year}-{date.month:02d} "
+                        f"(has {current_month_count} non-mandatory, monthly_target={expected_monthly})"
                     )
                     return True
 
-        # Auto workers: enforce monthly ceiling (monthly_targets_ceil) to prevent front-loading
-        # all shifts into one month. This check runs during both the initial fill and optimizer
-        # passes, guaranteeing that no auto worker exceeds the proportional ceiling per month.
-        # NOTE: monthly_targets_ceil is populated by Scheduler._calculate_monthly_targets before
-        # ScheduleBuilder is invoked. The hasattr guard was removed because _calculate_monthly_targets
-        # lives in Scheduler, not ScheduleBuilder, so hasattr(self, ...) was always False.
+        # Auto workers: enforce monthly ceiling + proportional intra-month pacing.
+        # Monthly: floor + 1 tolerance. Intra-month: ceil(T * elapsed/days + 0.5).
+        # Both checks use non-mandatory counts (mandatory never eats into the headroom).
         if not is_manual_worker:
             month_key = f"{date.year}-{date.month:02d}"
-            ceil_map = worker_data.get("monthly_targets_ceil", {})
-            if month_key in ceil_map and ceil_map[month_key] > 0:
-                # Count only non-mandatory shifts: monthly_targets_ceil distributes the
-                # non-mandatory budget (target_shifts = RAW − mandatory). Counting mandatory
-                # shifts here would reduce the non-mandatory headroom by the number of
-                # mandatory shifts, preventing the worker from reaching the non-mandatory
-                # ceiling (e.g. 5 mandatory + ceiling 6 → only 1 non-mandatory instead of 6).
+            floor_map = worker_data.get("monthly_targets", {})
+            monthly_floor = floor_map.get(month_key, 0)
+            if monthly_floor > 0:
                 current_month_count = sum(
                     1
                     for d in all_assignments
                     if d.year == date.year and d.month == date.month and d not in mandatory_dates_set
                 )
-                if current_month_count >= ceil_map[month_key]:
+                max_monthly = monthly_floor + 1  # monthly tolerance: +1
+                if current_month_count >= max_monthly:
                     logging.debug(
-                        f"🚫 BLOCKED: {worker_id} (auto) monthly ceiling {ceil_map[month_key]} reached "
-                        f"in {date.year}-{date.month:02d} (has {current_month_count} non-mandatory)"
+                        f"🚫 BLOCKED: {worker_id} (auto) monthly ceiling {max_monthly} reached "
+                        f"in {date.year}-{date.month:02d} (has {current_month_count} non-mandatory, floor={monthly_floor})"
+                    )
+                    return True
+                # Proportional intra-month check: max = ceil(T * elapsed_days/days_in_month + 0.5)
+                from calendar import monthrange as _mrange
+                _days_in_month = _mrange(date.year, date.month)[1]
+                _prop_max = math.ceil(monthly_floor * date.day / _days_in_month + 0.5)
+                if current_month_count >= _prop_max:
+                    logging.debug(
+                        f"🚫 BLOCKED: {worker_id} (auto) proportional intra-month ceiling {_prop_max} reached "
+                        f"at day {date.day}/{_days_in_month} in {date.year}-{date.month:02d} "
+                        f"(has {current_month_count} non-mandatory, monthly_floor={monthly_floor})"
                     )
                     return True
 
@@ -1660,22 +1667,11 @@ class ScheduleBuilder:
         # Esto ya incluye los mandatory esperados para el mes
         expected_monthly_target = self._get_expected_monthly_target(worker_config, date.year, date.month)
 
-        # Calculate current shifts assigned in this month (TODOS los turnos, incluyendo mandatory)
-        shifts_this_month = sum(
-            1
-            for assigned_date in self.scheduler.worker_assignments.get(worker_id, [])
-            if assigned_date.year == date.year and assigned_date.month == date.month
-        )
-
-        # MONTHLY LIMIT SYSTEM with ±10% tolerance
-        # Base tolerance: 10% of monthly target (not fixed ±1)
-        base_tolerance = max(1, round(expected_monthly_target * 0.10))
-
-        # Calculate global deficit for deficit compensation
-        # Para el déficit global, SÍ excluimos mandatory porque target_shifts ya los tiene restados
-        overall_target = worker_config.get("target_shifts", 0) if worker_config else 0
-
-        # Get mandatory dates for deficit calculation only
+        # Get mandatory dates FIRST so we can count non-mandatory shifts only.
+        # expected_monthly_target is the non-mandatory budget (from monthly_targets which uses
+        # target_shifts = RAW − mandatory). Counting mandatory shifts against it would
+        # incorrectly fill KIKO's July quota with his 2 mandatory shifts (14-Jul, 19-Jul)
+        # and prevent him getting 6 non-mandatory shifts as intended.
         mandatory_dates = set()
         if worker_config and worker_config.get("mandatory_days"):
             try:
@@ -1684,27 +1680,30 @@ class ScheduleBuilder:
                 pass
 
         all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
-        mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
-        current_total_shifts = (
-            len(all_assignments) - mandatory_assigned
-        )  # Solo no-mandatory para comparar con target_shifts
 
+        # Count NON-MANDATORY shifts this month (compare against non-mandatory expected_monthly_target)
+        shifts_this_month = sum(
+            1
+            for assigned_date in all_assignments
+            if assigned_date.year == date.year and assigned_date.month == date.month
+            and assigned_date not in mandatory_dates
+        )
+
+        # MONTHLY LIMIT SYSTEM
+        base_tolerance = max(1, round(expected_monthly_target * 0.10))
+
+        # For global-deficit logging
+        overall_target = worker_config.get("target_shifts", 0) if worker_config else 0
+        mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
+        current_total_shifts = len(all_assignments) - mandatory_assigned
         deficit_pct = ((overall_target - current_total_shifts) / overall_target * 100) if overall_target > 0 else 0
 
         # MONTHLY TOLERANCE: Stricter for part-time workers
         work_percentage = worker_config.get("work_percentage", 100) if worker_config else 100
 
-        # Count mandatory shifts in this specific month
-        mandatory_this_month = 0
+        # Count mandatory shifts in this specific month (reuse mandatory_dates already computed)
+        mandatory_this_month = sum(1 for d in mandatory_dates if d.year == date.year and d.month == date.month)
         is_manual = not worker_config.get("auto_calculate_shifts", True) if worker_config else False
-        if worker_config and worker_config.get("mandatory_days"):
-            try:
-                mandatory_dates_all = set(self.date_utils.parse_dates(worker_config["mandatory_days"]))
-                mandatory_this_month = sum(
-                    1 for d in mandatory_dates_all if d.year == date.year and d.month == date.month
-                )
-            except Exception:
-                pass
 
         if work_percentage < 100:
             # Part-time workers: NO tolerance - use ceil/floor rounding only
@@ -1715,23 +1714,8 @@ class ScheduleBuilder:
             # Manual workers: ALWAYS zero tolerance regardless of mode
             base_tolerance = 0
         else:
-            # Full-time workers: ZERO tolerance during initial fill (strict mode)
-            # to prevent front-loading (e.g. 6,3 instead of 5,4).
-            # Post-processing rebalance passes use their own guards with ±1 tolerance.
-            if self.use_strict_mode:
-                base_tolerance = 0
-            else:
-                # Relaxed mode: ceiling-based cap.
-                # ceil(fractional_target) gives +1 when the target rounded down,
-                # and 0 when it rounded up — so tolerance naturally matches the fraction.
-                # E.g. fraction=3.32 → round=3, ceil=4 → tolerance=1 (can have 4 shifts).
-                # E.g. fraction=3.56 → round=4, ceil=4 → tolerance=0 (already rounded up).
-                _mk = f"{date.year}-{date.month:02d}"
-                base_tolerance = max(
-                    0,
-                    (worker_config or {}).get("monthly_targets_ceil", {}).get(_mk, expected_monthly_target)
-                    - expected_monthly_target,
-                )
+            # Full-time auto workers: monthly tolerance = +1
+            base_tolerance = 1
 
         # Calculate effective monthly max (STRICT)
         # The expected_monthly_target is already the TOTAL for this month.
@@ -1770,6 +1754,25 @@ class ScheduleBuilder:
                     f"GLOBAL: total_shifts={len(all_assignments)}, target_shifts={overall_target}, deficit={deficit_pct:.1f}%"
                 )
             return float("-inf")
+
+        # Proportional intra-month check: max = ceil(T * elapsed_days/days_in_month + 0.5)
+        # Only applies to full-time auto workers (part-time and manual handled above).
+        # Uses non-mandatory shifts_this_month (already computed without mandatory).
+        if not is_manual and work_percentage >= 100:
+            _mk = f"{date.year}-{date.month:02d}"
+            monthly_floor = int((worker_config or {}).get("monthly_targets", {}).get(_mk, 0))
+            if monthly_floor > 0:
+                from calendar import monthrange as _mrange
+                _days_in_month = _mrange(date.year, date.month)[1]
+                _prop_max = math.ceil(monthly_floor * date.day / _days_in_month + 0.5)
+                if shifts_this_month + 1 > _prop_max:
+                    if _DEBUG():
+                        logging.debug(
+                            f"🚫 Worker {worker_id}: BLOCKED by proportional intra-month limit - "
+                            f"month {date.strftime('%Y-%m')} day {date.day}/{_days_in_month}: "
+                            f"would have {shifts_this_month + 1} (max: {_prop_max}, monthly_floor={monthly_floor})"
+                        )
+                    return float("-inf")
 
         # =========================================================================
         # MONTHLY SCORING BASADO EN RATIO (% completitud mensual)
@@ -3429,24 +3432,6 @@ class ScheduleBuilder:
                     # Incompatibility at date_e
                     if not self._check_incompatibility_with_list(worker_Z_id, others_at_e):
                         continue
-                    # Monthly ceiling check for Z at date_e.
-                    # Pass 3B is a MOVE for Z (date_z removed, date_e added), so the overall
-                    # count stays the same.  For within-month moves the monthly count is also
-                    # neutral.  For cross-month moves, date_e's month gains +1, so we must
-                    # verify the ceiling won't be exceeded *before* we know which date_z will
-                    # be released.  We use the current (pre-move) count as a conservative proxy:
-                    # if Z already has `ceil` shifts in date_e's month, no cross-month move
-                    # into that month is possible without exceeding the ceiling.
-                    _month_key_e = f"{date_e.year}-{date_e.month:02d}"
-                    _ceil_e = Z_data.get("monthly_targets_ceil", {}).get(_month_key_e, 0)
-                    if _ceil_e > 0:
-                        _current_e_month = sum(
-                            1
-                            for _d in self.worker_assignments.get(worker_Z_id, set())
-                            if _d.year == date_e.year and _d.month == date_e.month
-                        )
-                        if _current_e_month >= _ceil_e:
-                            continue  # date_e's month is already at ceiling for Z
 
                     Z_min_gap = get_effective_min_gap(Z_data, self.gap_between_shifts)
                     # Prefer date_z closest to date_e — minimises disruption and
@@ -3472,6 +3457,22 @@ class ScheduleBuilder:
                             for d in Z_asgn_minus_z
                         ):
                             continue
+
+                        # Monthly limit check for Z at date_e.
+                        # Z is being MOVED: date_z removed, date_e added.
+                        # - Same month: net neutral — no monthly check needed.
+                        # - Cross month: date_e's month gains +1 → apply proportional limit check.
+                        #   Temporarily remove date_z from assignments so the check reflects the
+                        #   post-move state (avoids counting an assignment that will be gone).
+                        if date_z.year != date_e.year or date_z.month != date_e.month:
+                            _saved_Z_asgn = self.worker_assignments.get(worker_Z_id)
+                            if _saved_Z_asgn is not None:
+                                _saved_Z_asgn.discard(date_z)
+                            _violates = self._would_violate_tolerance(worker_Z_id, date_e, allow_relaxation=True)
+                            if _saved_Z_asgn is not None:
+                                _saved_Z_asgn.add(date_z)
+                            if _violates:
+                                continue
 
                         # Find deficit worker D to cover (date_z, post_z)
                         others_at_z_no_Z = [
