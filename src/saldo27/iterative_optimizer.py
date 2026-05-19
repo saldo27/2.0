@@ -3985,6 +3985,32 @@ class IterativeOptimizer:
 
             logging.info(f"   📊 Found {len(empty_slots)} empty slots to fill")
 
+            # Pre-compute mandatory shift counts per worker.
+            # Mandatory assignments are fixed (locked) and won't change during greedy fill,
+            # so we compute once here and reuse throughout.
+            # CRITICAL: target_shifts has mandatory subtracted; priority must use
+            # non-mandatory count (total - mandatory) for a fair deficit comparison.
+            mandatory_count_map: dict[str, int] = {}
+            for _w in workers_data:
+                _wname = str(_w.get("id"))
+                _mand_str = _w.get("mandatory_days", "")
+                _mand_count = 0
+                if _mand_str:
+                    try:
+                        _mand_parts = [p.strip() for p in _mand_str.replace(";", ",").split(",") if p.strip()]
+                        for _d, _assigns in optimized_schedule.items():
+                            try:
+                                _cd = _d if isinstance(_d, datetime) else datetime.strptime(_d, "%Y-%m-%d")
+                                _ds = _cd.strftime("%d-%m-%Y")
+                                if _ds in _mand_parts or _cd.strftime("%Y-%m-%d") in _mand_parts:
+                                    if isinstance(_assigns, list) and _wname in _assigns:
+                                        _mand_count += 1
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                mandatory_count_map[_wname] = _mand_count
+
             # 2. For each empty slot, find best worker using greedy heuristic
             for slot in empty_slots:
                 date = slot["date"]
@@ -4011,13 +4037,18 @@ class IterativeOptimizer:
                         assigned = stats.get("total_shifts", 0)
                         target = worker.get("target_shifts", 0)
 
+                        # CRITICAL: target_shifts has mandatory subtracted; compare against
+                        # non-mandatory count only so workers with mandatory shifts are not
+                        # treated as "at target" before they have filled their non-mandatory quota.
+                        non_mandatory_assigned = assigned - mandatory_count_map.get(worker_name, 0)
+
                         # Manual workers have zero tolerance — never assign beyond their exact target
                         is_manual = not worker.get("auto_calculate_shifts", True)
-                        if is_manual and assigned >= target:
+                        if is_manual and non_mandatory_assigned >= target:
                             continue
 
-                        # Greedy score: prioritize workers below target
-                        deviation = assigned - target if target > 0 else assigned
+                        # Greedy score: prioritize workers below target (non-mandatory deficit)
+                        deviation = non_mandatory_assigned - target if target > 0 else non_mandatory_assigned
                         priority = -deviation  # Negative deviation = higher priority
 
                         candidates.append(
@@ -4026,7 +4057,7 @@ class IterativeOptimizer:
                                 "worker_id": worker_id,
                                 "priority": priority,
                                 "deviation": deviation,
-                                "assigned": assigned,
+                                "assigned": non_mandatory_assigned,
                             }
                         )
 
@@ -4141,8 +4172,13 @@ class IterativeOptimizer:
                         if not w_data.get("auto_calculate_shifts", True):
                             continue
                         min_gap = get_effective_min_gap(w_data, gap_between_shifts)
-                        # W is gap-blocked: d_w is within the forbidden window for d_e
-                        if 0 < diff < min_gap:
+                        # W is gap-blocked (diff < min_gap) OR 7/14-blocked (exactly 7 or 14 days away).
+                        # The 7/14 rule blocks a worker from any slot exactly 7 or 14 days from their
+                        # existing shifts.  Chain displacement can resolve this deadlock by moving W's
+                        # blocking shift (d_w) to a new date while another worker covers d_w.
+                        is_gap_blocked = 0 < diff < min_gap
+                        is_714_blocked = diff in (7, 14)
+                        if is_gap_blocked or is_714_blocked:
                             candidates_w.append((w_name, d_w, post_w, w_data, diff))
 
                 # Sort: most-deficit workers first (most benefit to move), then tightest block
