@@ -1911,7 +1911,9 @@ class ScheduleBuilder:
         - Patrón 7/14: PROHIBIDO absolutamente (sin excepciones)
 
         RELAXED MODE (use_strict_mode=False):
-        - Gap mínimo: Permite gap-1 en relaxation_level >= 3
+        - Gap mínimo (tiered):
+            · relaxation_level >= 1 AND deficit >= 2 → gap-1 (workers con -2 turnos)
+            · relaxation_level >= 2 AND deficit >= 1 → gap-1 (workers con -1 turno, último recurso)
         - Patrón 7/14: Permite excepciones con déficit según relaxation_level
         """
         worker_id = worker["id"]
@@ -1954,12 +1956,17 @@ class ScheduleBuilder:
         if self.use_strict_mode:
             min_gap = base_min_gap
         else:
-            # RELAXED MODE: Allow gap-1, never below hard_floor
-            if relaxation_level >= 1 and target_deficit >= 3:
+            # RELAXED MODE: Tiered gap-1 relaxation, never below hard_floor
+            # · level >= 1 and deficit >= 2: covers workers with -2 shift deficit
+            # · level >= 2 and deficit >= 1: last-resort for -1 deficit workers
+            allow_gap_relax = (relaxation_level >= 1 and target_deficit >= 2) or (
+                relaxation_level >= 2 and target_deficit >= 1
+            )
+            if allow_gap_relax:
                 min_gap = max(hard_floor, base_min_gap - 1)
                 if _DEBUG():
                     logging.debug(
-                        f"RELAXED: Worker {worker_id} gap reduced by 1 to {min_gap} (deficit: {target_deficit})"
+                        f"RELAXED: Worker {worker_id} gap reduced by 1 to {min_gap} (deficit: {target_deficit}, level: {relaxation_level})"
                     )
             else:
                 min_gap = base_min_gap
@@ -3011,10 +3018,10 @@ class ScheduleBuilder:
             assigned_this_post_pass1 = False
 
             # Iterate through relaxation levels for direct fill
-            # Max relaxation level limited to 1 to preserve monthly and weekend balance
-            # Level 0 = strict, Level 1 = moderate (slight gap reduction only)
-            # Level 2+ disabled to prevent balance issues
-            for relax_lvl_attempt in range(2):  # Only 0 and 1
+            # Level 0 = strict (no gap relaxation)
+            # Level 1 = gap-1 if worker deficit >= 2  (covers -2 deficit workers)
+            # Level 2 = gap-1 if worker deficit >= 1  (last-resort for -1 deficit workers)
+            for relax_lvl_attempt in range(3):  # Levels 0, 1 and 2
                 pass1_candidates = []
 
                 for worker_data_val in self.workers_data:
@@ -3377,8 +3384,20 @@ class ScheduleBuilder:
                         # 7/14 pattern check for Y
                         if self._violates_7_14_pattern(worker_Y_id, date_e):
                             continue
-                        # Prefer worker with the highest shift deficit
-                        Y_deficit = Y_data.get("target_shifts", len(Y_asgn)) - len(Y_asgn)
+                        # Prefer worker with the highest shift deficit.
+                        # CRITICAL: target_shifts has mandatory subtracted — compare against
+                        # non-mandatory assignments only, otherwise workers with mandatory
+                        # shifts appear to have lower deficit than they really do.
+                        _Y_mand_str = Y_data.get("mandatory_days", "")
+                        _Y_mand_count = 0
+                        if _Y_mand_str:
+                            try:
+                                _Y_mand_dates = set(self.date_utils.parse_dates(_Y_mand_str))
+                                _Y_mand_count = sum(1 for d in Y_asgn if d in _Y_mand_dates)
+                            except Exception:
+                                pass
+                        Y_non_mand = len(Y_asgn) - _Y_mand_count
+                        Y_deficit = Y_data.get("target_shifts", Y_non_mand) - Y_non_mand
                         if Y_deficit > best_Y_deficit:
                             best_Y_deficit = Y_deficit
                             best_Y_id = worker_Y_id
@@ -3509,8 +3528,19 @@ class ScheduleBuilder:
                             # 7/14 check for D at date_z
                             if self._violates_7_14_pattern(worker_D_id, date_z):
                                 continue
-                            # Select D with highest deficit (workers at-or-below target)
-                            D_deficit = D_data.get("target_shifts", len(D_asgn)) - len(D_asgn)
+                            # Select D with highest deficit (workers at-or-below target).
+                            # CRITICAL: target_shifts has mandatory subtracted — compare against
+                            # non-mandatory assignments only.
+                            _D_mand_str = D_data.get("mandatory_days", "")
+                            _D_mand_count = 0
+                            if _D_mand_str:
+                                try:
+                                    _D_mand_dates = set(self.date_utils.parse_dates(_D_mand_str))
+                                    _D_mand_count = sum(1 for d in D_asgn if d in _D_mand_dates)
+                                except Exception:
+                                    pass
+                            D_non_mand = len(D_asgn) - _D_mand_count
+                            D_deficit = D_data.get("target_shifts", D_non_mand) - D_non_mand
                             if D_deficit > best_D_deficit:
                                 best_D_deficit = D_deficit
                                 best_D_id = worker_D_id
