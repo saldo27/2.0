@@ -5083,7 +5083,15 @@ class ScheduleBuilder:
                     elif c < t:
                         remaining_under_2.append((ym, t - c))
 
-                # Step A: shed excess from over-target months to free total budget
+                # Step A: shed excess from over-target months to free total budget.
+                # Track successful sheds — each shed creates one "paired" slot for Step B
+                # (worker gives up one over-month shift, gains one under-month shift).
+                # This pairing must be tracked explicitly because total_budget is computed
+                # after Step A from the updated worker_assignments and shows 0 for workers
+                # who are exactly at their overall target after shedding (e.g. JULIA: had
+                # 15 shifts / target 14; sheds 1 → 14 shifts → total_budget=0, yet the
+                # shed+fill pair is net-zero and must be allowed).
+                shed_count_a = 0
                 for over_ym, surplus in sorted(remaining_over_2, key=lambda x: x[1], reverse=True):
                     while surplus > 0 and changes < max_changes:
                         shed = self._monthly_shed_excess(wid, worker, over_ym)
@@ -5091,14 +5099,18 @@ class ScheduleBuilder:
                             break
                         changes += 1
                         surplus -= 1
+                        shed_count_a += 1
 
                 # Step B: fill under-target months only within overall target budget.
                 # When budget is exhausted (worker already at overall target), still try
                 # Pass 2 redistribution (replace over-monthly-target donors) without
                 # adding new slots — this preserves total count while fixing monthly spread.
+                # effective_budget adds shed_count_a: each shed freed one slot that can
+                # now be re-used as a fill in an under-target month (net-zero operation).
                 overall_target = worker.get("_raw_target", worker.get("target_shifts", 0))
                 current_total = len(self.worker_assignments.get(wid, set()))
                 total_budget = max(0, overall_target - current_total)
+                effective_budget = total_budget + shed_count_a
 
                 for under_ym, _ in sorted(remaining_under_2, key=lambda x: x[1], reverse=True):
                     if changes >= max_changes:
@@ -5106,7 +5118,7 @@ class ScheduleBuilder:
                     target = self._get_expected_monthly_target(worker, under_ym[0], under_ym[1])
                     current = month_counts_2.get(under_ym, 0)
                     while current < target and changes < max_changes:
-                        if total_budget > 0:
+                        if effective_budget > 0:
                             # Budget available: try strict fill first (empty slot or donor over
                             # total target), then fall back to loose donor (over monthly target)
                             filled = self._monthly_fill_deficit(wid, worker, under_ym)
@@ -5123,8 +5135,8 @@ class ScheduleBuilder:
                             break
                         changes += 1
                         current += 1
-                        if total_budget > 0:
-                            total_budget -= 1
+                        if effective_budget > 0:
+                            effective_budget -= 1
 
         if changes > 0:
             logging.info(f"✅ Monthly target enforcement: {changes} changes")
@@ -5418,6 +5430,21 @@ class ScheduleBuilder:
 
                 logging.info(f"🔧 Shed excess: {cid} replaces {wid} on {d.strftime('%d-%b')} (month {over_ym[1]:02d})")
                 return True
+
+            # No eligible replacement found for this date.  Fall back to a naked shed:
+            # remove wid from the slot and leave it empty (None).  The empty slot will be
+            # recaptured in a later enforcement pass (by another under-target worker's
+            # _monthly_fill_deficit) or by _try_fill_empty_shifts in the next finalization
+            # cycle.  This ensures wid's total_budget increases so Step B can fill their
+            # under-target month — critical for the over-Aug/under-Sep cascade pattern.
+            self.schedule[d][post] = None
+            self.worker_assignments[wid].discard(d)
+            self.scheduler._update_tracking_data(wid, d, post, removing=True)
+            logging.info(
+                f"🔧 Naked shed: {wid} removed from {d.strftime('%d-%b')} P{post} "
+                f"(month {over_ym[1]:02d}) — no replacement available"
+            )
+            return True
         return False
 
     def _improve_weekend_distribution(self):
