@@ -571,18 +571,24 @@ class ScheduleBuilder:
                         f"in {date.year}-{date.month:02d} (has {current_month_count} non-mandatory, floor={monthly_floor})"
                     )
                     return True
-                # Proportional intra-month check: max = ceil(T * elapsed_days/days_in_month + 0.5)
-                from calendar import monthrange as _mrange
+                # Proportional intra-month pacing: only applies when the worker is already
+                # at or above their monthly floor target.  Workers still below the floor
+                # must never be blocked by pacing — they need more shifts and restricting
+                # them to early-month pace would leave empty slots unfilled
+                # (e.g. MARINA targeting 2 Sep shifts with 1 already would be blocked
+                # from every Sep slot before ~day 10, preventing coverage).
+                if current_month_count >= monthly_floor:
+                    from calendar import monthrange as _mrange
 
-                _days_in_month = _mrange(date.year, date.month)[1]
-                _prop_max = math.ceil(monthly_floor * date.day / _days_in_month + 0.5)
-                if current_month_count >= _prop_max:
-                    logging.debug(
-                        f"🚫 BLOCKED: {worker_id} (auto) proportional intra-month ceiling {_prop_max} reached "
-                        f"at day {date.day}/{_days_in_month} in {date.year}-{date.month:02d} "
-                        f"(has {current_month_count} non-mandatory, monthly_floor={monthly_floor})"
-                    )
-                    return True
+                    _days_in_month = _mrange(date.year, date.month)[1]
+                    _prop_max = math.ceil(monthly_floor * date.day / _days_in_month + 0.5)
+                    if current_month_count >= _prop_max:
+                        logging.debug(
+                            f"🚫 BLOCKED: {worker_id} (auto) proportional intra-month ceiling {_prop_max} reached "
+                            f"at day {date.day}/{_days_in_month} in {date.year}-{date.month:02d} "
+                            f"(has {current_month_count} non-mandatory, monthly_floor={monthly_floor})"
+                        )
+                        return True
 
         # Phase-based tolerance system:
         # Phase 1 (objective): ±10% tolerance

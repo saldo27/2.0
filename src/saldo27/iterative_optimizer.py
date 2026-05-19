@@ -1445,11 +1445,13 @@ class IterativeOptimizer:
                         )
                         return False
 
-                    # Proportional intra-month check: max = ceil(T * elapsed/days + 0.5)
-                    # Only for full-time auto workers; part-time already handled above
+                    # Proportional intra-month pacing: only applies when the worker is
+                    # already at or above their monthly floor target.  Workers still below
+                    # the floor must never be paced — they need more shifts and the pacing
+                    # check would block them from early-month slots unnecessarily.
                     if work_percentage >= 1.0 and month_key in monthly_targets:
                         monthly_floor = monthly_targets[month_key]
-                        if monthly_floor > 0:
+                        if monthly_floor > 0 and non_mandatory_shifts_this_month >= monthly_floor:
                             _days_in_month = _monthrange(shift_date.year, shift_date.month)[1]
                             _prop_max = math.ceil(monthly_floor * shift_date.day / _days_in_month + 0.5)
                             if non_mandatory_shifts_this_month + 1 > _prop_max:
