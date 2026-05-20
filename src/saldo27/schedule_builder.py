@@ -5069,7 +5069,9 @@ class ScheduleBuilder:
                     while deficit > 0 and changes < max_changes:
                         filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False)
                         if not filled and violations_714_budget.get(wid, 0) > 0:
-                            filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False, allow_714_violation=True)
+                            filled = self._monthly_fill_deficit(
+                                wid, worker, under_ym, strict_donor=False, allow_714_violation=True
+                            )
                             if filled:
                                 violations_714_budget[wid] -= 1
                         if not filled:
@@ -5149,7 +5151,9 @@ class ScheduleBuilder:
                             if not filled and violations_714_budget.get(wid, 0) > 0:
                                 filled = self._monthly_fill_deficit(wid, worker, under_ym, allow_714_violation=True)
                                 if not filled:
-                                    filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False, allow_714_violation=True)
+                                    filled = self._monthly_fill_deficit(
+                                        wid, worker, under_ym, strict_donor=False, allow_714_violation=True
+                                    )
                                 if filled:
                                     violations_714_budget[wid] -= 1
                         else:
@@ -5160,7 +5164,12 @@ class ScheduleBuilder:
                             )
                             if not filled and violations_714_budget.get(wid, 0) > 0:
                                 filled = self._monthly_fill_deficit(
-                                    wid, worker, under_ym, strict_donor=False, allow_empty=False, allow_714_violation=True
+                                    wid,
+                                    worker,
+                                    under_ym,
+                                    strict_donor=False,
+                                    allow_empty=False,
+                                    allow_714_violation=True,
                                 )
                                 if filled:
                                     violations_714_budget[wid] -= 1
@@ -5301,7 +5310,9 @@ class ScheduleBuilder:
                     return True
         return False
 
-    def _monthly_fill_deficit(self, wid, worker_config, under_ym, strict_donor=True, allow_empty=True, allow_714_violation: bool = False):
+    def _monthly_fill_deficit(
+        self, wid, worker_config, under_ym, strict_donor=True, allow_empty=True, allow_714_violation: bool = False
+    ):
         """Fill one shift deficit in under_ym for a worker.
 
         First tries to fill genuinely empty (None) slots in the under-month before
@@ -5327,7 +5338,9 @@ class ScheduleBuilder:
                 for post in range(len(self.schedule.get(d, []))):
                     if self.schedule[d][post] is not None:
                         continue
-                    if not self._can_assign_worker(wid, d, post, replacing_worker=None, allow_714_violation=allow_714_violation):
+                    if not self._can_assign_worker(
+                        wid, d, post, replacing_worker=None, allow_714_violation=allow_714_violation
+                    ):
                         continue
                     others_on_date = [w for i, w in enumerate(self.schedule[d]) if w is not None and i != post]
                     if not self._check_incompatibility_with_list(wid, others_on_date):
@@ -5373,7 +5386,9 @@ class ScheduleBuilder:
 
                 if not self._can_modify_assignment(donor_wid, d, "monthly_fill"):
                     continue
-                if not self._can_assign_worker(wid, d, post, replacing_worker=donor_wid, allow_714_violation=allow_714_violation):
+                if not self._can_assign_worker(
+                    wid, d, post, replacing_worker=donor_wid, allow_714_violation=allow_714_violation
+                ):
                     continue
 
                 others_on_date = [
@@ -5445,7 +5460,9 @@ class ScheduleBuilder:
                 if cand_month_count >= cand_month_target:
                     continue
 
-                if not self._can_assign_worker(cid, d, post, replacing_worker=wid, allow_714_violation=allow_714_violation):
+                if not self._can_assign_worker(
+                    cid, d, post, replacing_worker=wid, allow_714_violation=allow_714_violation
+                ):
                     continue
 
                 others_on_date = [w for i, w in enumerate(self.schedule[d]) if w is not None and i != post and w != wid]
@@ -5494,18 +5511,14 @@ class ScheduleBuilder:
             if self.schedule[date_val][post_val] is not None:
                 continue  # Filled by a prior iteration in this pass
 
-            others = [
-                w for i, w in enumerate(self.schedule[date_val])
-                if i != post_val and w is not None
-            ]
+            others = [w for i, w in enumerate(self.schedule[date_val]) if i != post_val and w is not None]
 
             # Candidates sorted by target deficit (most needed first)
             candidates = sorted(
                 self.workers_data,
                 key=lambda w: max(
                     0,
-                    w.get("target_shifts", 0)
-                    - len(self.worker_assignments.get(w["id"], set())),
+                    w.get("target_shifts", 0) - len(self.worker_assignments.get(w["id"], set())),
                 ),
                 reverse=True,
             )
@@ -5521,9 +5534,7 @@ class ScheduleBuilder:
                 self.schedule[date_val][post_val] = wid
                 self.worker_assignments.setdefault(wid, set()).add(date_val)
                 self.scheduler._update_tracking_data(wid, date_val, post_val, removing=False)
-                logging.info(
-                    f"🔧 714-relaxed fill: {wid} → {date_val.strftime('%d-%b')} P{post_val}"
-                )
+                logging.info(f"🔧 714-relaxed fill: {wid} → {date_val.strftime('%d-%b')} P{post_val}")
                 filled_count += 1
                 break
 
