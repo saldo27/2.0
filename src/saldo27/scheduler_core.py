@@ -246,6 +246,11 @@ class SchedulerCore:
             self.balance_optimizer.schedule = self.scheduler.schedule
             self.balance_optimizer.worker_assignments = self.scheduler.worker_assignments
 
+        # Also sync StatisticsCalculator so its cached methods don't use stale dicts
+        if hasattr(self.scheduler, "stats") and self.scheduler.stats is not None:
+            self.scheduler.stats.schedule = self.scheduler.schedule
+            self.scheduler.stats.worker_assignments = self.scheduler.worker_assignments
+
     def _initialize_schedule_phase(self) -> bool:
         """
         Phase 1: Initialize schedule structure and data.

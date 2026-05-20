@@ -17,6 +17,22 @@ from typing import TYPE_CHECKING, Any
 from saldo27.adaptive_iterations import AdaptiveIterationManager
 from saldo27.utilities import get_effective_min_gap
 
+# Weekday pairs (prev_weekday, date_weekday) prohibited when effective gap == 2.
+# These bridge the weekend with insufficient rest: Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue.
+# Both orderings included so the check works regardless of chronological order.
+_GAP2_WEEKEND_PROHIBITED_PAIRS: frozenset[tuple[int, int]] = frozenset(
+    {
+        (3, 5),
+        (5, 3),  # Thu-Sat
+        (4, 6),
+        (6, 4),  # Fri-Sun
+        (5, 0),
+        (0, 5),  # Sat-Mon
+        (6, 1),
+        (1, 6),  # Sun-Tue
+    }
+)
+
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
 
@@ -457,7 +473,7 @@ class ScheduleBuilder:
 
         return False
 
-    def _would_violate_tolerance(self, worker_id, date, allow_relaxation=False):
+    def _would_violate_tolerance(self, worker_id, date, allow_relaxation=False, ignore_pacing: bool = False):
         """
         CRITICAL: Check if assigning this worker would violate ±10% tolerance.
 
@@ -529,7 +545,7 @@ class ScheduleBuilder:
         # Manual workers: enforce proportional intra-month distribution (zero tolerance).
         # MARIA (3/mes) in a 31-day July: by day 10 → max=ceil(3*10/31)=1; by day 21 → max=3.
         # Uses non-mandatory count vs non-mandatory monthly target (mandatory never blocks).
-        if is_manual_worker and hasattr(self, "_get_expected_monthly_target"):
+        if not ignore_pacing and is_manual_worker and hasattr(self, "_get_expected_monthly_target"):
             expected_monthly = self._get_expected_monthly_target(worker_data, date.year, date.month)
             if expected_monthly > 0:
                 current_month_count = sum(
@@ -540,8 +556,30 @@ class ScheduleBuilder:
                 from calendar import monthrange as _mrange
 
                 _days_in_month = _mrange(date.year, date.month)[1]
-                # Proportional max with zero tolerance: ceil(T * elapsed / days)
-                _prop_max = math.ceil(expected_monthly * date.day / _days_in_month)
+                # Use the worker's last available day in this month as denominator.
+                # For partial-month workers (e.g. GABI: Aug 1-20) using the full
+                # month length (31) means ceil(3*20/31)=2, which can never reach 3.
+                # Using last_avail=20 gives ceil(3*14/20)=3, allowing the full target.
+                _last_avail_day = _days_in_month
+                _wperiods_str = worker_data.get("work_periods", "").strip()
+                if _wperiods_str:
+                    try:
+                        _parsed_wp = self.date_utils.parse_date_ranges(_wperiods_str)
+                        _month_start = datetime(date.year, date.month, 1)
+                        _month_end = datetime(date.year, date.month, _days_in_month)
+                        _max_end = 0
+                        for _ps, _pe in _parsed_wp:
+                            if _ps <= _month_end and _pe >= _month_start:
+                                _end_day = (
+                                    _pe.day if (_pe.year == date.year and _pe.month == date.month) else _days_in_month
+                                )
+                                _max_end = max(_max_end, _end_day)
+                        if _max_end > 0:
+                            _last_avail_day = _max_end
+                    except Exception:
+                        pass
+                # Proportional max with zero tolerance: ceil(T * elapsed / last_avail)
+                _prop_max = math.ceil(expected_monthly * date.day / _last_avail_day)
                 _prop_max = max(_prop_max, 1) if expected_monthly > 0 else 0  # allow at least 1 when T>0
                 if current_month_count >= _prop_max:
                     logging.debug(
@@ -551,9 +589,13 @@ class ScheduleBuilder:
                     )
                     return True
 
-        # Auto workers: enforce monthly ceiling + proportional intra-month pacing.
-        # Monthly: floor + 1 tolerance. Intra-month: ceil(T * elapsed/days + 0.5).
-        # Both checks use non-mandatory counts (mandatory never eats into the headroom).
+        # Auto workers: enforce monthly ceiling only (floor + 1 tolerance).
+        # Non-mandatory counts only (mandatory shifts never eat into the headroom).
+        # NOTE: proportional intra-month pacing was removed because it blocked workers
+        # with restricted work windows (e.g. only Aug 1-14) from reaching their
+        # monthly floor, and prevented emergency fills mid-month for workers already
+        # at their floor but still below the ceiling. The gap constraint (min 3 days),
+        # 7/14 pattern, and global ±12% tolerance are sufficient to prevent clustering.
         if not is_manual_worker:
             month_key = f"{date.year}-{date.month:02d}"
             floor_map = worker_data.get("monthly_targets", {})
@@ -571,24 +613,6 @@ class ScheduleBuilder:
                         f"in {date.year}-{date.month:02d} (has {current_month_count} non-mandatory, floor={monthly_floor})"
                     )
                     return True
-                # Proportional intra-month pacing: only applies when the worker is already
-                # at or above their monthly floor target.  Workers still below the floor
-                # must never be blocked by pacing — they need more shifts and restricting
-                # them to early-month pace would leave empty slots unfilled
-                # (e.g. MARINA targeting 2 Sep shifts with 1 already would be blocked
-                # from every Sep slot before ~day 10, preventing coverage).
-                if current_month_count >= monthly_floor:
-                    from calendar import monthrange as _mrange
-
-                    _days_in_month = _mrange(date.year, date.month)[1]
-                    _prop_max = math.ceil(monthly_floor * date.day / _days_in_month + 0.5)
-                    if current_month_count >= _prop_max:
-                        logging.debug(
-                            f"🚫 BLOCKED: {worker_id} (auto) proportional intra-month ceiling {_prop_max} reached "
-                            f"at day {date.day}/{_days_in_month} in {date.year}-{date.month:02d} "
-                            f"(has {current_month_count} non-mandatory, monthly_floor={monthly_floor})"
-                        )
-                        return True
 
         # Phase-based tolerance system:
         # Phase 1 (objective): ±10% tolerance
@@ -789,7 +813,15 @@ class ScheduleBuilder:
 
         return False
 
-    def _can_assign_worker(self, worker_id, date, post, replacing_worker=None, allow_714_violation: bool = False):
+    def _can_assign_worker(
+        self,
+        worker_id,
+        date,
+        post,
+        replacing_worker=None,
+        allow_714_violation: bool = False,
+        ignore_pacing: bool = False,
+    ):
         try:
             # CRITICAL: Never assign to a slot occupied by a mandatory assignment
             if date in self.schedule and len(self.schedule[date]) > post and self.schedule[date][post] is not None:
@@ -881,6 +913,15 @@ class ScheduleBuilder:
                         ):
                             return False
 
+            # Special case: gap=2 — prohibit weekend-bridging pairs
+            # (Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue): insufficient rest around weekend.
+            if effective_gap == 2:
+                wd = date.weekday()
+                for prev_date in assignments:
+                    if abs((date - prev_date).days) == 2:
+                        if (prev_date.weekday(), wd) in _GAP2_WEEKEND_PROHIBITED_PAIRS:
+                            return False
+
             # Check weekend limits
             if self.constraint_checker._would_exceed_weekend_limit(worker_id, date):
                 return False
@@ -891,7 +932,7 @@ class ScheduleBuilder:
             # CRITICAL: Check tolerance constraint (±12% absolute limit)
             # This is the FINAL check to ensure we NEVER exceed tolerance
             # Using allow_relaxation=True to enforce the absolute 12% limit
-            if self._would_violate_tolerance(worker_id, date, allow_relaxation=True):
+            if self._would_violate_tolerance(worker_id, date, allow_relaxation=True, ignore_pacing=ignore_pacing):
                 return False
 
             # If we've made it this far, the worker can be assigned
@@ -1176,6 +1217,18 @@ class ScheduleBuilder:
                                 )
                             return False
 
+            # Gap=2: prohibit weekend-bridging pairs (Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue)
+            if _fm_effective_gap == 2:
+                wd = date.weekday()
+                for prev_date in sorted_sim_assignments:
+                    if prev_date == date:
+                        continue
+                    if abs((date - prev_date).days) == 2:
+                        if (prev_date.weekday(), wd) in _GAP2_WEEKEND_PROHIBITED_PAIRS:
+                            if _dbg:
+                                logging.debug(f"Sim Check Fail: Gap=2 weekend-bridging pair for {worker_id} on {date}")
+                            return False
+
             # 8. 7/14 Day Pattern Check (Same day of week in consecutive weeks)
             for prev_date in sorted_sim_assignments:
                 if prev_date == date:
@@ -1284,6 +1337,10 @@ class ScheduleBuilder:
                         date.weekday() == 4 and prev_date.weekday() == 0
                     ):
                         return False
+            # Gap=2: prohibit weekend-bridging pairs (Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue)
+            if min_days_between == 2 and days_between == 2:
+                if (prev_date.weekday(), date.weekday()) in _GAP2_WEEKEND_PROHIBITED_PAIRS:
+                    return False
             # Add check for weekly pattern (7/14 day) - ALL days
             # CRITICAL: This constraint applies to ALL days (including weekends)
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
@@ -1502,7 +1559,10 @@ class ScheduleBuilder:
         day = date.day
         _next_month_first = (date.replace(day=1) + timedelta(days=32)).replace(day=1)
         last_day = (_next_month_first - timedelta(days=1)).day
-        is_transition = day in {1, 14, 15, 16} or day >= last_day - 1
+        # Last 3 days of month are transition (was last_day - 1, i.e. last 2 days).
+        # This ensures e.g. Aug 29 (Saturday, last_day-2) gets priority 0 and is
+        # processed before Aug 22 (priority 2), avoiding the 7/14 Saturday deadlock.
+        is_transition = day in {1, 14, 15, 16} or day >= last_day - 2
         if not is_transition:
             return 2
         return 0 if self._is_weekend_or_holiday(date) else 1
@@ -4824,11 +4884,15 @@ class ScheduleBuilder:
 
             over_months = []
             under_months = []
+            # Auto workers have a +1 monthly ceiling (floor+1 is allowed).
+            # Only flag as over-target when strictly above that ceiling.
+            # Manual workers have zero tolerance: any count > floor is over-target.
+            _w_is_auto = worker.get("auto_calculate_shifts", True)
             for ym, count in counts.items():
                 target = self._get_expected_monthly_target(worker, ym[0], ym[1])
                 if target <= 0:
                     continue
-                if count > target:
+                if count > target and (not _w_is_auto or count > target + 1):
                     over_months.append((ym, count - target))
                 elif count < target:
                     under_months.append((ym, target - count))
@@ -5057,16 +5121,19 @@ class ScheduleBuilder:
                 count = month_counts.get(ym, 0)
                 if count < target:
                     under_months.append((ym, target - count))
-                elif count > target:
+                elif count > target and (is_manual or count > target + 1):
+                    # Auto workers: floor+1 is the allowed ceiling — only flag if above it.
+                    # Manual workers: zero tolerance, any excess is over-target.
                     over_months.append((ym, count - target))
 
             if not under_months:
                 continue
 
             label = "Manual" if is_manual else "Auto"
-            logging.info(
-                f"📋 {label} worker {wid}: under-target months={under_months}, over-target months={over_months}"
-            )
+            # Auto workers with only under-target months cannot be rebalanced here
+            # (no over-target to swap from). Log at DEBUG to reduce noise.
+            _log_fn = logging.info if (is_manual or over_months) else logging.debug
+            _log_fn(f"📋 {label} worker {wid}: under-target months={under_months}, over-target months={over_months}")
 
             # Strategy 1: cross-month rebalance (over → under via swap)
             for under_ym, deficit in sorted(under_months, key=lambda x: x[1], reverse=True):
@@ -5123,12 +5190,17 @@ class ScheduleBuilder:
                         surplus -= 1
 
                 # Step B: fill deficit in under-target months
+                # ignore_pacing=True: the proportional pacing is for initial build only.
+                # In enforcement, a confirmed deficit must be corrected regardless of
+                # what the pacing formula says about the current day of the month.
                 for under_ym, deficit in sorted(remaining_under, key=lambda x: x[1], reverse=True):
                     while deficit > 0 and changes < max_changes:
-                        filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False)
+                        filled = self._monthly_fill_deficit(
+                            wid, worker, under_ym, strict_donor=False, ignore_pacing=True
+                        )
                         if not filled and violations_714_budget.get(wid, 0) > 0:
                             filled = self._monthly_fill_deficit(
-                                wid, worker, under_ym, strict_donor=False, allow_714_violation=True
+                                wid, worker, under_ym, strict_donor=False, allow_714_violation=True, ignore_pacing=True
                             )
                             if filled:
                                 violations_714_budget[wid] -= 1
@@ -5369,7 +5441,14 @@ class ScheduleBuilder:
         return False
 
     def _monthly_fill_deficit(
-        self, wid, worker_config, under_ym, strict_donor=True, allow_empty=True, allow_714_violation: bool = False
+        self,
+        wid,
+        worker_config,
+        under_ym,
+        strict_donor=True,
+        allow_empty=True,
+        allow_714_violation: bool = False,
+        ignore_pacing: bool = False,
     ):
         """Fill one shift deficit in under_ym for a worker.
 
@@ -5397,7 +5476,12 @@ class ScheduleBuilder:
                     if self.schedule[d][post] is not None:
                         continue
                     if not self._can_assign_worker(
-                        wid, d, post, replacing_worker=None, allow_714_violation=allow_714_violation
+                        wid,
+                        d,
+                        post,
+                        replacing_worker=None,
+                        allow_714_violation=allow_714_violation,
+                        ignore_pacing=ignore_pacing,
                     ):
                         continue
                     others_on_date = [w for i, w in enumerate(self.schedule[d]) if w is not None and i != post]
@@ -5432,11 +5516,17 @@ class ScheduleBuilder:
                     if donor_total <= donor_target:
                         continue
 
-                # Check donor's monthly count — must be above monthly target
+                # Check donor's monthly count — must be above monthly target.
+                # CRITICAL: exclude mandatory shifts because monthly_targets stores
+                # NON-mandatory quotas only.  Including mandatory would make any
+                # worker with mandatory shifts appear falsely over-target, causing
+                # ping-pong oscillations (e.g. KIKO ↔ DAVID on Jul 27).
                 donor_month_count = sum(
                     1
                     for dd in self.worker_assignments.get(donor_wid, set())
-                    if dd.year == under_ym[0] and dd.month == under_ym[1]
+                    if dd.year == under_ym[0]
+                    and dd.month == under_ym[1]
+                    and (donor_wid, dd) not in self._locked_mandatory
                 )
                 donor_month_target = self._get_expected_monthly_target(donor_config, under_ym[0], under_ym[1])
                 if donor_month_count <= donor_month_target:
@@ -5445,7 +5535,12 @@ class ScheduleBuilder:
                 if not self._can_modify_assignment(donor_wid, d, "monthly_fill"):
                     continue
                 if not self._can_assign_worker(
-                    wid, d, post, replacing_worker=donor_wid, allow_714_violation=allow_714_violation
+                    wid,
+                    d,
+                    post,
+                    replacing_worker=donor_wid,
+                    allow_714_violation=allow_714_violation,
+                    ignore_pacing=ignore_pacing,
                 ):
                     continue
 
@@ -5508,11 +5603,14 @@ class ScheduleBuilder:
                 # Candidate must not already be assigned on this date
                 if cid in (self.schedule.get(d) or []):
                     continue
-                # Prefer candidates below their monthly target in this month
+                # Prefer candidates below their monthly target in this month.
+                # CRITICAL: exclude mandatory shifts (monthly_targets is non-mandatory
+                # only).  Without this, workers with mandatory shifts appear to already
+                # be at their limit and are incorrectly excluded as shed replacements.
                 cand_month_count = sum(
                     1
                     for dd in self.worker_assignments.get(cid, set())
-                    if dd.year == over_ym[0] and dd.month == over_ym[1]
+                    if dd.year == over_ym[0] and dd.month == over_ym[1] and (cid, dd) not in self._locked_mandatory
                 )
                 cand_month_target = self._get_expected_monthly_target(candidate, over_ym[0], over_ym[1])
                 if cand_month_count >= cand_month_target:
@@ -6817,6 +6915,10 @@ class ScheduleBuilder:
                     date.weekday() == 4 and prev_date.weekday() == 0
                 ):
                     return False
+            # Gap=2: prohibit weekend-bridging pairs (Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue)
+            if min_gap == 2 and days_between == 2:
+                if (prev_date.weekday(), date.weekday()) in _GAP2_WEEKEND_PROHIBITED_PAIRS:
+                    return False
         return True
 
     def _can_swap_worker_to_date(
@@ -6898,6 +7000,10 @@ class ScheduleBuilder:
                 if (prev_date.weekday() == 4 and date.weekday() == 0) or (
                     date.weekday() == 4 and prev_date.weekday() == 0
                 ):
+                    return False
+            # Gap=2: prohibit weekend-bridging pairs (Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue)
+            if min_gap == 2 and days_between == 2:
+                if (prev_date.weekday(), date.weekday()) in _GAP2_WEEKEND_PROHIBITED_PAIRS:
                     return False
 
         return True

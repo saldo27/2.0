@@ -398,8 +398,11 @@ class StatisticsCalculator:
             # Use slot count (not set length) so double-post on same day counts twice
             total_shifts_count = actual_slot_count.get(worker_id, 0)
 
-            # Get target shifts
-            target_shifts = worker.get("target_shifts", 0)
+            # Get target shifts — use raw target (includes mandatory days) so that
+            # target_shifts and total_shifts are on the same basis.  This keeps the
+            # stats dict self-consistent and avoids spurious deviations for workers
+            # that have mandatory (pre-assigned) days.
+            target_shifts = worker.get("_raw_target", worker.get("target_shifts", 0))
 
             # Calculate weekend and holiday shifts efficiently
             # Include pre-holidays (day before holiday) for consistency with scheduling
