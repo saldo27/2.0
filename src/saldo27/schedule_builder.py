@@ -789,7 +789,7 @@ class ScheduleBuilder:
 
         return False
 
-    def _can_assign_worker(self, worker_id, date, post, replacing_worker=None):
+    def _can_assign_worker(self, worker_id, date, post, replacing_worker=None, allow_714_violation: bool = False):
         try:
             # CRITICAL: Never assign to a slot occupied by a mandatory assignment
             if date in self.schedule and len(self.schedule[date]) > post and self.schedule[date][post] is not None:
@@ -858,9 +858,13 @@ class ScheduleBuilder:
                         return False
 
                     # Check for 7-14 day pattern (same weekday in consecutive weeks)
-                    # HARD CONSTRAINT: applies to ALL days (including weekends)
-                    # Workers should NOT have the same weekday in consecutive weeks (7 or 14 days apart)
+                    # HARD CONSTRAINT: applies to ALL days (including weekends).
+                    # Exception: enforcement phases (3A/3B) may pass allow_714_violation=True
+                    # to allow ONE violation per worker, but NEVER on weekend/pre-weekend/holiday.
                     if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
+                        if allow_714_violation and not self._is_weekend_or_holiday(date):
+                            # Violation allowed for this non-special weekday — skip block
+                            continue
                         logging.debug(
                             f"Worker {worker_id} 7/14 pattern violation: {date.strftime('%Y-%m-%d')} and {prev_date.strftime('%Y-%m-%d')} are both {date.strftime('%A')}"
                         )
@@ -4948,6 +4952,11 @@ class ScheduleBuilder:
         changes = 0
         max_changes = 200
 
+        # Per-worker 7/14 violation budget for this enforcement pass.
+        # Each worker may commit at most 1 constraint relaxation (shared across Step A and B).
+        # Budget resets on every call, so repeated passes each grant one new opportunity.
+        violations_714_budget: dict = {w["id"]: 1 for w in self.workers_data}
+
         all_months = set()
         for d in self.schedule:
             all_months.add((d.year, d.month))
@@ -5046,6 +5055,10 @@ class ScheduleBuilder:
                 for over_ym, surplus in sorted(remaining_over, key=lambda x: x[1], reverse=True):
                     while surplus > 0 and changes < max_changes:
                         shed = self._monthly_shed_excess(wid, worker, over_ym)
+                        if not shed and violations_714_budget.get(wid, 0) > 0:
+                            shed = self._monthly_shed_excess(wid, worker, over_ym, allow_714_violation=True)
+                            if shed:
+                                violations_714_budget[wid] -= 1
                         if not shed:
                             break
                         changes += 1
@@ -5055,6 +5068,10 @@ class ScheduleBuilder:
                 for under_ym, deficit in sorted(remaining_under, key=lambda x: x[1], reverse=True):
                     while deficit > 0 and changes < max_changes:
                         filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False)
+                        if not filled and violations_714_budget.get(wid, 0) > 0:
+                            filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False, allow_714_violation=True)
+                            if filled:
+                                violations_714_budget[wid] -= 1
                         if not filled:
                             break
                         changes += 1
@@ -5095,6 +5112,10 @@ class ScheduleBuilder:
                 for over_ym, surplus in sorted(remaining_over_2, key=lambda x: x[1], reverse=True):
                     while surplus > 0 and changes < max_changes:
                         shed = self._monthly_shed_excess(wid, worker, over_ym)
+                        if not shed and violations_714_budget.get(wid, 0) > 0:
+                            shed = self._monthly_shed_excess(wid, worker, over_ym, allow_714_violation=True)
+                            if shed:
+                                violations_714_budget[wid] -= 1
                         if not shed:
                             break
                         changes += 1
@@ -5125,12 +5146,24 @@ class ScheduleBuilder:
                             if not filled:
                                 # No empty slot or donor over total target; try donor over monthly target
                                 filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False)
+                            if not filled and violations_714_budget.get(wid, 0) > 0:
+                                filled = self._monthly_fill_deficit(wid, worker, under_ym, allow_714_violation=True)
+                                if not filled:
+                                    filled = self._monthly_fill_deficit(wid, worker, under_ym, strict_donor=False, allow_714_violation=True)
+                                if filled:
+                                    violations_714_budget[wid] -= 1
                         else:
                             # Budget exhausted: only redistribute from over-monthly donors
                             # (strict_donor=False: donor just needs to be over MONTHLY target)
                             filled = self._monthly_fill_deficit(
                                 wid, worker, under_ym, strict_donor=False, allow_empty=False
                             )
+                            if not filled and violations_714_budget.get(wid, 0) > 0:
+                                filled = self._monthly_fill_deficit(
+                                    wid, worker, under_ym, strict_donor=False, allow_empty=False, allow_714_violation=True
+                                )
+                                if filled:
+                                    violations_714_budget[wid] -= 1
                         if not filled:
                             break
                         changes += 1
@@ -5268,7 +5301,7 @@ class ScheduleBuilder:
                     return True
         return False
 
-    def _monthly_fill_deficit(self, wid, worker_config, under_ym, strict_donor=True, allow_empty=True):
+    def _monthly_fill_deficit(self, wid, worker_config, under_ym, strict_donor=True, allow_empty=True, allow_714_violation: bool = False):
         """Fill one shift deficit in under_ym for a worker.
 
         First tries to fill genuinely empty (None) slots in the under-month before
@@ -5294,7 +5327,7 @@ class ScheduleBuilder:
                 for post in range(len(self.schedule.get(d, []))):
                     if self.schedule[d][post] is not None:
                         continue
-                    if not self._can_assign_worker(wid, d, post, replacing_worker=None):
+                    if not self._can_assign_worker(wid, d, post, replacing_worker=None, allow_714_violation=allow_714_violation):
                         continue
                     others_on_date = [w for i, w in enumerate(self.schedule[d]) if w is not None and i != post]
                     if not self._check_incompatibility_with_list(wid, others_on_date):
@@ -5340,7 +5373,7 @@ class ScheduleBuilder:
 
                 if not self._can_modify_assignment(donor_wid, d, "monthly_fill"):
                     continue
-                if not self._can_assign_worker(wid, d, post, replacing_worker=donor_wid):
+                if not self._can_assign_worker(wid, d, post, replacing_worker=donor_wid, allow_714_violation=allow_714_violation):
                     continue
 
                 others_on_date = [
@@ -5366,13 +5399,15 @@ class ScheduleBuilder:
                 return True
         return False
 
-    def _monthly_shed_excess(self, wid, worker_config, over_ym):
-        """Remove one shift from over_ym for a manual worker by finding a replacement.
+    def _monthly_shed_excess(self, wid, worker_config, over_ym, allow_714_violation: bool = False):
+        """Remove one shift from over_ym for a worker by finding a replacement.
 
         Finds a day in the over-target month where the worker is assigned,
         and replaces them with an eligible auto worker who is below their
         monthly target in that month.
-        Returns True if one excess shift was shed.
+        If allow_714_violation=True the replacement candidate may violate the
+        7/14 pattern on non-special weekdays (Mon-Thu, not holiday or eve-of-holiday).
+        Returns True if one excess shift was shed, False if no replacement found.
         """
         dates_over = [d for d in self.worker_assignments.get(wid, set()) if (d.year, d.month) == over_ym]
         random.shuffle(dates_over)
@@ -5410,7 +5445,7 @@ class ScheduleBuilder:
                 if cand_month_count >= cand_month_target:
                     continue
 
-                if not self._can_assign_worker(cid, d, post, replacing_worker=wid):
+                if not self._can_assign_worker(cid, d, post, replacing_worker=wid, allow_714_violation=allow_714_violation):
                     continue
 
                 others_on_date = [w for i, w in enumerate(self.schedule[d]) if w is not None and i != post and w != wid]
@@ -5431,20 +5466,9 @@ class ScheduleBuilder:
                 logging.info(f"🔧 Shed excess: {cid} replaces {wid} on {d.strftime('%d-%b')} (month {over_ym[1]:02d})")
                 return True
 
-            # No eligible replacement found for this date.  Fall back to a naked shed:
-            # remove wid from the slot and leave it empty (None).  The empty slot will be
-            # recaptured in a later enforcement pass (by another under-target worker's
-            # _monthly_fill_deficit) or by _try_fill_empty_shifts in the next finalization
-            # cycle.  This ensures wid's total_budget increases so Step B can fill their
-            # under-target month — critical for the over-Aug/under-Sep cascade pattern.
-            self.schedule[d][post] = None
-            self.worker_assignments[wid].discard(d)
-            self.scheduler._update_tracking_data(wid, d, post, removing=True)
-            logging.info(
-                f"🔧 Naked shed: {wid} removed from {d.strftime('%d-%b')} P{post} "
-                f"(month {over_ym[1]:02d}) — no replacement available"
-            )
-            return True
+            # No replacement found for this date — continue to next date in over_ym.
+            # (Naked shed removed: leaving a slot empty reduces coverage without
+            # guaranteeing the subsequent fill will succeed in the under-target month.)
         return False
 
     def _improve_weekend_distribution(self):
