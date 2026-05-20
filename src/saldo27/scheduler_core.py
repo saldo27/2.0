@@ -1133,7 +1133,7 @@ class SchedulerCore:
             post_composite = post_workload_imbalance + (post_weekend_imbalance * 0.5)
 
             # Revert if composite worsened significantly OR overall score dropped notably
-            score_degraded = post_score < pre_score - 1.5
+            score_degraded = post_score < pre_score - 0.5
             composite_degraded = post_composite > pre_composite + 0.1
             if score_degraded or composite_degraded:
                 reason = []
@@ -1178,12 +1178,26 @@ class SchedulerCore:
             # Must run BEFORE bridge so that the bridge rebalancing (below) can
             # correct any disruption that the monthly pass introduces.
             logging.info("Running FINAL monthly distribution balance pass...")
+            _monthly_seen_states: set[int] = set()
             for _pass in range(5):
                 changed_monthly = self.scheduler.schedule_builder._balance_monthly_distribution()
                 changed_manual = self.scheduler.schedule_builder._enforce_manual_monthly_targets()
                 if not changed_monthly and not changed_manual:
                     logging.info(f"Monthly distribution converged after {_pass + 1} pass(es)")
                     break
+                # Oscillation guard: stop if schedule state repeats
+                _state_hash = hash(
+                    tuple(
+                        sorted(
+                            (w["id"], len(self.scheduler.worker_assignments.get(w["id"], set())))
+                            for w in self.scheduler.workers_data
+                        )
+                    )
+                )
+                if _state_hash in _monthly_seen_states:
+                    logging.info(f"Monthly distribution oscillating — stopping at pass {_pass + 1}")
+                    break
+                _monthly_seen_states.add(_state_hash)
 
             # --- Bridge rebalancing (after monthly) ---
             try:
@@ -1236,10 +1250,50 @@ class SchedulerCore:
             # disrupt manual worker monthly counts.  Run enforcement as
             # the very last operation to guarantee strict targets.
             logging.info("Running FINAL manual monthly target enforcement...")
+            _final_monthly_seen: set[int] = set()
             for _mpass in range(10):
                 if not self.scheduler.schedule_builder._enforce_manual_monthly_targets():
                     logging.info(f"Manual monthly targets converged after {_mpass + 1} pass(es)")
                     break
+                # Oscillation guard: stop if schedule state repeats
+                _fstate = hash(
+                    tuple(
+                        sorted(
+                            (w["id"], len(self.scheduler.worker_assignments.get(w["id"], set())))
+                            for w in self.scheduler.workers_data
+                        )
+                    )
+                )
+                if _fstate in _final_monthly_seen:
+                    logging.info(f"Manual monthly targets oscillating — stopping at pass {_mpass + 1}")
+                    break
+                _final_monthly_seen.add(_fstate)
+
+            # Correct any weekend imbalance introduced by the monthly enforcement
+            try:
+                logging.info("🏖️ Post-monthly weekend correction pass...")
+                self.scheduler.schedule_builder._improve_weekend_distribution()
+            except Exception as _we:
+                logging.debug(f"Post-monthly weekend correction skipped: {_we}")
+
+            # Post-enforcement re-run of all fill/swap passes: the schedule state
+            # has changed (workers rebalanced between months, tolerances updated),
+            # so new swap chains — including for weekend transition slots — may now
+            # be feasible.
+            try:
+                logging.info("🔄 Post-enforcement fill pass (swap chains + direct)...")
+                self.scheduler.schedule_builder._try_fill_empty_shifts()
+            except Exception as _fe:
+                logging.warning(f"Post-enforcement fill pass skipped: {_fe}")
+
+            # Weekday-only 7/14 relaxation: fills any remaining Mon–Thu empty slots
+            # that are blocked solely by the 7/14 pattern constraint.
+            try:
+                filled_714 = self.scheduler.schedule_builder._fill_empty_slots_714_relaxed()
+                if filled_714:
+                    logging.info(f"Final 714-relaxed fill: coverage +{filled_714}")
+            except Exception as _re:
+                logging.warning(f"714-relaxed fill skipped: {_re}")
 
             logging.info("Schedule finalization phase completed successfully.")
             return True

@@ -5471,6 +5471,67 @@ class ScheduleBuilder:
             # guaranteeing the subsequent fill will succeed in the under-target month.)
         return False
 
+    def _fill_empty_slots_714_relaxed(self) -> int:
+        """Final coverage pass: fill remaining empty slots by relaxing the 7/14 pattern constraint.
+
+        Only acts on non-special weekdays (Mon–Thu, not a holiday or eve-of-holiday).
+        Workers are tried in order of target deficit to keep distribution balanced.
+        Returns the number of new fills made.
+        """
+        empty_slots = [
+            (d, post)
+            for d, workers in self.schedule.items()
+            for post, w in enumerate(workers)
+            if w is None and not self._is_weekend_or_holiday(d)
+        ]
+        if not empty_slots:
+            return 0
+
+        empty_slots.sort(key=lambda x: (x[0], x[1]))
+        filled_count = 0
+
+        for date_val, post_val in empty_slots:
+            if self.schedule[date_val][post_val] is not None:
+                continue  # Filled by a prior iteration in this pass
+
+            others = [
+                w for i, w in enumerate(self.schedule[date_val])
+                if i != post_val and w is not None
+            ]
+
+            # Candidates sorted by target deficit (most needed first)
+            candidates = sorted(
+                self.workers_data,
+                key=lambda w: max(
+                    0,
+                    w.get("target_shifts", 0)
+                    - len(self.worker_assignments.get(w["id"], set())),
+                ),
+                reverse=True,
+            )
+
+            for worker_data in candidates:
+                wid = worker_data["id"]
+                if not self._check_incompatibility_with_list(wid, others):
+                    continue
+                if not self._can_assign_worker(wid, date_val, post_val, allow_714_violation=True):
+                    continue
+
+                # Assign
+                self.schedule[date_val][post_val] = wid
+                self.worker_assignments.setdefault(wid, set()).add(date_val)
+                self.scheduler._update_tracking_data(wid, date_val, post_val, removing=False)
+                logging.info(
+                    f"🔧 714-relaxed fill: {wid} → {date_val.strftime('%d-%b')} P{post_val}"
+                )
+                filled_count += 1
+                break
+
+        if filled_count:
+            logging.info(f"✅ 714-relaxed coverage fill: {filled_count} slot(s) filled")
+            self._save_current_as_best()
+        return filled_count
+
     def _improve_weekend_distribution(self):
         """
         Improve weekend distribution by balancing "special constraint days"
