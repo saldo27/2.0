@@ -1487,6 +1487,26 @@ class ScheduleBuilder:
             )
         return self._weekend_cache[date]
 
+    def _get_date_fill_priority(self, date) -> int:
+        """Return fill priority for date ordering (lower = fill first).
+
+        0 = transition zone + weekend/holiday (hardest – fill first)
+        1 = transition zone + weekday
+        2 = normal date (fill chronologically)
+
+        Transition zone: days 1, 14, 15, 16, or the last two days of the month.
+        These dates sit at fortnight/month-change boundaries and are structurally
+        harder to fill because the eligible worker pool is smaller by the time
+        the scheduler reaches them in chronological order.
+        """
+        day = date.day
+        _next_month_first = (date.replace(day=1) + timedelta(days=32)).replace(day=1)
+        last_day = (_next_month_first - timedelta(days=1)).day
+        is_transition = day in {1, 14, 15, 16} or day >= last_day - 1
+        if not is_transition:
+            return 2
+        return 0 if self._is_weekend_or_holiday(date) else 1
+
     def _check_hard_constraints(self, worker_id, date, post):
         """Check hard constraints that cannot be relaxed"""
         # Basic availability check
@@ -2577,6 +2597,43 @@ class ScheduleBuilder:
         shift_difference = target_shifts - non_mandatory_shifts
         score += shift_difference * 50 * schedule_completion  # Reduced from 500
 
+        # LOOK-AHEAD BLOCKING PENALTY
+        # If assigning this worker to `date` would create a 7/14-day same-weekday
+        # conflict for a nearby fortnight/month-change transition date that still
+        # has empty slots, apply a score penalty.  This nudges the scheduler to
+        # prefer workers who are *already* ineligible for that transition date (no
+        # incremental loss) over workers who would freshly lose eligibility for it.
+        _TRANSITION_DAYS = frozenset({1, 14, 15, 16})
+        _current_asgn = self.worker_assignments.get(worker_id, set())
+        for _ahead in (7, 14):
+            _future = date + timedelta(days=_ahead)
+            if _future > self.end_date:
+                continue
+            _fd = _future.day
+            # Last day of _future's month (no extra import needed)
+            _fml_start = (_future.replace(day=1) + timedelta(days=32)).replace(day=1)
+            _fd_last = (_fml_start - timedelta(days=1)).day
+            if _fd not in _TRANSITION_DAYS and _fd < _fd_last - 1:
+                continue  # Not a transition date
+            # Only penalise if transition date still has at least one empty slot
+            if all(w is not None for w in self.schedule.get(_future, [])):
+                continue
+            # Check if worker is already blocked for _future from a prior assignment
+            # (if so, assigning to `date` causes no incremental loss)
+            _already_blocked = any(
+                (_future - d).days in (7, 14) and _future.weekday() == d.weekday() for d in _current_asgn
+            )
+            if _already_blocked:
+                continue
+            # Apply penalty: stronger for weekend transition dates (harder to fill)
+            _penalty = 6000 if self._is_weekend_or_holiday(_future) else 3000
+            score -= _penalty
+            if _DEBUG():
+                logging.debug(
+                    f"Worker {worker_id}: Look-ahead -{_penalty} "
+                    f"(would block {_future.strftime('%d-%b')} transition slot)"
+                )
+
         return score
 
     def _calculate_improvement_score(self, worker, date, post):
@@ -3001,7 +3058,8 @@ class ScheduleBuilder:
             return False
 
         logging.info(f"Attempting to fill {len(initial_empty_slots)} empty shifts...")
-        initial_empty_slots.sort(key=lambda x: (x[0], x[1]))  # Process chronologically, then by post
+        # Priority-first: transition+weekend → transition+weekday → normal chronological
+        initial_empty_slots.sort(key=lambda x: (self._get_date_fill_priority(x[0]), x[0], x[1]))
 
         shifts_filled_this_pass_total = 0
         made_change_overall = False
@@ -3674,8 +3732,8 @@ class ScheduleBuilder:
                 logging.info(f"  Protected mandatory slots: {protected_count}")
                 logging.info(f"  Truly empty slots to fill: {truly_empty_count}")
 
-            # Sort chronologically
-            empty_slots.sort(key=lambda x: (x[0], x[1]))
+            # Priority-first: transition+weekend → transition+weekday → normal chronological
+            empty_slots.sort(key=lambda x: (self._get_date_fill_priority(x[0]), x[0], x[1]))
 
             # Try to fill each empty slot using custom worker order
             filled_this_attempt = 0
@@ -5504,7 +5562,7 @@ class ScheduleBuilder:
         if not empty_slots:
             return 0
 
-        empty_slots.sort(key=lambda x: (x[0], x[1]))
+        empty_slots.sort(key=lambda x: (self._get_date_fill_priority(x[0]), x[0], x[1]))
         filled_count = 0
 
         for date_val, post_val in empty_slots:
