@@ -12,7 +12,21 @@ from collections.abc import Callable
 from datetime import datetime
 from functools import lru_cache, wraps
 from threading import Lock
-from typing import Any
+from typing import Any, ParamSpec, Protocol, TypeVar, cast
+
+P = ParamSpec("P")
+R = TypeVar("R")
+R_co = TypeVar("R_co", covariant=True)
+
+
+class MemoizedCallable(Protocol[P, R_co]):
+    """Callable protocol for functions wrapped by functools.lru_cache."""
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
+
+    def cache_clear(self) -> None: ...
+
+    def cache_info(self) -> Any: ...
 
 
 class PerformanceCache:
@@ -240,7 +254,7 @@ def cached(ttl: int = 3600, cache_instance: PerformanceCache | None = None):
     return decorator
 
 
-def memoize(maxsize: int = 128):
+def memoize(maxsize: int = 128) -> Callable[[Callable[P, R]], MemoizedCallable[P, R]]:
     """
     Simple memoization decorator using functools.lru_cache
 
@@ -248,12 +262,12 @@ def memoize(maxsize: int = 128):
         maxsize: Maximum size of the LRU cache
     """
 
-    def decorator(func: Callable) -> Callable:
-        cached_func = lru_cache(maxsize=maxsize)(func)
+    def decorator(func: Callable[P, R]) -> MemoizedCallable[P, R]:
+        cached_func = cast("MemoizedCallable[P, R]", lru_cache(maxsize=maxsize)(func))
 
         # Add cache management methods
         # (lru_cache already exposes cache_clear and cache_info on cached_func)
-        return cached_func  # type: ignore[return-value]
+        return cached_func
 
     return decorator
 
