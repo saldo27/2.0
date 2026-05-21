@@ -2961,6 +2961,12 @@ class IterativeOptimizer:
                 for we_date, we_idx in over_we_shifts:
                     shift_type_we = f"Post_{we_idx}"
 
+                    # Guard: over_worker must be able to afford losing this weekend
+                    # shift. If monthly-protected, removing it would drop their
+                    # count below their monthly target — skip this date entirely.
+                    if self._is_monthly_protected(over_worker, we_date, optimized_schedule, workers_data):
+                        continue
+
                     # Check if under_worker can directly take it (no ejection needed)
                     if self._can_worker_take_shift(
                         under_worker, we_date, shift_type_we, optimized_schedule, workers_data
