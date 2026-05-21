@@ -1,12 +1,23 @@
 ================================================================================
                     GuardiasApp - Aplicación para Distribución de Guardias
-                                  Versión 2.9
+                                  Versión 3.0
 ================================================================================
 
 DESCRIPCIÓN:
 ------------
 GuardiasApp es una aplicación profesional para la generación automática de 
 horarios de guardias médicas con optimización avanzada y balance equitativo.
+
+NOVEDADES v3.0 (RESUMEN RÁPIDO):
+--------------------------------
+- Repartos más robustos: se evita que la optimización quite guardias críticas
+  a personal con cuota mensual manual protegida.
+- Más diversidad entre intentos completos: ya no se repiten calendarios
+  iniciales idénticos al generar múltiples intentos.
+- Mayor estabilidad en entornos corporativos/offline: la hora del sistema
+  usa zona horaria local de España sin depender de APIs externas.
+- Mejor calidad interna del producto: mejoras de tipado y empaquetado que
+  reducen avisos de análisis estático y facilitan mantenimiento.
 
 CARACTERÍSTICAS: 
 ----------------
@@ -31,6 +42,9 @@ CARACTERÍSTICAS:
 ✓ Ajuste automático de cuotas basado en historial del período anterior
 ✓ Distribución de fines de semana con memoria de período previo
 ✓ Estrategias de distribución inicial diversificadas mediante GRASP-RCL
+✓ Protección de cuotas mensuales manuales durante optimización avanzada
+✓ Mayor diversidad real entre intentos completos de generación
+✓ Operación offline para fecha/hora (sin dependencias de APIs externas)
 
 REQUISITOS DEL SISTEMA:
 -----------------------
@@ -42,7 +56,7 @@ REQUISITOS DEL SISTEMA:
 
 INSTALACIÓN:
 ------------
-1. Ejecutar GuardiasApp_Setup_v2.0.exe
+1. Ejecutar GuardiasApp_Setup_v3.0.exe
 2. Seguir las instrucciones del asistente de instalación
 3. Lanzar desde el acceso directo del escritorio o menú inicio
 
@@ -140,8 +154,8 @@ issues en GitHub o contactar por email.
 CRÉDITOS:
 ---------
 Desarrollado por:  Luis Herrera Para
-Versión: 2.9
-Fecha:  Abril 2026
+Versión: 3.0
+Fecha:  Mayo 2026
 
 COPYRIGHT:
 ----------
@@ -188,6 +202,27 @@ las restricciones.
 
 HISTORIAL DE VERSIONES:
 ------------------------
+v3.0 (Mayo 2026):
+- Corrección crítica de optimización: protección mensual para trabajadores
+  manuales en cadenas de expulsión (ejection chain). Evita que un
+  trabajador protegido pierda guardias no-mandatorias y quede por debajo
+  de su objetivo mensual (iterative_optimizer.py).
+- Corrección de diversidad entre intentos completos: los 5 intentos externos
+  ya no reutilizan el mismo espacio de semillas de los 40 intentos internos.
+  Cada intento completo explora un rango de semillas distinto, evitando
+  PDFs Schedule_INITIAL idénticos entre intentos (scheduler_core.py).
+- Fiabilidad de fecha/hora: eliminada dependencia de API externa de hora.
+  La hora de España se obtiene directamente vía base de zonas horarias local
+  (ZoneInfo), eliminando warnings de red y mejorando robustez offline
+  (utilities.py).
+- Mantenibilidad y calidad estática:
+  * Tipado de memoize reforzado para exponer cache_clear/cache_info a
+    analizadores estáticos (performance_cache.py).
+  * Runtime hook de Streamlit ajustado para evitar warnings de atributos
+    dinámicos y corregir validación del módulo dummy (rthook_streamlit.py).
+  * Limpieza de dependencias: requests eliminado de pyproject.toml al no
+    usarse tras la migración a ZoneInfo.
+
 v2.9 (Abril 2026):
 - NUEVO: Semántica unificada de gap mínimo entre guardias — el hueco se
   mide en días naturales (no días de descanso) con tres niveles:
