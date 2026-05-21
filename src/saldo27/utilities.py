@@ -3,8 +3,6 @@ import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import requests
-
 from saldo27.performance_cache import cached
 
 
@@ -99,20 +97,9 @@ class DateTimeUtils:
 
     @cached(ttl=86400)  # Cache for 24 hours
     def get_spain_time(self):
-        """Get current time in Spain timezone with fallback options (cached)"""
+        """Get current time in Spain timezone using local timezone database (cached)."""
         try:
-            response = requests.get("http://worldtimeapi.org/api/timezone/Europe/Madrid", timeout=5, verify=True)
-
-            if response.status_code == 200:
-                time_data = response.json()
-                return datetime.fromisoformat(time_data["datetime"]).replace(tzinfo=None)
-
-        except (requests.RequestException, ValueError) as e:
-            logging.warning(f"Error getting time from API: {e!s}")
-
-        try:
-            spain_tz = ZoneInfo("Europe/Madrid")
-            return datetime.now(spain_tz).replace(tzinfo=None)
+            return datetime.now(ZoneInfo("Europe/Madrid")).replace(tzinfo=None)
         except Exception as e:
             logging.error(f"Fallback time error: {e!s}")
             return datetime.now()
