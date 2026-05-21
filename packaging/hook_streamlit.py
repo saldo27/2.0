@@ -1,5 +1,17 @@
 # hook-streamlit.py
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+import importlib
+
+try:
+    _hooks = importlib.import_module("PyInstaller.utils.hooks")
+    collect_submodules = _hooks.collect_submodules
+    collect_data_files = _hooks.collect_data_files
+except ModuleNotFoundError:
+    # Permite análisis estático en entornos sin PyInstaller instalado.
+    def collect_submodules(*_args, **_kwargs):
+        return []
+
+    def collect_data_files(*_args, **_kwargs):
+        return []
 
 # Excluir streamlit.hello explícitamente
 excludedimports = ['streamlit.hello']

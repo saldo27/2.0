@@ -1,4 +1,12 @@
 # hook-orjson.py
-from PyInstaller.utils. hooks import collect_dynamic_libs
+import importlib
 
-binaries = collect_dynamic_libs('orjson')
+try:
+	_hooks = importlib.import_module("PyInstaller.utils.hooks")
+	collect_dynamic_libs = _hooks.collect_dynamic_libs
+except ModuleNotFoundError:
+	# Permite análisis estático en entornos sin PyInstaller instalado.
+	def collect_dynamic_libs(*_args, **_kwargs):
+		return []
+
+binaries = collect_dynamic_libs("orjson")
