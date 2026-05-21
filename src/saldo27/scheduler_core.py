@@ -134,7 +134,7 @@ class SchedulerCore:
                 self.scheduler.schedule_builder._locked_mandatory = copy.deepcopy(mandatory_locked)
 
                 # Phase 3.1: Multiple initial distribution attempts
-                if not self._multiple_initial_distribution_attempts():
+                if not self._multiple_initial_distribution_attempts(complete_attempt_num):
                     logging.warning(f"Complete attempt {complete_attempt_num} failed at initial distribution")
                     continue
 
@@ -314,7 +314,7 @@ class SchedulerCore:
             logging.error(f"Failed in mandatory assignment phase: {e!s}", exc_info=True)
             return False
 
-    def _multiple_initial_distribution_attempts(self) -> bool:
+    def _multiple_initial_distribution_attempts(self, complete_attempt_num: int = 1) -> bool:
         """
         Phase 2.5: Perform multiple initial distribution attempts with different strategies
         and select the best one based on quality score.
@@ -457,9 +457,13 @@ class SchedulerCore:
                 )
                 logging.info(f"Empty shifts before fill: {empty_before}")
 
-                # Apply different strategy for each attempt
-                strategy = self._select_distribution_strategy(attempt_num, num_attempts)
-                logging.info(f"Strategy for attempt {attempt_num}: {strategy['name']}")
+                # Apply different strategy for each attempt.
+                # Offset by complete_attempt_num so each outer attempt explores a
+                # different region of the seed space (ranges never overlap: 1-40,
+                # 101-140, 201-240 … with max 40 inner attempts).
+                effective_attempt = attempt_num + (complete_attempt_num - 1) * 100
+                strategy = self._select_distribution_strategy(effective_attempt, num_attempts)
+                logging.info(f"Strategy for attempt {attempt_num} (effective {effective_attempt}): {strategy['name']}")
 
                 # Perform initial fill with this strategy
                 success = self._perform_initial_fill_with_strategy(strategy)
