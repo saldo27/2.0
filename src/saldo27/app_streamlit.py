@@ -2,7 +2,7 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 2.8 (Marzo 2026)
+Versión: 3.0 (Mayo 2026)
 """
 
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
@@ -70,7 +70,7 @@ class SidebarLogHandler(logging.Handler):
 
 
 # Constante de versión
-APP_VERSION = "2.9"
+APP_VERSION = "3.0"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
