@@ -2,7 +2,7 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 3.0 (Mayo 2026)
+Versión: 2.8 (Marzo 2026)
 """
 
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
@@ -70,7 +70,7 @@ class SidebarLogHandler(logging.Handler):
 
 
 # Constante de versión
-APP_VERSION = "3.0"
+APP_VERSION = "2.9"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -3333,15 +3333,15 @@ with tab6:
             # Filtrar solo columnas que existen
             cols_a_mostrar = [c for c in cols_a_mostrar if c in st.session_state.revision_stats.columns]
 
-            # Configurar columnas con ancho fijo de 9 caracteres (≈ 72px)
+            # Configurar columnas con ancho mínimo ("small")
             column_config = {}
             for col in cols_a_mostrar:
-                column_config[col] = st.column_config.Column(col, width=72)
+                column_config[col] = st.column_config.Column(col, width="small")
 
             st.dataframe(
                 st.session_state.revision_stats[cols_a_mostrar],
-                width="stretch",
                 hide_index=True,
+                use_container_width=False,
                 column_config=column_config,
             )
 
@@ -3361,6 +3361,41 @@ with tab6:
                     st.warning(f"**{worker}**: Guardias consecutivas los días {fecha1} y {fecha2}")
             else:
                 st.success("✅ No hay guardias consecutivas detectadas")
+
+            # Dobletes: guardias con Gap = 2 (un día libre entre ambas)
+            st.markdown("---")
+            st.subheader("🔁 Dobletes (Gap = 2)")
+
+            _doblete_analyzer = st.session_state.get("revision_analyzer")
+            _dobletes = []
+            if (
+                _doblete_analyzer
+                and hasattr(_doblete_analyzer, "calendar_data")
+                and _doblete_analyzer.calendar_data
+            ):
+                _date_workers: dict = {}
+                for _day in _doblete_analyzer.calendar_data:
+                    _date_workers[_day["date"]] = set(_day.get("workers", []))
+
+                for _d in sorted(_date_workers.keys()):
+                    _d2 = _d + timedelta(days=2)
+                    if _d2 in _date_workers:
+                        for _w in _date_workers[_d] & _date_workers[_d2]:
+                            _dobletes.append(
+                                {
+                                    "Médico": _w,
+                                    "Fecha 1": _d.strftime("%d-%m-%Y"),
+                                    "Fecha 2": _d2.strftime("%d-%m-%Y"),
+                                }
+                            )
+
+            if _dobletes:
+                for _db in _dobletes:
+                    st.info(
+                        f"**{_db['Médico']}**: Doblete los días {_db['Fecha 1']} y {_db['Fecha 2']} (Gap = 2)"
+                    )
+            else:
+                st.success("✅ No hay dobletes detectados")
 
             # Exportación
             st.markdown("---")
