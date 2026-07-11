@@ -34,9 +34,11 @@ class LicenseManager:
         # is per-process). It does NOT protect against concurrent writes from
         # separate OS processes (e.g. a multi-worker/multi-process deployment):
         # in that scenario, interleaved read-modify-write cycles could still
-        # under-count usage (a lost update), though the JSON write itself stays
-        # atomic enough to avoid file corruption. The app targets a
-        # single-process, single-machine desktop install (see packaging/), so
+        # under-count usage (a lost update), and — unlike the in-process case —
+        # nothing here guarantees the JSON write itself won't be corrupted
+        # (truncated/interleaved content) if two OS processes write the file
+        # at the same time. The app targets a single-process, single-machine
+        # desktop install (see packaging/), so
         # multi-process safety is considered out of scope for now. If
         # deployment ever moves to a multi-process model, this must be
         # replaced with cross-process file locking (e.g. `fcntl` on Unix,
