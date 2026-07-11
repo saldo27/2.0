@@ -255,6 +255,74 @@ class SchedulerCore:
             self.scheduler.stats.schedule = self.scheduler.schedule
             self.scheduler.stats.worker_assignments = self.scheduler.worker_assignments
 
+    def _sanitize_restored_attempt_state(self) -> dict[str, int]:
+        """
+        Ensure each initial-distribution attempt starts from mandatory-only state.
+
+        Defensive cleanup: if any non-mandatory assignments leaked into the restored
+        schedule state, remove them before counting empty slots.
+        """
+        total_slots = 0
+        protected_slots = 0
+        stray_prefilled_slots = 0
+        empty_slots = 0
+        state_changed = False
+
+        schedule_builder = getattr(self.scheduler, "schedule_builder", None)
+        if schedule_builder is None:
+            return {
+                "total_slots": total_slots,
+                "protected_slots": protected_slots,
+                "stray_prefilled_slots": stray_prefilled_slots,
+                "empty_slots": empty_slots,
+            }
+
+        for current_date in self.scheduler.date_utils.get_date_range(self.start_date, self.end_date):
+            expected_slots = self.scheduler._get_shifts_for_date(current_date)
+
+            if current_date not in self.scheduler.schedule:
+                self.scheduler.schedule[current_date] = [None] * expected_slots
+                state_changed = True
+            else:
+                actual_slots = len(self.scheduler.schedule[current_date])
+                if actual_slots < expected_slots:
+                    self.scheduler.schedule[current_date].extend([None] * (expected_slots - actual_slots))
+                    state_changed = True
+                elif actual_slots > expected_slots:
+                    stray_prefilled_slots += sum(1 for worker in self.scheduler.schedule[current_date][expected_slots:] if worker)
+                    self.scheduler.schedule[current_date] = self.scheduler.schedule[current_date][:expected_slots]
+                    state_changed = True
+
+            day_schedule = self.scheduler.schedule[current_date]
+
+            for post_index in range(expected_slots):
+                total_slots += 1
+                worker_id = day_schedule[post_index]
+
+                if worker_id is None:
+                    empty_slots += 1
+                    continue
+
+                is_protected, _ = schedule_builder._is_slot_protected_mandatory(current_date, post_index)
+                if is_protected:
+                    protected_slots += 1
+                    continue
+
+                day_schedule[post_index] = None
+                stray_prefilled_slots += 1
+                empty_slots += 1
+                state_changed = True
+
+        if state_changed:
+            schedule_builder._synchronize_tracking_data()
+
+        return {
+            "total_slots": total_slots,
+            "protected_slots": protected_slots,
+            "stray_prefilled_slots": stray_prefilled_slots,
+            "empty_slots": empty_slots,
+        }
+
     def _initialize_schedule_phase(self) -> bool:
         """
         Phase 1: Initialize schedule structure and data.
@@ -451,9 +519,24 @@ class SchedulerCore:
                     self.scheduler.schedule_builder._locked_mandatory = copy.deepcopy(mandatory_locked)
                     # CRITICAL: Rebuild caches to reflect new state (prevents cache staling between attempts)
                     self.scheduler.schedule_builder._build_optimization_caches()
+                    attempt_state_stats = self._sanitize_restored_attempt_state()
+                else:
+                    attempt_state_stats = {
+                        "total_slots": len(self.scheduler.schedule) * self.scheduler.num_shifts,
+                        "protected_slots": 0,
+                        "stray_prefilled_slots": 0,
+                        "empty_slots": sum(
+                            1 for date, shifts in self.scheduler.schedule.items() for worker in shifts if worker is None
+                        ),
+                    }
 
                 logging.info(f"Restored {len(mandatory_locked)} locked mandatory shifts")
                 logging.info("Rebuilt schedule builder caches for fresh attempt")
+                if attempt_state_stats["stray_prefilled_slots"] > 0:
+                    logging.warning(
+                        "Cleared %s stray prefilled non-mandatory slots before initial fill",
+                        attempt_state_stats["stray_prefilled_slots"],
+                    )
 
                 # Log state before fill
                 empty_before = sum(
