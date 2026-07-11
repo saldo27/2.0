@@ -288,20 +288,8 @@ class BridgeManager:
         return count
 
     @staticmethod
-    def _get_date_range(start_date: date, end_date: date) -> list[date]:
-        """
-        Genera lista de fechas entre start_date y end_date (inclusive).
+    def _get_date_range(start_date, end_date) -> list:
+        """Delegate to DateTimeUtils.get_date_range (canonical implementation)."""
+        from saldo27.utilities import DateTimeUtils
 
-        Args:
-            start_date: Fecha inicial
-            end_date: Fecha final
-
-        Returns:
-            List[date]: Lista de fechas
-        """
-        dates = []
-        current = start_date
-        while current <= end_date:
-            dates.append(current)
-            current += timedelta(days=1)
-        return dates
+        return DateTimeUtils.get_date_range(start_date, end_date)

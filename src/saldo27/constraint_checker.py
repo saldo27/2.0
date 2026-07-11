@@ -13,6 +13,23 @@ def _debug_enabled() -> bool:
     return logging.getLogger().isEnabledFor(logging.DEBUG)
 
 
+# Weekday pairs (prev_weekday, date_weekday) prohibited when effective gap == 2.
+# These bridge the weekend with insufficient rest: Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue.
+# Both orderings included so the check works regardless of chronological order.
+_GAP2_WEEKEND_PROHIBITED_PAIRS: frozenset[tuple[int, int]] = frozenset(
+    {
+        (3, 5),
+        (5, 3),  # Thu-Sat
+        (4, 6),
+        (6, 4),  # Fri-Sun
+        (5, 0),
+        (0, 5),  # Sat-Mon
+        (6, 1),
+        (1, 6),  # Sun-Tue
+    }
+)
+
+
 class ConstraintChecker:
     """Enhanced constraint checking logic with performance optimizations"""
 
@@ -123,8 +140,15 @@ class ConstraintChecker:
             self._incompatibility_cache[cache_key] = result
             return result
 
-    def _check_incompatibility(self, worker_id: str, date: datetime) -> bool:
-        """Optimized incompatibility check with early termination"""
+    def _check_incompatibility(self, worker_id: str, date: datetime, exclude_workers=None) -> bool:
+        """Optimized incompatibility check with early termination.
+
+        Args:
+            worker_id: Worker whose eligibility is being checked.
+            date: Date to check.
+            exclude_workers: Optional set/list of worker IDs to exclude from the
+                check (e.g., the worker being replaced in a swap).
+        """
         try:
             # Use the schedule reference from self.scheduler
             if date not in self.scheduler.schedule:
@@ -132,6 +156,10 @@ class ConstraintChecker:
 
             # Get the list of workers already assigned (filter out None values)
             assigned_workers = [w_id for w_id in self.scheduler.schedule.get(date, []) if w_id is not None]
+
+            # Exclude specified workers (e.g., worker being swapped out)
+            if exclude_workers:
+                assigned_workers = [w for w in assigned_workers if w not in exclude_workers]
 
             if not assigned_workers:
                 return True  # No workers assigned
@@ -173,8 +201,17 @@ class ConstraintChecker:
         if _debug_enabled():
             logging.debug("ConstraintChecker caches cleared and rebuilt")
 
-    def _check_gap_constraint(self, worker_id, date):  # Removed min_gap parameter
-        """Check minimum gap between assignments, Friday-Monday, and 7/14 day patterns."""
+    def _check_gap_constraint(self, worker_id, date, allow_714_violation: bool = False):
+        """Check minimum gap between assignments, Friday-Monday, and 7/14 day patterns.
+
+        Args:
+            worker_id: Worker to check.
+            date: Prospective assignment date.
+            allow_714_violation: When True, a single 7/14-day same-weekday violation is
+                allowed on non-special (non-weekend, non-holiday) days.  Used by the
+                optimisation phase to break stalemates.  Weekend/holiday days are never
+                exempt even when this flag is set.
+        """
         worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
         if not worker:
             return False  # Should not happen
@@ -188,6 +225,11 @@ class ConstraintChecker:
                 else self.scheduler.worker_assignments.get(worker_id, [])
             )
         )  # Includes prior-period dates for cross-period gap/pattern checks
+
+        # Pre-compute whether the prospective date is a special day (weekend/pre-holiday/holiday)
+        # Used by the allow_714_violation path.
+        holiday_set = self._holiday_set
+        date_is_special = date.weekday() >= 4 or date in holiday_set or (date + timedelta(days=1)) in holiday_set
 
         for prev_date in assignments:
             if prev_date == date:
@@ -215,10 +257,22 @@ class ConstraintChecker:
                             )
                         return False
 
+            # gap=2 special case: prohibit weekend-bridging pairs
+            # (Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue): insufficient rest around weekend.
+            if min_required_days_between == 2 and days_between == 2:
+                if (prev_date.weekday(), date.weekday()) in _GAP2_WEEKEND_PROHIBITED_PAIRS:
+                    if _debug_enabled():
+                        logging.debug(
+                            f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails gap=2 weekend-bridge rule with {prev_date.strftime('%Y-%m-%d')}"
+                        )
+                    return False
+
             # Prevent same day of week in consecutive weeks (7 or 14 day pattern)
             # CRITICAL: This constraint applies to ALL days (weekdays AND weekends)
-            # NO exceptions allowed - this is a HARD constraint
             if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
+                # allow_714_violation: permit one violation on non-special weekdays only
+                if allow_714_violation and not date_is_special:
+                    continue
                 if _debug_enabled():
                     logging.debug(
                         f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {prev_date.strftime('%Y-%m-%d')}"
@@ -661,3 +715,108 @@ class ConstraintChecker:
         except Exception as e:
             logging.error(f"Error checking if date is weekend: {e!s}")
             return False
+
+    def check_schedule_violations(self, worker_assignments: dict) -> list[dict]:
+        """Scan all worker assignments for gap/pattern/incompatibility violations.
+
+        This is the canonical implementation used by
+        :meth:`Scheduler._check_schedule_constraints` to avoid duplicating the
+        constraint logic defined in this class.
+
+        Args:
+            worker_assignments: Mapping of worker_id → set/list of assigned dates
+                for the current period (does NOT include prior-period dates).
+
+        Returns:
+            List of violation dicts.  Each dict contains at least a ``"type"``
+            key; gap/pattern violations also have ``"worker_id"``, ``"date1"``,
+            ``"date2"``, ``"days_between"``; incompatibility violations have
+            ``"worker_id"``, ``"incompatible_id"``, ``"date"``.
+        """
+        violations: list[dict] = []
+
+        for worker in self.workers_data:
+            worker_id = worker["id"]
+            if worker_id not in worker_assignments:
+                continue
+
+            assigned_dates = sorted(worker_assignments[worker_id])
+            effective_gap = get_effective_min_gap(worker, self.scheduler.gap_between_shifts)
+
+            for i, date2 in enumerate(assigned_dates):
+                for date1 in assigned_dates[:i]:
+                    days_between = abs((date2 - date1).days)
+
+                    # Gap violation
+                    if 0 < days_between < effective_gap:
+                        violations.append(
+                            {
+                                "type": "min_rest_days",
+                                "worker_id": worker_id,
+                                "date1": date1,
+                                "date2": date2,
+                                "days_between": days_between,
+                                "min_required": effective_gap,
+                            }
+                        )
+
+                    # Friday-Monday pattern (only when effective_gap > 3)
+                    if days_between == 3 and effective_gap > 3:
+                        if (date1.weekday() == 4 and date2.weekday() == 0) or (
+                            date1.weekday() == 0 and date2.weekday() == 4
+                        ):
+                            violations.append(
+                                {
+                                    "type": "friday_monday_pattern",
+                                    "worker_id": worker_id,
+                                    "date1": date1,
+                                    "date2": date2,
+                                    "days_between": days_between,
+                                }
+                            )
+
+                    # 7 / 14 day same-weekday pattern
+                    if (days_between == 7 or days_between == 14) and date1.weekday() == date2.weekday():
+                        violations.append(
+                            {
+                                "type": "weekly_pattern",
+                                "worker_id": worker_id,
+                                "date1": date1,
+                                "date2": date2,
+                                "days_between": days_between,
+                            }
+                        )
+
+        # Incompatibility violations
+        mandatory_pairs: set[tuple] = set()
+        if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
+            mandatory_pairs = getattr(self.scheduler.schedule_builder, "_locked_mandatory", set())
+
+        for date, shifts in self.scheduler.schedule.items():
+            workers_on_date = [w for w in shifts if w is not None]
+            for worker_id in workers_on_date:
+                worker = self._worker_lookup_cache.get(worker_id)
+                if not worker:
+                    continue
+                incompatible_with = worker["incompatible_with"]
+                for incompatible_id in incompatible_with:
+                    if incompatible_id in workers_on_date:
+                        both_mandatory = (worker_id, date) in mandatory_pairs and (
+                            incompatible_id,
+                            date,
+                        ) in mandatory_pairs
+                        if both_mandatory:
+                            logging.info(
+                                f"Incompatible workers {worker_id} and {incompatible_id} on {date} — both MANDATORY, skipping violation"
+                            )
+                            continue
+                        violations.append(
+                            {
+                                "type": "incompatibility",
+                                "worker_id": worker_id,
+                                "incompatible_id": incompatible_id,
+                                "date": date,
+                            }
+                        )
+
+        return violations

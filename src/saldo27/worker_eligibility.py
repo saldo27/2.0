@@ -126,12 +126,12 @@ class WorkerEligibilityTracker:
         return True
 
     def _get_date_range(self, start, end):
-        """Get range of dates between start and end (inclusive)"""
-        # First try to use scheduler's method
-        if hasattr(self, "scheduler") and hasattr(self.scheduler, "_get_date_range"):
-            return self.scheduler._get_date_range(start, end)
-
-        # Fallback implementation
+        """Delegate to DateTimeUtils.get_date_range (canonical implementation)."""
+        if self.date_utils:
+            return self.date_utils.get_date_range(start, end)
+        if hasattr(self, "scheduler") and hasattr(self.scheduler, "date_utils"):
+            return self.scheduler.date_utils.get_date_range(start, end)
+        # Fallback when no date_utils is available
         date_range = []
         current = start
         while current <= end:

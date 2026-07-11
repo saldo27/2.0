@@ -1807,114 +1807,15 @@ class Scheduler:
         return total_assigned > 0
 
     def _check_schedule_constraints(self):
-        """
-        Check the current schedule for constraint violations.
-        Returns a list of violations found.
-        """
-        violations = []
+        """Check the current schedule for constraint violations.
 
+        Delegates to :meth:`ConstraintChecker.check_schedule_violations` which is
+        the single source of truth for gap/pattern/incompatibility logic.
+
+        Returns a list of violation dicts.
+        """
         try:
-            # Check for minimum rest days violations, Friday-Monday patterns, and weekly patterns
-            for worker in self.workers_data:
-                worker_id = worker["id"]
-                if worker_id not in self.worker_assignments:
-                    continue
-
-                # Sort the worker's assignments by date
-                assigned_dates = sorted(list(self.worker_assignments[worker_id]))
-
-                # Check all pairs of dates for violations
-                for i, date1 in enumerate(assigned_dates):
-                    for j, date2 in enumerate(assigned_dates):
-                        if i >= j:  # Skip same date or already checked pairs
-                            continue
-
-                        days_between = abs((date2 - date1).days)
-
-                        # Per-worker minimum gap (calendar days)
-                        worker_data = next((w for w in self.workers_data if w["id"] == worker_id), None)
-                        effective_gap = get_effective_min_gap(worker_data, self.gap_between_shifts)
-
-                        # When checking for insufficient rest periods
-                        if 0 < days_between < effective_gap:
-                            violations.append(
-                                {
-                                    "type": "min_rest_days",
-                                    "worker_id": worker_id,
-                                    "date1": date1,
-                                    "date2": date2,
-                                    "days_between": days_between,
-                                    "min_required": effective_gap,
-                                }
-                            )
-
-                        # Check for Friday-Monday assignments
-                        # Only flag if effective_gap > 3 (otherwise already caught by gap check
-                        # or permitted by the worker's effective gap)
-                        if days_between == 3 and effective_gap > 3:
-                            if (date1.weekday() == 4 and date2.weekday() == 0) or (
-                                date1.weekday() == 0 and date2.weekday() == 4
-                            ):
-                                violations.append(
-                                    {
-                                        "type": "friday_monday_pattern",
-                                        "worker_id": worker_id,
-                                        "date1": date1,
-                                        "date2": date2,
-                                        "days_between": days_between,
-                                    }
-                                )
-
-                        # Check for 7 or 14 day patterns
-                        if (
-                            days_between == 7 or days_between == 14
-                        ) and date1.weekday() == date2.weekday():  # CORRECTED LOGIC + WEEKDAY CHECK
-                            violations.append(
-                                {
-                                    "type": "weekly_pattern",  # Ensure this and following lines are indented correctly
-                                    "worker_id": worker_id,
-                                    "date1": date1,
-                                    "date2": date2,
-                                    "days_between": days_between,
-                                }
-                            )
-
-            # Check for incompatibility violations
-            # Build set of mandatory (worker_id, date) pairs to skip mandatory-caused violations
-            mandatory_pairs: set[tuple[str, Any]] = set()
-            if hasattr(self, "schedule_builder") and self.schedule_builder is not None:
-                mandatory_pairs = getattr(self.schedule_builder, "_locked_mandatory", set())
-
-            for date in self.schedule.keys():
-                workers_assigned = [w for w in self.schedule.get(date, []) if w is not None]
-
-                # Check each worker against others for incompatibility
-                for worker_id in workers_assigned:
-                    worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
-                    if not worker:
-                        continue
-
-                    incompatible_with = worker.get("incompatible_with", [])
-                    for incompatible_id in incompatible_with:
-                        if incompatible_id in workers_assigned:
-                            # Skip if BOTH workers are mandatory on this date
-                            both_mandatory = (worker_id, date) in mandatory_pairs and (
-                                incompatible_id,
-                                date,
-                            ) in mandatory_pairs
-                            if both_mandatory:
-                                logging.info(
-                                    f"Incompatible workers {worker_id} and {incompatible_id} on {date} — both MANDATORY, skipping violation"
-                                )
-                                continue
-                            violations.append(
-                                {
-                                    "type": "incompatibility",
-                                    "worker_id": worker_id,
-                                    "incompatible_id": incompatible_id,
-                                    "date": date,
-                                }
-                            )
+            violations = self.constraint_checker.check_schedule_violations(self.worker_assignments)
 
             # Log summary of violations
             if violations:
@@ -2110,21 +2011,8 @@ class Scheduler:
         return scheduler_core.orchestrate_schedule_generation(max_improvement_loops, max_complete_attempts)
 
     def _get_date_range(self, start_date, end_date):
-        """
-        Get list of dates between start_date and end_date (inclusive)
-
-        Args:
-            start_date: Start date
-            end_date: End date
-        Returns:
-            list: List of dates in range
-        """
-        date_range = []
-        current_date = start_date
-        while current_date <= end_date:
-            date_range.append(current_date)
-            current_date += timedelta(days=1)
-        return date_range
+        """Delegate to DateTimeUtils.get_date_range (canonical implementation)."""
+        return self.date_utils.get_date_range(start_date, end_date)
 
     def _cleanup_schedule(self):
         """
