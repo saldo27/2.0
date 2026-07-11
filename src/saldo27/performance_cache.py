@@ -217,16 +217,29 @@ class PerformanceCache:
             }
 
 
-# Global cache instance
+# Module-level fallback instances (used outside Streamlit / in tests)
 _global_cache: PerformanceCache | None = None
+
+_CACHE_SESSION_KEY = "_saldo27_perf_cache"
 
 
 def get_cache() -> PerformanceCache:
-    """Get the global cache instance"""
-    global _global_cache
-    if _global_cache is None:
-        _global_cache = PerformanceCache()
-    return _global_cache
+    """Return a PerformanceCache scoped to the current Streamlit session when
+    running inside Streamlit, or a module-level singleton otherwise.
+
+    Per-session caches avoid one user's cached data polluting another session.
+    """
+    try:
+        import streamlit as st
+
+        if _CACHE_SESSION_KEY not in st.session_state:
+            st.session_state[_CACHE_SESSION_KEY] = PerformanceCache()
+        return st.session_state[_CACHE_SESSION_KEY]  # type: ignore[no-any-return]
+    except Exception:
+        global _global_cache
+        if _global_cache is None:
+            _global_cache = PerformanceCache()
+        return _global_cache
 
 
 def cached(ttl: int = 3600, cache_instance: PerformanceCache | None = None):
@@ -352,16 +365,27 @@ class PerformanceMonitor:
             return {metric_name: self.get_metric_stats(metric_name) for metric_name in self.metrics.keys()}
 
 
-# Global performance monitor
+# Module-level fallback for the performance monitor
 _global_monitor: PerformanceMonitor | None = None
+
+_MONITOR_SESSION_KEY = "_saldo27_perf_monitor"
 
 
 def get_performance_monitor() -> PerformanceMonitor:
-    """Get the global performance monitor instance"""
-    global _global_monitor
-    if _global_monitor is None:
-        _global_monitor = PerformanceMonitor()
-    return _global_monitor
+    """Return a PerformanceMonitor scoped to the current Streamlit session when
+    running inside Streamlit, or a module-level singleton otherwise.
+    """
+    try:
+        import streamlit as st
+
+        if _MONITOR_SESSION_KEY not in st.session_state:
+            st.session_state[_MONITOR_SESSION_KEY] = PerformanceMonitor()
+        return st.session_state[_MONITOR_SESSION_KEY]  # type: ignore[no-any-return]
+    except Exception:
+        global _global_monitor
+        if _global_monitor is None:
+            _global_monitor = PerformanceMonitor()
+        return _global_monitor
 
 
 def monitor_performance(metric_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
