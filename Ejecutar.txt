@@ -1,9 +1,0 @@
-uv sync
-
-uv run streamlit run src/saldo27/app_streamlit.py
-uv run python -m streamlit run src/saldo27/app_streamlit.py
-
-Siguiente paso: Ahora arreglo _can_worker_take_shift en iterative_optimizer para usar non-mandatory count en el check mensual:
-
-Read iterative_optimizer.py, lines 1510 to 1590
-

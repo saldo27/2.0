@@ -1,0 +1,70 @@
+# Estrategia de relajación
+
+## Fases del reparto
+
+1. **40 intentos de construcción inicial** → se selecciona el mejor (27-30 huecos vacíos)
+
+2. **Optimizador iterativo:**
+   - Greedy fill (3 pasadas)
+   - Chain displacement fill (si quedan huecos)
+
+3. **Pasada final en `_try_fill_empty_shifts`:**
+   - Pass 1 relax 0
+   - Pass 1 relax 1
+   - Pass 2 swaps
+   - Pass 3A rotate
+   - Pass 3B cross-day chain
+
+---
+
+## Niveles de relajación
+
+El sistema tiene tres niveles bien diferenciados:
+
+### Construcción inicial (`schedule_builder.py`)
+
+**Modo estricto (Phase 1 — construcción):**
+- Tolerancia ±10% sobre el target
+- Gap entre turnos estándar
+- Patrón 7/14 bloqueado absolutamente
+
+**Modo relajado (Phase 2 — optimización post-build):**
+- Tolerancia sube a ±12% (límite absoluto hardcoded)
+- `relaxation_level=1`: si el trabajador tiene déficit ≥3 turnos, el gap mínimo se reduce en −1 día
+- Escalada dentro de cada fase mediante `_assign_day_shifts_with_relaxation()`
+
+El sistema guarda hasta 40 intentos completos y elige el de mayor cobertura (`_select_best_complete_attempt`). Nunca hay un override de emergencia.
+
+### Optimizador iterativo (`iterative_optimizer.py`)
+
+Solo un mecanismo de relajación: `relaxed_weekend_constraints`, que se activa si lleva ≥3 iteraciones estancado solo con violaciones de fin de semana:
+- Pasa de máximo 1 turno de fin de semana por semana a 2
+- Añade +1 turno extra a la tolerancia de fin de semana
+
+### Balanceador final (`strict_balance_optimizer.py`)
+
+Escalada de 7 estrategias en orden creciente de agresividad:
+
+| Estrategia                       | `relaxation_level` |
+|----------------------------------|--------------------|
+| `_try_direct_swap`               | 0 (estricto)       |
+| `_try_three_way_swap`            | 0                  |
+| `_try_reassignment`              | 0                  |
+| `_try_aggressive_three_way_swap` | 1                  |
+| `_try_chain_swap`                | 0                  |
+| `_try_forced_redistribution`     | 1                  |
+| `_try_relaxed_swap`              | 1 (solo si estancado ≥5 iter) |
+
+---
+
+## Lo que NUNCA se relaja (hardcoded)
+
+| Restricción              | Código real                                                      |
+|--------------------------|------------------------------------------------------------------|
+| `work_periods` / `days_off` | `_is_worker_unavailable()` — sin parámetro de relajación     |
+| `incompatible_with`      | Comentario explícito: "Never relax incompatibility constraint"   |
+| `mandatory_days`         | `_locked_mandatory` — nunca modificable                         |
+| Patrón 7/14              | Sin condicional de relajación en código real                     |
+| Tolerancia ±12%          | Límite absoluto, no superado por ningún nivel                   |
+| `no_last_post` / `only_last_post` | `_check_hard_constraints()`                             |
+| `max_consecutive_weekends` | Comentario: "NEVER RELAX THIS"                                |
