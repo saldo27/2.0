@@ -887,6 +887,22 @@ class Scheduler:
             logging.error(f"Error reconciling schedule tracking: {e!s}", exc_info=True)
             return False
 
+    def _get_worker_assigned_to_post(self, date: datetime, post: int) -> Any:
+        """Return the worker currently assigned to a post for a given date."""
+        assignments = self.schedule.get(date)
+
+        if isinstance(assignments, list):
+            if 0 <= post < len(assignments):
+                return assignments[post]
+            return None
+
+        if isinstance(assignments, dict):
+            for key in (post, str(post), post + 1, str(post + 1)):
+                if key in assignments:
+                    return assignments[key]
+
+        return None
+
     def _update_tracking_data(self, worker_id, date, post, removing=False):
         """
         Update all relevant tracking data structures when a worker is assigned or unassigned.
@@ -926,7 +942,7 @@ class Scheduler:
                 # anywhere else in the schedule (schedule[date][post] is already None at this point).
                 if post in self.worker_posts.get(worker_id, set()):
                     still_works_at_post = any(
-                        self.schedule.get(d, {}).get(post) == worker_id
+                        self._get_worker_assigned_to_post(d, post) == worker_id
                         for d in self.schedule
                     )
                     if not still_works_at_post:
