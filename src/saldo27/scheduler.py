@@ -943,7 +943,7 @@ class Scheduler:
                 if post in self.worker_posts.get(worker_id, set()):
                     still_works_at_post = any(
                         self._get_worker_assigned_to_post(d, post) == worker_id
-                        for d in self.schedule
+                        for d in self.worker_assignments.get(worker_id, set())
                     )
                     if not still_works_at_post:
                         self.worker_posts[worker_id].discard(post)
