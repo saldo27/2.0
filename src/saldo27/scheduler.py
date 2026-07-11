@@ -2359,12 +2359,18 @@ class Scheduler:
     # ========================================
     # 7. BACKUP AND RESTORE OPERATIONS
     # ========================================
-    def _save_current_as_best(self):
+    def _save_global_best(self):
         """
-        Save the current schedule as the best schedule found so far.
+        Save the scheduler-level global best schedule snapshot.
+
+        Named distinctly from ``ScheduleBuilder._save_current_as_best``, which is
+        the snapshot used during iterative construction/optimization and is the
+        authoritative one consulted by ``SchedulerCore``.  This method captures a
+        coarser, scheduler-level copy for optional external use (e.g. after the
+        full generation pipeline completes).
         """
         try:
-            logging.debug("Saving current schedule as best...")
+            logging.debug("Saving scheduler-level global best schedule...")
 
             # Create a deep copy of the current schedule
             best_schedule = {}
@@ -2372,7 +2378,7 @@ class Scheduler:
                 best_schedule[date] = shifts.copy()
 
             # Save all tracking data
-            self.best_schedule_data = {
+            self.global_best_schedule_data = {
                 "schedule": best_schedule,
                 "worker_assignments": {
                     w_id: assignments.copy() for w_id, assignments in self.worker_assignments.items()
@@ -2389,10 +2395,10 @@ class Scheduler:
                 "score": self.calculate_score(),
             }
 
-            logging.debug(f"Saved best schedule with score: {self.best_schedule_data['score']}")
+            logging.debug(f"Saved global best schedule with score: {self.global_best_schedule_data['score']}")
             return True
         except Exception as e:
-            logging.error(f"Error saving best schedule: {e!s}", exc_info=True)
+            logging.error(f"Error saving global best schedule: {e!s}", exc_info=True)
             return False
 
     def _backup_best_schedule(self):
@@ -2702,10 +2708,13 @@ class Scheduler:
         )
         return fixes_made
 
-    def _validate_final_schedule(self):
+    def _run_final_validation_and_fix(self):
         """
-        Validate the final schedule before returning it.
-        Returns True if valid, False if issues found.
+        Reconcile tracking data, then apply `validate_and_fix_final_schedule`.
+
+        Named distinctly from `DataManager._validate_final_schedule`, which performs
+        the detailed per-worker constraint checks and returns error/warning lists.
+        Returns True if the process completed without exceptions.
         """
         try:
             # Attempt to reconcile tracking first
