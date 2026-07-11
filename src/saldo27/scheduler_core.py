@@ -522,7 +522,7 @@ class SchedulerCore:
                     attempt_state_stats = self._sanitize_restored_attempt_state()
                 else:
                     attempt_state_stats = {
-                        "total_slots": len(self.scheduler.schedule) * self.scheduler.num_shifts,
+                        "total_slots": sum(len(shifts) for shifts in self.scheduler.schedule.values()),
                         "protected_slots": 0,
                         "stray_prefilled_slots": 0,
                         "empty_slots": sum(
