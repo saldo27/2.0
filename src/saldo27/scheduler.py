@@ -887,7 +887,7 @@ class Scheduler:
             logging.error(f"Error reconciling schedule tracking: {e!s}", exc_info=True)
             return False
 
-    def _get_worker_assigned_to_post(self, date: datetime, post: int) -> Any:
+    def _get_worker_assigned_to_post(self, date: datetime, post: int) -> str | None:
         """Return the worker currently assigned to a post for a given date."""
         assignments = self.schedule.get(date)
 
