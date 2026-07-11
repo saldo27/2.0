@@ -89,7 +89,8 @@ class EventBus:
 
     def subscribe(self, event_type: EventType, callback: Callable[[ScheduleEvent], None]) -> None:
         """
-        Subscribe to an event type
+        Subscribe to an event type.  No-op if the callback is already registered
+        for this event_type (prevents duplicate handlers on re-initialisation).
 
         Args:
             event_type: Type of event to listen for
@@ -98,9 +99,9 @@ class EventBus:
         with self._lock:
             if event_type not in self._listeners:
                 self._listeners[event_type] = []
-            self._listeners[event_type].append(callback)
-
-        logging.debug(f"Subscribed to {event_type.value}")
+            if callback not in self._listeners[event_type]:
+                self._listeners[event_type].append(callback)
+                logging.debug(f"Subscribed to {event_type.value}")
 
     def unsubscribe(self, event_type: EventType, callback: Callable[[ScheduleEvent], None]) -> None:
         """
@@ -235,19 +236,42 @@ class EventBus:
         }
 
 
-# Global event bus instance
+# Global event bus instance (used only outside Streamlit / in tests)
 _global_event_bus: EventBus | None = None
+
+_SESSION_KEY = "_saldo27_event_bus"
 
 
 def get_event_bus() -> EventBus:
-    """Get the global event bus instance"""
-    global _global_event_bus
-    if _global_event_bus is None:
-        _global_event_bus = EventBus()
-    return _global_event_bus
+    """Return an EventBus scoped to the current Streamlit session when running
+    inside Streamlit, or a module-level singleton otherwise (e.g. tests, CLI).
+
+    Using a per-session instance prevents events and listeners from leaking
+    across concurrent user sessions.
+    """
+    try:
+        import streamlit as st
+
+        if _SESSION_KEY not in st.session_state:
+            st.session_state[_SESSION_KEY] = EventBus()
+        return st.session_state[_SESSION_KEY]  # type: ignore[no-any-return]
+    except Exception:
+        # Streamlit not available or not running in a session context
+        global _global_event_bus
+        if _global_event_bus is None:
+            _global_event_bus = EventBus()
+        return _global_event_bus
 
 
 def reset_event_bus() -> None:
-    """Reset the global event bus (useful for testing)"""
+    """Reset the event bus (useful for testing).  Clears both the session-scoped
+    instance (if Streamlit is active) and the module-level fallback."""
     global _global_event_bus
     _global_event_bus = None
+    try:
+        import streamlit as st
+
+        if _SESSION_KEY in st.session_state:
+            del st.session_state[_SESSION_KEY]
+    except Exception:
+        pass
