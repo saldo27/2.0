@@ -3729,7 +3729,7 @@ class IterativeOptimizer:
         logging.info(f"   ✅ Made {forced_changes} forced redistributions")
         return optimized_schedule
 
-    def get_optimization_summary(self) -> dict:
+    def get_iterative_optimizer_summary(self) -> dict:
         """Get summary of optimization process."""
         if not self.optimization_history:
             return {"message": "No optimization history available"}

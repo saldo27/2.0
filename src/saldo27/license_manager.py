@@ -6,6 +6,7 @@ Versión DEMO con limitación por número de usos
 import hashlib
 import json
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +26,22 @@ class LicenseManager:
         self.DEMO_MAX_WORKERS = 15  # Máximo 15 trabajadores
         self.DEMO_MAX_DAYS = 62  # Máximo 31 días de horario
         self.DEMO_WATERMARK = True  # Marca de agua en PDFs
+
+        # Usage counting is backed by a shared file (intentional: the DEMO limit
+        # applies machine-wide, not per Streamlit session). This lock only
+        # protects against lost updates when multiple sessions in the same
+        # server *process* call increment_usage() concurrently (threading.Lock
+        # is per-process). It does NOT protect against concurrent writes from
+        # separate OS processes (e.g. a multi-worker/multi-process deployment):
+        # in that scenario, interleaved read-modify-write cycles could still
+        # under-count usage (a lost update), though the JSON write itself stays
+        # atomic enough to avoid file corruption. The app targets a
+        # single-process, single-machine desktop install (see packaging/), so
+        # multi-process safety is considered out of scope for now. If
+        # deployment ever moves to a multi-process model, this must be
+        # replaced with cross-process file locking (e.g. `fcntl` on Unix,
+        # `msvcrt` on Windows) or an external coordination mechanism.
+        self._usage_lock = threading.Lock()
 
     def is_licensed(self):
         """Verificar si hay licencia válida"""
@@ -83,21 +100,22 @@ class LicenseManager:
             return {"uses": 0, "first_use": None, "last_use": None}  # No usage file or invalid format
 
     def increment_usage(self):
-        """Incrementar contador de uso"""
-        stats = self.get_usage_stats()
+        """Incrementar contador de uso (thread-safe read-modify-write)"""
+        with self._usage_lock:
+            stats = self.get_usage_stats()
 
-        now = datetime.now().isoformat()
+            now = datetime.now().isoformat()
 
-        if stats["uses"] == 0:
-            stats["first_use"] = now
+            if stats["uses"] == 0:
+                stats["first_use"] = now
 
-        stats["uses"] += 1
-        stats["last_use"] = now
+            stats["uses"] += 1
+            stats["last_use"] = now
 
-        with open(self.usage_file, "w") as f:
-            json.dump(stats, f)
+            with open(self.usage_file, "w") as f:
+                json.dump(stats, f)
 
-        return stats["uses"]
+            return stats["uses"]
 
     def can_use(self):
         """Verificar si puede usar la aplicación"""

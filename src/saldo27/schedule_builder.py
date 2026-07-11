@@ -1416,15 +1416,17 @@ class ScheduleBuilder:
     # ========================================
 
     def _is_weekend_or_holiday(self, date):
-        """Cached check for weekend or holiday status"""
+        """Cached check for weekend or holiday status.
+
+        Delegates the actual definition to the canonical DateTimeUtils.is_weekend_day
+        implementation, keeping only a local cache here for performance.
+        """
         # Cache weekend checks to avoid repeated calculations
         if not hasattr(self, "_weekend_cache"):
             self._weekend_cache = {}
 
         if date not in self._weekend_cache:
-            self._weekend_cache[date] = (
-                date.weekday() >= 4 or date in self.holidays or (date + timedelta(days=1)) in self.holidays
-            )
+            self._weekend_cache[date] = self.scheduler.date_utils.is_weekend_day(date, self.holidays)
         return self._weekend_cache[date]
 
     def _get_date_fill_priority(self, date) -> int:

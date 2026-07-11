@@ -603,7 +603,7 @@ class PredictiveOptimizer:
             logging.error(f"Error applying adjustments: {e}")
             return {"status": "error", "message": str(e), "error_type": type(e).__name__}
 
-    def get_optimization_summary(self) -> dict[str, Any]:
+    def get_predictive_optimization_summary(self) -> dict[str, Any]:
         """Get summary of recent optimization activities"""
         try:
             summary = {

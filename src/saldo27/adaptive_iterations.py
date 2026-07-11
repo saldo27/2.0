@@ -825,7 +825,7 @@ class AdaptiveIterationManager:
 
         return adaptive_config
 
-    def get_optimization_summary(self) -> dict[str, Any]:
+    def get_adaptive_iteration_summary(self) -> dict[str, Any]:
         """Get a comprehensive summary of optimization performance and learning"""
         summary = {
             "total_optimizations_recorded": len(self.optimization_history),
