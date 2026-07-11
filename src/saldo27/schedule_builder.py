@@ -801,7 +801,6 @@ class ScheduleBuilder:
             # CRITICAL: only_last_post workers can ONLY be assigned to the last post
             if post != self.num_shifts - 1 and worker.get("only_last_post", False):
                 return False
-                return False
 
             # Check for incompatibilities
             # CRITICAL: Exclude replacing_worker from incompatibility check when doing a swap,
@@ -3334,6 +3333,16 @@ class ScheduleBuilder:
                             _p2_snap_empty = self.schedule[date_empty][:]
                             _p2_snap_W_asgn = set(self.worker_assignments.get(worker_W_id, set()))
                             _p2_snap_X_asgn = set(self.worker_assignments.get(worker_X_id, set()))
+                            # Also snapshot the per-worker tracking data that _update_tracking_data modifies,
+                            # so a rollback restores a fully consistent state (not just schedule + assignments).
+                            _p2_snap_W_shift_count = self.scheduler.worker_shift_counts.get(worker_W_id, 0)
+                            _p2_snap_X_shift_count = self.scheduler.worker_shift_counts.get(worker_X_id, 0)
+                            _p2_snap_W_weekdays = dict(self.scheduler.worker_weekdays.get(worker_W_id, {}))
+                            _p2_snap_X_weekdays = dict(self.scheduler.worker_weekdays.get(worker_X_id, {}))
+                            _p2_snap_W_weekends = list(self.scheduler.worker_weekends.get(worker_W_id, []))
+                            _p2_snap_X_weekends = list(self.scheduler.worker_weekends.get(worker_X_id, []))
+                            _p2_snap_W_weekend_count = self.scheduler.worker_weekend_counts.get(worker_W_id, 0)
+                            _p2_snap_X_weekend_count = self.scheduler.worker_weekend_counts.get(worker_X_id, 0)
 
                             # 1. Remove W from original spot
                             self.schedule[date_conflict][post_conflict] = None
@@ -3371,6 +3380,16 @@ class ScheduleBuilder:
                                 self.schedule[date_empty][:] = _p2_snap_empty
                                 self.worker_assignments[worker_W_id] = _p2_snap_W_asgn
                                 self.worker_assignments[worker_X_id] = _p2_snap_X_asgn
+                                # Restore per-worker tracking data to keep it consistent with
+                                # the restored schedule and assignments.
+                                self.scheduler.worker_shift_counts[worker_W_id] = _p2_snap_W_shift_count
+                                self.scheduler.worker_shift_counts[worker_X_id] = _p2_snap_X_shift_count
+                                self.scheduler.worker_weekdays[worker_W_id] = _p2_snap_W_weekdays
+                                self.scheduler.worker_weekdays[worker_X_id] = _p2_snap_X_weekdays
+                                self.scheduler.worker_weekends[worker_W_id] = _p2_snap_W_weekends
+                                self.scheduler.worker_weekends[worker_X_id] = _p2_snap_X_weekends
+                                self.scheduler.worker_weekend_counts[worker_W_id] = _p2_snap_W_weekend_count
+                                self.scheduler.worker_weekend_counts[worker_X_id] = _p2_snap_X_weekend_count
                                 continue
 
                             shifts_filled_this_pass_total += 1
@@ -3638,6 +3657,16 @@ class ScheduleBuilder:
                         _snap_D_asgn = set(self.worker_assignments.get(best_D_id, set()))
                         _pre_Z = len(_snap_Z_asgn)
                         _pre_D = len(_snap_D_asgn)
+                        # Snapshot per-worker tracking data so rollback restores a fully
+                        # consistent state (not just schedule + assignments).
+                        _snap_Z_shift_count = self.scheduler.worker_shift_counts.get(worker_Z_id, 0)
+                        _snap_D_shift_count = self.scheduler.worker_shift_counts.get(best_D_id, 0)
+                        _snap_Z_weekdays = dict(self.scheduler.worker_weekdays.get(worker_Z_id, {}))
+                        _snap_D_weekdays = dict(self.scheduler.worker_weekdays.get(best_D_id, {}))
+                        _snap_Z_weekends = list(self.scheduler.worker_weekends.get(worker_Z_id, []))
+                        _snap_D_weekends = list(self.scheduler.worker_weekends.get(best_D_id, []))
+                        _snap_Z_weekend_count = self.scheduler.worker_weekend_counts.get(worker_Z_id, 0)
+                        _snap_D_weekend_count = self.scheduler.worker_weekend_counts.get(best_D_id, 0)
 
                         # Remove Z from date_z
                         self.schedule[date_z][post_z] = None
@@ -3667,6 +3696,16 @@ class ScheduleBuilder:
                             self.schedule[date_e][:] = _snap_e_day
                             self.worker_assignments[worker_Z_id] = _snap_Z_asgn
                             self.worker_assignments[best_D_id] = _snap_D_asgn
+                            # Restore per-worker tracking data to keep it consistent with
+                            # the restored schedule and assignments.
+                            self.scheduler.worker_shift_counts[worker_Z_id] = _snap_Z_shift_count
+                            self.scheduler.worker_shift_counts[best_D_id] = _snap_D_shift_count
+                            self.scheduler.worker_weekdays[worker_Z_id] = _snap_Z_weekdays
+                            self.scheduler.worker_weekdays[best_D_id] = _snap_D_weekdays
+                            self.scheduler.worker_weekends[worker_Z_id] = _snap_Z_weekends
+                            self.scheduler.worker_weekends[best_D_id] = _snap_D_weekends
+                            self.scheduler.worker_weekend_counts[worker_Z_id] = _snap_Z_weekend_count
+                            self.scheduler.worker_weekend_counts[best_D_id] = _snap_D_weekend_count
                             continue
 
                         shifts_filled_this_pass_total += 1
