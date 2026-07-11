@@ -13,20 +13,6 @@ from saldo27.performance_cache import monitor_performance, time_function
 from saldo27.utilities import numeric_sort_key
 
 
-def numeric_sort_key(item):
-    """
-    Attempts to convert the first element of a tuple (the key) to an integer
-    for sorting. Returns a tuple to prioritize numeric keys and handle errors.
-    item[0] is assumed to be the worker ID (key).
-    """
-    try:
-        # Try converting the key (worker ID) to an integer
-        return (0, int(item[0]))  # (0, numeric_value) - sorts numbers first
-    except (ValueError, TypeError):
-        # If conversion fails, return a tuple indicating it's non-numeric
-        return (1, item[0])  # (1, original_string) - sorts non-numbers after numbers
-
-
 class PDFExporter:
     def __init__(self, schedule_config):
         self.schedule = schedule_config.get("schedule", {})
