@@ -384,6 +384,26 @@ class DateTimeUtils:
 
         return None
 
+    @staticmethod
+    def get_date_range(start_date, end_date) -> list:
+        """Return a list of dates from start_date to end_date (inclusive).
+
+        Works with both :class:`datetime.datetime` and :class:`datetime.date` objects.
+
+        Args:
+            start_date: Start date (inclusive)
+            end_date:   End date (inclusive)
+
+        Returns:
+            List of date/datetime objects in the range.
+        """
+        date_range = []
+        current = start_date
+        while current <= end_date:
+            date_range.append(current)
+            current += timedelta(days=1)
+        return date_range
+
     def is_bridge_day(self, date: datetime, bridge_periods: list[dict]) -> bool:
         """
         Check if a date is part of any bridge period.

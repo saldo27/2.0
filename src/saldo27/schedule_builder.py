@@ -15,23 +15,10 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from saldo27.adaptive_iterations import AdaptiveIterationManager
-from saldo27.utilities import get_effective_min_gap
 
-# Weekday pairs (prev_weekday, date_weekday) prohibited when effective gap == 2.
-# These bridge the weekend with insufficient rest: Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue.
-# Both orderings included so the check works regardless of chronological order.
-_GAP2_WEEKEND_PROHIBITED_PAIRS: frozenset[tuple[int, int]] = frozenset(
-    {
-        (3, 5),
-        (5, 3),  # Thu-Sat
-        (4, 6),
-        (6, 4),  # Fri-Sun
-        (5, 0),
-        (0, 5),  # Sat-Mon
-        (6, 1),
-        (1, 6),  # Sun-Tue
-    }
-)
+# Import _GAP2_WEEKEND_PROHIBITED_PAIRS from constraint_checker (canonical location).
+from saldo27.constraint_checker import _GAP2_WEEKEND_PROHIBITED_PAIRS
+from saldo27.utilities import get_effective_min_gap
 
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
@@ -724,11 +711,8 @@ class ScheduleBuilder:
         return True  # No incompatibilities found
 
     def _check_incompatibility(self, worker_id, date, exclude_workers=None):
-        # Placeholder using _check_incompatibility_with_list
-        assigned_workers_on_date = [w for w in self.schedule.get(date, []) if w is not None]
-        if exclude_workers:
-            assigned_workers_on_date = [w for w in assigned_workers_on_date if w not in exclude_workers]
-        return self._check_incompatibility_with_list(worker_id, assigned_workers_on_date)
+        """Delegate to the canonical ConstraintChecker implementation."""
+        return self.constraint_checker._check_incompatibility(worker_id, date, exclude_workers=exclude_workers)
 
     def _are_workers_incompatible(self, worker1_id, worker2_id):
         """
@@ -809,67 +793,12 @@ class ScheduleBuilder:
             if not self._check_incompatibility(worker_id, date, exclude_workers=exclude):
                 return False
 
-            # Check if worker has significant target_shifts deficit
-            # CRITICAL: target_shifts already has mandatory subtracted, so compare to non-mandatory only
-            assignments = sorted(list(self.worker_assignments.get(worker_id, [])))
-            current_assignments = len(assignments)
-            target_shifts = worker.get("target_shifts", 0)
-
-            # Count mandatory already assigned
-            mandatory_dates = set()
-            mandatory_str = worker.get("mandatory_days", "")
-            if mandatory_str:
-                try:
-                    mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
-                except Exception:
-                    pass
-            mandatory_assigned = sum(1 for d in assignments if d in mandatory_dates)
-            non_mandatory_assigned = current_assignments - mandatory_assigned
-
-            target_deficit = max(0, target_shifts - non_mandatory_assigned)
-            high_deficit = target_deficit >= 2  # Worker needs 2+ more shifts
-
-            # Check minimum gap and 7-14 day pattern
-            if assignments:
-                for prev_date in assignments:
-                    days_between = abs((date - prev_date).days)
-
-                    # Check minimum gap (calendar days, per-worker)
-                    if 0 < days_between < get_effective_min_gap(worker, self.gap_between_shifts):
-                        return False
-
-                    # Check for 7-14 day pattern (same weekday in consecutive weeks)
-                    # HARD CONSTRAINT: applies to ALL days (including weekends).
-                    # Exception: enforcement phases (3A/3B) may pass allow_714_violation=True
-                    # to allow ONE violation per worker, but NEVER on weekend/pre-weekend/holiday.
-                    if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                        if allow_714_violation and not self._is_weekend_or_holiday(date):
-                            # Violation allowed for this non-special weekday — skip block
-                            continue
-                        logging.debug(
-                            f"Worker {worker_id} 7/14 pattern violation: {date.strftime('%Y-%m-%d')} and {prev_date.strftime('%Y-%m-%d')} are both {date.strftime('%A')}"
-                        )
-                        return False
-
-            # Special case: Friday-Monday — only if effective gap > 3
-            effective_gap = get_effective_min_gap(worker, self.gap_between_shifts)
-            if effective_gap > 3:
-                for prev_date in assignments:
-                    days_between = abs((date - prev_date).days)
-                    if days_between == 3:
-                        if (prev_date.weekday() == 4 and date.weekday() == 0) or (
-                            date.weekday() == 4 and prev_date.weekday() == 0
-                        ):
-                            return False
-
-            # Special case: gap=2 — prohibit weekend-bridging pairs
-            # (Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue): insufficient rest around weekend.
-            if effective_gap == 2:
-                wd = date.weekday()
-                for prev_date in assignments:
-                    if abs((date - prev_date).days) == 2:
-                        if (prev_date.weekday(), wd) in _GAP2_WEEKEND_PROHIBITED_PAIRS:
-                            return False
+            # Delegate gap / Fri-Mon / 7-14 pattern / gap=2 bridge checks to the
+            # canonical ConstraintChecker implementation (single source of truth).
+            if not self.constraint_checker._check_gap_constraint(
+                worker_id, date, allow_714_violation=allow_714_violation
+            ):
+                return False
 
             # Check weekend limits
             if self.constraint_checker._would_exceed_weekend_limit(worker_id, date):

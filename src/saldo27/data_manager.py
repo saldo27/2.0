@@ -298,22 +298,8 @@ class DataManager:
         return True
 
     def _get_date_range(self, start_date, end_date):
-        """
-        Get list of dates between start_date and end_date (inclusive)
-
-        Args:
-            start_date: Start date
-            end_date: End date
-
-        Returns:
-            list: List of dates in range
-        """
-        date_range = []
-        current_date = start_date
-        while current_date <= end_date:
-            date_range.append(current_date)
-            current_date += timedelta(days=1)
-        return date_range
+        """Delegate to DateTimeUtils.get_date_range (canonical implementation)."""
+        return self.scheduler.date_utils.get_date_range(start_date, end_date)
 
     def mark_data_dirty(self):
         """Mark that data integrity needs to be verified again"""
