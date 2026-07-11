@@ -224,6 +224,10 @@ class SchedulerCore:
         current scheduler objects.  Must be called after any deepcopy
         that replaces scheduler-level dicts/sets so that the builder
         does not keep stale pointers to the old objects.
+
+        Note: DataManager.schedule and DataManager.worker_assignments are
+        read-only properties that always delegate to self.scheduler, so
+        DataManager does not need an explicit entry here.
         """
         sb = self.scheduler.schedule_builder
         sb.schedule = self.scheduler.schedule

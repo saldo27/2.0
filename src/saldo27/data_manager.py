@@ -22,9 +22,9 @@ class DataManager:
         """
         self.scheduler = scheduler
 
-        # Store references to frequently accessed attributes
-        self.schedule = scheduler.schedule
-        self.worker_assignments = scheduler.worker_assignments
+        # Note: schedule and worker_assignments are exposed as read-only properties
+        # (see below) so they always delegate to self.scheduler and never go stale
+        # after a deepcopy-reset cycle.
         self.worker_posts = scheduler.worker_posts
         self.worker_weekdays = scheduler.worker_weekdays
         self.worker_weekends = scheduler.worker_weekends
@@ -48,6 +48,16 @@ class DataManager:
         self._build_worker_cache()
 
         logging.info("Enhanced DataManager initialized with caching and bridge management")
+
+    @property
+    def schedule(self) -> dict:
+        """Always delegates to the current scheduler.schedule (never stale)."""
+        return self.scheduler.schedule
+
+    @property
+    def worker_assignments(self) -> dict:
+        """Always delegates to the current scheduler.worker_assignments (never stale)."""
+        return self.scheduler.worker_assignments
 
     def _build_worker_cache(self) -> None:
         """Build worker cache for faster lookups"""

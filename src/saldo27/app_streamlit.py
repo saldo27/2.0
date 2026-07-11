@@ -573,62 +573,62 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
         sidebar_handler.setFormatter(logging.Formatter("%(message)s"))
         root_logger = logging.getLogger()
         root_logger.addHandler(sidebar_handler)
+        try:
+            def _run_generation():
+                try:
+                    generation_result["success"] = scheduler.generate_schedule()
+                except Exception as exc:
+                    generation_result["error"] = exc
 
-        def _run_generation():
-            try:
-                generation_result["success"] = scheduler.generate_schedule()
-            except Exception as exc:
-                generation_result["error"] = exc
+            # Phase detection from log messages for precise status updates
+            _phase_patterns = [
+                ("Phase 1:", "⚙️ Fase 1 · Inicializando estructura del calendario"),
+                ("Phase 2:", "⚙️ Fase 2 · Asignando guardias obligatorias"),
+                ("Phase 2.5:", "⚙️ Fase 3 · Distribución inicial (múltiples intentos)"),
+                ("Starting Enhanced Improvement Loop", "⚙️ Fase 4 · Optimización iterativa del calendario"),
+                ("Phase 3.5:", "⚙️ Fase 5 · Motor de distribución avanzada"),
+                ("Phase 3.6:", "⚙️ Fase 6 · Balanceo estricto de carga"),
+                ("Phase 4: Finalizing", "⚙️ Fase 7 · Finalización y ajustes de tolerancia"),
+                ("TOLERANCE OPTIMIZATION COMPLETE", "⚙️ Fase 7 · Validación final completada"),
+            ]
+            _current_phase_msg = "⚙️ Iniciando generación del calendario..."
 
-        # Phase detection from log messages for precise status updates
-        _phase_patterns = [
-            ("Phase 1:", "⚙️ Fase 1 · Inicializando estructura del calendario"),
-            ("Phase 2:", "⚙️ Fase 2 · Asignando guardias obligatorias"),
-            ("Phase 2.5:", "⚙️ Fase 3 · Distribución inicial (múltiples intentos)"),
-            ("Starting Enhanced Improvement Loop", "⚙️ Fase 4 · Optimización iterativa del calendario"),
-            ("Phase 3.5:", "⚙️ Fase 5 · Motor de distribución avanzada"),
-            ("Phase 3.6:", "⚙️ Fase 6 · Balanceo estricto de carga"),
-            ("Phase 4: Finalizing", "⚙️ Fase 7 · Finalización y ajustes de tolerancia"),
-            ("TOLERANCE OPTIMIZATION COMPLETE", "⚙️ Fase 7 · Validación final completada"),
-        ]
-        _current_phase_msg = "⚙️ Iniciando generación del calendario..."
+            status_text.info(_current_phase_msg)
+            thread = threading.Thread(target=_run_generation, daemon=True)
+            thread.start()
 
-        status_text.info(_current_phase_msg)
-        thread = threading.Thread(target=_run_generation, daemon=True)
-        thread.start()
-
-        # Polling loop: mostrar progreso real y permitir cancelación
-        while thread.is_alive():
-            if cancel_placeholder.button("⛔ Cancelar generación", key=f"cancel_{time.time()}"):
-                scheduler._cancelled = True
-                st.session_state.generation_cancelled = True
-                status_text.warning("⏳ Cancelando... esperando a que el motor se detenga")
-            # Detect current phase from latest log messages
-            _recent = sidebar_handler.get_messages(last_n=30)
-            for _msg in reversed(_recent):
-                _matched = False
-                for _pattern, _label in _phase_patterns:
-                    if _pattern in _msg:
-                        if _label != _current_phase_msg:
-                            _current_phase_msg = _label
-                            status_text.info(_current_phase_msg)
-                        _matched = True
+            # Polling loop: mostrar progreso real y permitir cancelación
+            while thread.is_alive():
+                if cancel_placeholder.button("⛔ Cancelar generación", key=f"cancel_{time.time()}"):
+                    scheduler._cancelled = True
+                    st.session_state.generation_cancelled = True
+                    status_text.warning("⏳ Cancelando... esperando a que el motor se detenga")
+                # Detect current phase from latest log messages
+                _recent = sidebar_handler.get_messages(last_n=30)
+                for _msg in reversed(_recent):
+                    _matched = False
+                    for _pattern, _label in _phase_patterns:
+                        if _pattern in _msg:
+                            if _label != _current_phase_msg:
+                                _current_phase_msg = _label
+                                status_text.info(_current_phase_msg)
+                            _matched = True
+                            break
+                    if _matched:
                         break
-                if _matched:
-                    break
-            # Actualizar log de progreso en el sidebar
-            _log_ph = st.session_state.get("_sidebar_log_placeholder")
-            if _log_ph:
-                _msgs = sidebar_handler.get_messages(last_n=15)
-                if _msgs:
-                    _log_ph.code("\n".join(_msgs), language=None)
-            time.sleep(0.5)
+                # Actualizar log de progreso en el sidebar
+                _log_ph = st.session_state.get("_sidebar_log_placeholder")
+                if _log_ph:
+                    _msgs = sidebar_handler.get_messages(last_n=15)
+                    if _msgs:
+                        _log_ph.code("\n".join(_msgs), language=None)
+                time.sleep(0.5)
 
-        thread.join()
-        cancel_placeholder.empty()
-
-        # Limpiar handler
-        root_logger.removeHandler(sidebar_handler)
+            thread.join()
+            cancel_placeholder.empty()
+        finally:
+            # Garantizar que el handler se elimina aunque ocurra una excepción
+            root_logger.removeHandler(sidebar_handler)
 
         if st.session_state.generation_cancelled:
             # Mostrar log parcial en sidebar
