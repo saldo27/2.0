@@ -136,3 +136,8 @@ Thumbs.db
 # Debug/scratch files
 debug_*.py
 simple_*.py
+
+# Generated output files
+*.pdf
+schedule_data_*.json
+historical_data/*.json
