@@ -922,10 +922,15 @@ class Scheduler:
                 if self.worker_shift_counts.get(worker_id, 0) > 0:
                     self.worker_shift_counts[worker_id] -= 1
 
-                # Note: Removing from self.worker_posts for a specific post is not done here
-                # as self.worker_posts[worker_id] is a set of all posts worked.
-                # If a worker no longer works ANY instance of a post, that post would remain
-                # in their set unless explicitly managed or self.worker_posts is rebuilt.
+                # Clean up worker_posts if the worker no longer works at this post position
+                # anywhere else in the schedule (schedule[date][post] is already None at this point).
+                if post in self.worker_posts.get(worker_id, set()):
+                    still_works_at_post = any(
+                        self.schedule.get(d, {}).get(post) == worker_id
+                        for d in self.schedule
+                    )
+                    if not still_works_at_post:
+                        self.worker_posts[worker_id].discard(post)
 
                 # Update weekday counts
                 weekday = date.weekday()

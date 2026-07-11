@@ -80,8 +80,28 @@ class ConstraintChecker:
             worker2_cache = self._worker_lookup_cache.get(worker2_id)
 
             if not worker1_cache or not worker2_cache:
-                logging.warning(
-                    f"Could not find worker data for {worker1_id} or {worker2_id} during incompatibility check."
+                # Cache miss: try to rebuild the missing entry from the raw workers list
+                for worker in self.workers_data:
+                    wid = worker["id"]
+                    if wid == worker1_id and not worker1_cache:
+                        worker1_cache = {
+                            "data": worker,
+                            "incompatible_with": set(worker.get("incompatible_with", [])),
+                            "work_percentage": worker.get("work_percentage", 100),
+                        }
+                        self._worker_lookup_cache[worker1_id] = worker1_cache
+                    if wid == worker2_id and not worker2_cache:
+                        worker2_cache = {
+                            "data": worker,
+                            "incompatible_with": set(worker.get("incompatible_with", [])),
+                            "work_percentage": worker.get("work_percentage", 100),
+                        }
+                        self._worker_lookup_cache[worker2_id] = worker2_cache
+
+            if not worker1_cache or not worker2_cache:
+                logging.error(
+                    f"Worker data not found for {worker1_id} or {worker2_id} during incompatibility check. "
+                    "Cannot verify compatibility — assuming compatible."
                 )
                 result = False
             else:
