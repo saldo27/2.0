@@ -3692,22 +3692,28 @@ class ScheduleBuilder:
                 break
 
             if attempt == 0:
-                logging.info(f"Starting with {len(empty_slots)} empty shifts")
-                # Count how many are actually protected
+                total_slots = 0
                 protected_count = 0
+                prefilled_non_mandatory_count = 0
                 truly_empty_count = 0
-                for d, p in empty_slots:
-                    if d in self.schedule and len(self.schedule[d]) > p:
-                        if self.schedule[d][p] is not None:
-                            existing = self.schedule[d][p]
-                            if (existing, d) in self._locked_mandatory or self._is_mandatory(existing, d):
-                                protected_count += 1
-                            else:
-                                # Filled but not mandatory
-                                pass
-                        else:
+
+                for date_val, shifts in self.schedule.items():
+                    for post_index, worker_id in enumerate(shifts):
+                        total_slots += 1
+                        if worker_id is None:
                             truly_empty_count += 1
+                            continue
+
+                        is_protected, _ = self._is_slot_protected_mandatory(date_val, post_index)
+                        if is_protected:
+                            protected_count += 1
+                        else:
+                            prefilled_non_mandatory_count += 1
+
+                logging.info(f"Starting with {len(empty_slots)} empty shifts")
+                logging.info(f"  Total slots in period: {total_slots}")
                 logging.info(f"  Protected mandatory slots: {protected_count}")
+                logging.info(f"  Prefilled non-mandatory slots: {prefilled_non_mandatory_count}")
                 logging.info(f"  Truly empty slots to fill: {truly_empty_count}")
 
             # Priority-first: transition+weekend → transition+weekday → normal chronological
