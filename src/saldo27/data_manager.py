@@ -133,27 +133,11 @@ class DataManager:
 
     def _are_workers_incompatible(self, worker1_id, worker2_id):
         """
-        Check if two workers are incompatible with each other
+        Check if two workers are incompatible with each other.
 
-        Args:
-            worker1_id: ID of first worker
-            worker2_id: ID of second worker
-
-        Returns:
-            bool: True if workers are incompatible, False otherwise
+        Delegates to the canonical, cached implementation in ConstraintChecker.
         """
-        # Find the worker data for each worker
-        worker1 = next((w for w in self.workers_data if w["id"] == worker1_id), None)
-        worker2 = next((w for w in self.workers_data if w["id"] == worker2_id), None)
-
-        if not worker1 or not worker2:
-            return False
-
-        # Check if either worker has the other in their incompatibility list
-        incompatible_with_1 = worker1.get("incompatible_with", [])
-        incompatible_with_2 = worker2.get("incompatible_with", [])
-
-        return worker2_id in incompatible_with_1 or worker1_id in incompatible_with_2
+        return self.scheduler.constraint_checker._are_workers_incompatible(worker1_id, worker2_id)
 
     def _get_monthly_distribution(self, worker_id):
         """
@@ -543,32 +527,23 @@ class DataManager:
         return incomplete_days
 
     def _calculate_monthly_targets(self):
-        """Calculate target shifts per month for each worker"""
-        try:
-            self.monthly_targets = {}
+        """
+        Delegate monthly target calculation to the Scheduler's authoritative implementation.
 
-            # Get available days per month
-            month_days = self._get_schedule_months()
-            logging.debug(f"Available days per month: {month_days}")
+        The Scheduler's version correctly accounts for individual ``work_periods`` when
+        computing each worker's proportional quota per month; the previous local version
+        ignored ``work_periods`` and could over-assign non-mandatory shifts.
 
-            for worker in self.workers_data:
-                worker_id = worker["id"]
-                self.monthly_targets[worker_id] = {}
-
-                # Get worker's total target shifts
-                total_target = worker.get("target_shifts", 0)
-                logging.debug(f"Worker {worker_id} total target: {total_target}")
-
-                # Calculate monthly proportion
-                total_days = sum(month_days.values())
-                for month, days in month_days.items():
-                    month_target = round((days / total_days) * total_target)
-                    self.monthly_targets[worker_id][month] = month_target
-                    logging.debug(f"Worker {worker_id}, Month {month}: {month_target} shifts")
-
-        except Exception as e:
-            logging.error(f"Error calculating monthly targets: {e!s}", exc_info=True)
-            raise
+        Results are stored in ``worker['monthly_targets']`` and
+        ``worker['monthly_targets_ceil']`` (keyed by month string "YYYY-MM") by the
+        Scheduler, and also kept in ``self.monthly_targets`` for legacy callers.
+        """
+        self.scheduler._calculate_monthly_targets()
+        # Mirror results into self.monthly_targets for any internal callers
+        self.monthly_targets = {
+            worker["id"]: worker.get("monthly_targets", {})
+            for worker in self.workers_data
+        }
 
     def get_worker_schedule(self, worker_id):
         """
@@ -984,7 +959,7 @@ class DataManager:
         """
         try:
             # Run comprehensive validation
-            self.scheduler._validate_final_schedule()
+            self.scheduler._run_final_validation_and_fix()
 
             # Additional verification steps...
 

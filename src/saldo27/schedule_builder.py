@@ -283,35 +283,8 @@ class ScheduleBuilder:
         return self.date_utils.parse_dates(date_str)
 
     def _synchronize_tracking_data(self):
-        # Placeholder for your method in ScheduleBuilder if it exists, or call scheduler\'s
-        if hasattr(self.scheduler, "_synchronize_tracking_data"):
-            self.scheduler._synchronize_tracking_data()
-        else:
-            logging.warning("Scheduler'_synchronize_tracking_data not found by builder.")
-            # Fallback or simplified sync if necessary:
-            new_worker_assignments = {w["id"]: set() for w in self.workers_data}
-            new_worker_posts = {w["id"]: set() for w in self.workers_data}  # FIXED: Should be sets, not dicts
-            new_worker_post_counts = {w["id"]: {p: 0 for p in range(self.num_shifts)} for w in self.workers_data}
-            for date, shifts_on_date in self.schedule.items():
-                for post_idx, worker_id_in_post in enumerate(shifts_on_date):
-                    if worker_id_in_post is not None:
-                        new_worker_assignments.setdefault(worker_id_in_post, set()).add(date)
-                        new_worker_posts.setdefault(worker_id_in_post, set()).add(post_idx)  # FIXED: Add to set
-                        new_worker_post_counts.setdefault(worker_id_in_post, {p: 0 for p in range(self.num_shifts)})[
-                            post_idx
-                        ] += 1
-            self.worker_assignments = new_worker_assignments  # Update builder\'s reference
-            self.scheduler.worker_assignments = new_worker_assignments  # Update scheduler\'s reference
-            self.worker_posts = new_worker_posts
-            self.scheduler.worker_posts = new_worker_posts  # FIXED: Now correctly sets
-            # Update post counts if the scheduler has this tracking
-            if hasattr(self.scheduler, "worker_post_counts"):
-                self.scheduler.worker_post_counts = new_worker_post_counts
-            self.scheduler.worker_shift_counts = {
-                worker_id: len(dates) for worker_id, dates in new_worker_assignments.items()
-            }
-            # self.scheduler.worker_shift_counts = self.worker_shift_counts # This line is redundant
-            # Add other tracking data sync if needed (weekends, etc.)
+        """Delegate tracking-data synchronization to the Scheduler."""
+        self.scheduler._synchronize_tracking_data()
 
     # ========================================
     # 3. WORKER CONSTRAINT CHECKING
@@ -759,34 +732,11 @@ class ScheduleBuilder:
 
     def _are_workers_incompatible(self, worker1_id, worker2_id):
         """
-        Check if two workers are incompatible with each other using cached data
+        Check if two workers are incompatible with each other.
 
-        Args:
-            worker1_id: ID of first worker
-            worker2_id: ID of second worker
-
-        Returns:
-            bool: True if workers are incompatible, False otherwise
+        Delegates to the canonical, cached implementation in ConstraintChecker.
         """
-        # Use cached incompatibility data for faster lookup
-        if hasattr(self, "_incompatibility_cache"):
-            return worker2_id in self._incompatibility_cache.get(
-                worker1_id, set()
-            ) or worker1_id in self._incompatibility_cache.get(worker2_id, set())
-
-        # Fallback to original implementation if cache not available
-        # Find the worker data for each worker
-        worker1 = next((w for w in self.workers_data if w["id"] == worker1_id), None)
-        worker2 = next((w for w in self.workers_data if w["id"] == worker2_id), None)
-
-        if not worker1 or not worker2:
-            return False
-
-        # Check if either worker has the other in their incompatibility list
-        incompatible_with_1 = worker1.get("incompatible_with", [])
-        incompatible_with_2 = worker2.get("incompatible_with", [])
-
-        return worker2_id in incompatible_with_1 or worker1_id in incompatible_with_2
+        return self.scheduler.constraint_checker._are_workers_incompatible(worker1_id, worker2_id)
 
     def _violates_7_14_pattern(self, worker_id, date):
         """
