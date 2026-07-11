@@ -1173,7 +1173,7 @@ class Scheduler:
                         pct = 1.0
                         try:
                             pct = float(str(w.get("work_percentage", 100)).strip()) / 100.0
-                        except Exception:
+                        except (TypeError, ValueError):
                             logging.warning(f"Worker {wid} invalid work_percentage; defaulting to 100%")
                         pct = max(0.0, pct)
                         weights.append(available_slots.get(wid, 0) * pct)
@@ -1269,7 +1269,8 @@ class Scheduler:
             if work_periods_str:
                 try:
                     work_ranges = self.date_utils.parse_date_ranges(work_periods_str)
-                except Exception:
+                except (TypeError, ValueError) as exc:
+                    logging.warning(f"Worker {wid} invalid work_periods; using default availability: {exc}")
                     work_ranges = []
 
                 if work_ranges:
@@ -1355,7 +1356,10 @@ class Scheduler:
             if work_periods_str:
                 try:
                     work_ranges = self.date_utils.parse_date_ranges(work_periods_str)
-                except Exception:
+                except (TypeError, ValueError) as exc:
+                    logging.warning(
+                        f"Worker {worker_id} invalid work_periods for monthly target distribution: {exc}"
+                    )
                     work_ranges = []
             else:
                 work_ranges = []

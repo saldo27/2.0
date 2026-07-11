@@ -255,8 +255,9 @@ def get_event_bus() -> EventBus:
         if _SESSION_KEY not in st.session_state:
             st.session_state[_SESSION_KEY] = EventBus()
         return st.session_state[_SESSION_KEY]  # type: ignore[no-any-return]
-    except Exception:
+    except (AttributeError, ImportError, KeyError, ModuleNotFoundError, RuntimeError) as exc:
         # Streamlit not available or not running in a session context
+        logging.debug(f"Falling back to global EventBus: {exc}")
         global _global_event_bus
         if _global_event_bus is None:
             _global_event_bus = EventBus()
@@ -273,5 +274,5 @@ def reset_event_bus() -> None:
 
         if _SESSION_KEY in st.session_state:
             del st.session_state[_SESSION_KEY]
-    except Exception:
-        pass
+    except (AttributeError, ImportError, KeyError, ModuleNotFoundError, RuntimeError) as exc:
+        logging.debug(f"Could not clear session-scoped EventBus: {exc}")

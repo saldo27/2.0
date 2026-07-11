@@ -64,8 +64,8 @@ class OperationPrioritizer:
                             deviations.append(abs(assigned - target) / target)
                     if deviations:
                         bridge_imbalance = sum(deviations) / len(deviations)
-            except Exception:
-                pass
+            except (AttributeError, KeyError, TypeError) as exc:
+                logging.debug(f"Could not evaluate bridge imbalance for prioritization: {exc}")
 
             logging.info(
                 f"Estado actual - Turnos vacíos: {empty_shifts_count}, "

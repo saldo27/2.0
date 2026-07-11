@@ -370,8 +370,8 @@ class OptimizationMetrics:
                 if mandatory_str and hasattr(self.scheduler, "date_utils"):
                     try:
                         mandatory_dates = set(self.scheduler.date_utils.parse_dates(mandatory_str))
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        logging.debug(f"Could not parse mandatory_days for worker {worker_id}: {exc}")
 
                 mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
                 non_mandatory_count = total_count - mandatory_assigned

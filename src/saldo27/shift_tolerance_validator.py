@@ -112,8 +112,8 @@ class ShiftToleranceValidator:
                                 if w == worker_id:
                                     mandatory_assigned += 1
                     assigned_shifts -= mandatory_assigned
-                except Exception:
-                    pass
+                except (TypeError, ValueError) as exc:
+                    logging.debug(f"Could not parse mandatory_days for worker {worker_id}: {exc}")
 
         # Pass is_weekend_only and worker_id to apply zero tolerance for manual workers
         min_shifts, max_shifts = self.calculate_tolerance_bounds(
@@ -177,8 +177,8 @@ class ShiftToleranceValidator:
                             1 for d in mand_dates if self.scheduler.start_date <= d <= self.scheduler.end_date
                         )
                         total_target += mand_in_period
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        logging.debug(f"Could not parse mandatory_days for weekend target fallback: {exc}")
 
             weekend_target = self._calculate_weekend_target(worker_id, total_target)
 

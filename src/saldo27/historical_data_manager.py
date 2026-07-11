@@ -243,7 +243,8 @@ class HistoricalDataManager:
             for date, shifts in sorted(self.scheduler.schedule.items()):
                 schedule_data.append((date.strftime("%Y-%m-%d"), tuple(shifts)))
             return str(hash(tuple(schedule_data)))
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.debug(f"Coverage cache key generation failed: {e}")
             # Fallback to timestamp-based key
             import time
 
@@ -255,7 +256,8 @@ class HistoricalDataManager:
             if hasattr(self, "_coverage_cache"):
                 return self._coverage_cache.get(cache_key)
             return None
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.warning(f"Coverage cache retrieval failed: {e}")
             return None
 
     def _cache_coverage_result(self, cache_key: str, result: dict[str, Any]) -> None:
@@ -272,7 +274,8 @@ class HistoricalDataManager:
                     del self._coverage_cache[key]
 
             self._coverage_cache[cache_key] = result
-        except Exception:
+        except (AttributeError, KeyError, TypeError) as e:
+            logging.warning(f"Coverage cache storage failed: {e}")
             pass  # Continue without caching
 
     def _calculate_coverage_metrics(self) -> dict[str, Any]:
@@ -343,7 +346,8 @@ class HistoricalDataManager:
                 total_violations = sum(len(v) if isinstance(v, list) else v for v in violations.values())
                 key_data.append((worker_id, total_violations))
             return str(hash(tuple(sorted(key_data))))
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.debug(f"Constraint cache key generation failed: {e}")
             # Fallback to string representation
             return str(hash(str(stats)))
 
@@ -353,7 +357,8 @@ class HistoricalDataManager:
             if hasattr(self, "_constraint_cache"):
                 return self._constraint_cache.get(cache_key)
             return None
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.warning(f"Constraint cache retrieval failed: {e}")
             return None
 
     def _cache_constraint_result(self, cache_key: str, result: dict[str, Any]) -> None:
@@ -370,7 +375,8 @@ class HistoricalDataManager:
                     del self._constraint_cache[key]
 
             self._constraint_cache[cache_key] = result
-        except Exception:
+        except (AttributeError, KeyError, TypeError) as e:
+            logging.warning(f"Constraint cache storage failed: {e}")
             pass  # Continue without caching
 
     def _extract_constraint_metrics(self, stats: dict[str, Any]) -> dict[str, Any]:
@@ -424,7 +430,8 @@ class HistoricalDataManager:
                 filled_count = sum(1 for shift in shifts if shift is not None)
                 schedule_summary.append((month, weekday, filled_count))
             return str(hash(tuple(schedule_summary)))
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.debug(f"Seasonal cache key generation failed: {e}")
             # Fallback to basic key
             import time
 
@@ -436,7 +443,8 @@ class HistoricalDataManager:
             if hasattr(self, "_seasonal_cache"):
                 return self._seasonal_cache.get(cache_key)
             return None
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.warning(f"Seasonal cache retrieval failed: {e}")
             return None
 
     def _cache_seasonal_result(self, cache_key: str, result: dict[str, Any]) -> None:
@@ -453,7 +461,8 @@ class HistoricalDataManager:
                     del self._seasonal_cache[key]
 
             self._seasonal_cache[cache_key] = result
-        except Exception:
+        except (AttributeError, KeyError, TypeError) as e:
+            logging.warning(f"Seasonal cache storage failed: {e}")
             pass  # Continue without caching
 
     def _extract_seasonal_indicators(self) -> dict[str, Any]:
@@ -523,7 +532,8 @@ class HistoricalDataManager:
             key_data.append(len(stats.get("workers", {})))
             key_data.append(stats.get("score", 0))
             return str(hash(tuple(key_data)))
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.debug(f"Efficiency cache key generation failed: {e}")
             # Fallback to string representation
             return str(hash(str(stats)))
 
@@ -533,7 +543,8 @@ class HistoricalDataManager:
             if hasattr(self, "_efficiency_cache"):
                 return self._efficiency_cache.get(cache_key)
             return None
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.warning(f"Efficiency cache retrieval failed: {e}")
             return None
 
     def _cache_efficiency_result(self, cache_key: str, result: float) -> None:
@@ -550,7 +561,8 @@ class HistoricalDataManager:
                     del self._efficiency_cache[key]
 
             self._efficiency_cache[cache_key] = result
-        except Exception:
+        except (AttributeError, KeyError, TypeError) as e:
+            logging.warning(f"Efficiency cache storage failed: {e}")
             pass  # Continue without caching
 
     def _calculate_efficiency_score(self, stats: dict[str, Any]) -> float:
@@ -616,7 +628,8 @@ class HistoricalDataManager:
         try:
             items = sorted(post_distribution.items())
             return str(hash(tuple(items)))
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.debug(f"Post rotation cache key generation failed: {e}")
             # Fallback to string representation
             return str(hash(str(sorted(post_distribution.items()))))
 
@@ -626,7 +639,8 @@ class HistoricalDataManager:
             if hasattr(self, "_post_rotation_cache"):
                 return self._post_rotation_cache.get(cache_key)
             return None
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.warning(f"Post rotation cache retrieval failed: {e}")
             return None
 
     def _cache_post_rotation_result(self, cache_key: str, result: float) -> None:
@@ -643,7 +657,8 @@ class HistoricalDataManager:
                     del self._post_rotation_cache[key]
 
             self._post_rotation_cache[cache_key] = result
-        except Exception:
+        except (AttributeError, KeyError, TypeError) as e:
+            logging.warning(f"Post rotation cache storage failed: {e}")
             pass  # Continue without caching
 
     def _calculate_monthly_variance_cached(self, monthly_stats: dict[str, Any]) -> float:
@@ -675,7 +690,8 @@ class HistoricalDataManager:
                     v_str = str(v)
                 items.append((k, v_str))
             return str(hash(tuple(items)))
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.debug(f"Monthly variance cache key generation failed: {e}")
             # Fallback to string representation
             return str(hash(str(sorted(monthly_stats.items()))))
 
@@ -685,7 +701,8 @@ class HistoricalDataManager:
             if hasattr(self, "_monthly_variance_cache"):
                 return self._monthly_variance_cache.get(cache_key)
             return None
-        except Exception:
+        except (AttributeError, TypeError) as e:
+            logging.warning(f"Monthly variance cache retrieval failed: {e}")
             return None
 
     def _cache_monthly_variance_result(self, cache_key: str, result: float) -> None:
@@ -702,7 +719,8 @@ class HistoricalDataManager:
                     del self._monthly_variance_cache[key]
 
             self._monthly_variance_cache[cache_key] = result
-        except Exception:
+        except (AttributeError, KeyError, TypeError) as e:
+            logging.warning(f"Monthly variance cache storage failed: {e}")
             pass  # Continue without caching
 
     def _calculate_weekend_preference(self, worker_id: str) -> float:

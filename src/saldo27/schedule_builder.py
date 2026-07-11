@@ -118,7 +118,8 @@ class ScheduleBuilder:
             if mandatory_str:
                 try:
                     self._mandatory_dates_cache[worker_id] = set(self.date_utils.parse_dates(mandatory_str))
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(f"Error parsing mandatory_days cache for {worker_id}: {e!s}")
                     self._mandatory_dates_cache[worker_id] = set()
             else:
                 self._mandatory_dates_cache[worker_id] = set()
@@ -292,7 +293,8 @@ class ScheduleBuilder:
         try:
             mandatory_dates = self.date_utils.parse_dates(mandatory_days_str)
             return date in mandatory_dates
-        except Exception:
+        except (TypeError, ValueError) as e:
+            logging.debug(f"Error parsing mandatory_days for {worker_id} in _is_mandatory: {e!s}")
             return False
 
     def _is_slot_protected_mandatory(self, date, post):
@@ -377,7 +379,10 @@ class ScheduleBuilder:
                     if _mand_str:
                         try:
                             _mand_set = set(self.date_utils.parse_dates(_mand_str))
-                        except Exception:
+                        except (TypeError, ValueError) as e:
+                            logging.debug(
+                                f"Error parsing mandatory_days for {worker_id} while protecting monthly target: {e!s}"
+                            )
                             pass
                     current_month_count = sum(
                         1
@@ -480,7 +485,8 @@ class ScheduleBuilder:
             try:
                 mandatory_dates_set = set(self.date_utils.parse_dates(mandatory_str))
                 mandatory_count = sum(1 for d in all_assignments if d in mandatory_dates_set)
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logging.debug(f"Error parsing mandatory_days for {worker_id} in tolerance check: {e!s}")
                 pass
 
         # Non-mandatory assignments only
@@ -538,7 +544,8 @@ class ScheduleBuilder:
                                 _max_end = max(_max_end, _end_day)
                         if _max_end > 0:
                             _last_avail_day = _max_end
-                    except Exception:
+                    except (TypeError, ValueError) as e:
+                        logging.debug(f"Error parsing work_periods for {worker_id} in pacing check: {e!s}")
                         pass
                 # Proportional max with zero tolerance: ceil(T * elapsed / last_avail)
                 _prop_max = math.ceil(expected_monthly * date.day / _last_avail_day)
@@ -633,7 +640,8 @@ class ScheduleBuilder:
                         mand_dates = self.date_utils.parse_dates(mandatory_str)
                         mand_in_period = sum(1 for d in mand_dates if self.start_date <= d <= self.end_date)
                         total_target_for_weekend += mand_in_period
-                    except Exception:
+                    except (TypeError, ValueError) as e:
+                        logging.debug(f"Error parsing mandatory_days for {worker_id} in weekend target fallback: {e!s}")
                         pass
 
             # Calculate weekend target based on TOTAL target (including mandatory)
@@ -1501,7 +1509,10 @@ class ScheduleBuilder:
                     all_mandatory = self.date_utils.parse_dates(worker_config["mandatory_days"])
                     mandatory_in_period = sum(1 for d in all_mandatory if self.start_date <= d <= self.end_date)
                     overall_target += mandatory_in_period
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(
+                        f"Error parsing mandatory_days for {worker_config.get('id', 'unknown')} in overall target fallback: {e!s}"
+                    )
                     pass
 
         if overall_target == 0:
@@ -1569,7 +1580,10 @@ class ScheduleBuilder:
             try:
                 mandatory_dates = self.date_utils.parse_dates(worker_config["mandatory_days"])
                 mandatory_this_month = sum(1 for d in mandatory_dates if d.year == year and d.month == month)
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logging.debug(
+                    f"Error parsing mandatory_days for {worker_config.get('id', 'unknown')} in monthly target logging: {e!s}"
+                )
                 pass
 
         # El objetivo mensual TOTAL incluye mandatory
@@ -1630,7 +1644,10 @@ class ScheduleBuilder:
         if worker_config and worker_config.get("mandatory_days"):
             try:
                 mandatory_dates = set(self.date_utils.parse_dates(worker_config["mandatory_days"]))
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logging.debug(
+                    f"Error parsing mandatory_days for {worker_id} in monthly target score: {e!s}"
+                )
                 pass
 
         all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
@@ -1788,7 +1805,8 @@ class ScheduleBuilder:
         if worker_config and worker_config.get("mandatory_days"):
             try:
                 mandatory_dates = set(self.date_utils.parse_dates(worker_config["mandatory_days"]))
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logging.debug(f"Error parsing mandatory_days for {worker_id} in overall target score: {e!s}")
                 pass
         mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
         current_total_shifts = total_shifts - mandatory_assigned  # Solo non-mandatory
@@ -1892,7 +1910,8 @@ class ScheduleBuilder:
         if mandatory_str:
             try:
                 mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logging.debug(f"Error parsing mandatory_days for {worker_id} in gap score: {e!s}")
                 pass
         mandatory_assigned = sum(1 for d in assignments if d in mandatory_dates)
         non_mandatory_assigned = current_assignments - mandatory_assigned
@@ -2044,7 +2063,8 @@ class ScheduleBuilder:
             if worker_data and worker_data.get("mandatory_days"):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker_data["mandatory_days"]))
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(f"Error parsing mandatory_days for {worker_id} in worker score: {e!s}")
                     pass
             mandatory_assigned = sum(1 for d in self.worker_assignments[worker_id] if d in mandatory_dates)
             non_mandatory_assigned = current_shifts - mandatory_assigned
@@ -2132,7 +2152,8 @@ class ScheduleBuilder:
         if worker_data and worker_data.get("mandatory_days"):
             try:
                 mandatory_dates = set(self.date_utils.parse_dates(worker_data["mandatory_days"]))
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logging.debug(f"Error parsing mandatory_days for {worker_id} in additional scoring: {e!s}")
                 pass
 
         mandatory_assigned = sum(1 for d in self.worker_assignments[worker_id] if d in mandatory_dates)
@@ -2219,7 +2240,8 @@ class ScheduleBuilder:
                             mand_dates = self.date_utils.parse_dates(worker_config["mandatory_days"])
                             mand_in_period = sum(1 for d in mand_dates if self.start_date <= d <= self.end_date)
                             total_target += mand_in_period
-                        except Exception:
+                        except (TypeError, ValueError) as e:
+                            logging.debug(f"Error parsing mandatory_days for {worker_id} in weekend scoring: {e!s}")
                             pass
 
                 if total_target > 0:
@@ -2386,7 +2408,10 @@ class ScheduleBuilder:
                             mand_dates = self.date_utils.parse_dates(worker_config["mandatory_days"])
                             mand_in_period = sum(1 for d in mand_dates if self.start_date <= d <= self.end_date)
                             total_target += mand_in_period
-                        except Exception:
+                        except (TypeError, ValueError) as e:
+                            logging.debug(
+                                f"Error parsing mandatory_days for {worker_id} in weekday weekend balance scoring: {e!s}"
+                            )
                             pass
 
                 if total_target > 0:
@@ -2511,7 +2536,8 @@ class ScheduleBuilder:
         if worker_data and worker_data.get("mandatory_days"):
             try:
                 mandatory_dates = set(self.date_utils.parse_dates(worker_data["mandatory_days"]))
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logging.debug(f"Error parsing mandatory_days for {worker_id} in progression score: {e!s}")
                 pass
 
         mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
@@ -2748,7 +2774,8 @@ class ScheduleBuilder:
             mandatory_str = worker.get("mandatory_days", "")
             try:
                 dates = self.date_utils.parse_dates(mandatory_str)
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logging.warning(f"Error parsing mandatory_days during verification for {worker_id}: {e!s}")
                 continue
 
             for date in dates:
@@ -3034,7 +3061,10 @@ class ScheduleBuilder:
                         if mandatory_str:
                             try:
                                 mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
-                            except Exception:
+                            except (TypeError, ValueError) as e:
+                                logging.debug(
+                                    f"Error parsing mandatory_days for {worker_id_val} in pass-1 candidate scoring: {e!s}"
+                                )
                                 pass
                         mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
                         non_mandatory_assigned = current_assignments - mandatory_assigned
@@ -3404,7 +3434,10 @@ class ScheduleBuilder:
                             try:
                                 _Y_mand_dates = set(self.date_utils.parse_dates(_Y_mand_str))
                                 _Y_mand_count = sum(1 for d in Y_asgn if d in _Y_mand_dates)
-                            except Exception:
+                            except (TypeError, ValueError) as e:
+                                logging.debug(
+                                    f"Error parsing mandatory_days for {worker_Y_id} in pass-3A deficit scoring: {e!s}"
+                                )
                                 pass
                         Y_non_mand = len(Y_asgn) - _Y_mand_count
                         Y_deficit = Y_data.get("target_shifts", Y_non_mand) - Y_non_mand
@@ -3547,7 +3580,10 @@ class ScheduleBuilder:
                                 try:
                                     _D_mand_dates = set(self.date_utils.parse_dates(_D_mand_str))
                                     _D_mand_count = sum(1 for d in D_asgn if d in _D_mand_dates)
-                                except Exception:
+                                except (TypeError, ValueError) as e:
+                                    logging.debug(
+                                        f"Error parsing mandatory_days for {worker_D_id} in pass-3B deficit scoring: {e!s}"
+                                    )
                                     pass
                             D_non_mand = len(D_asgn) - _D_mand_count
                             D_deficit = D_data.get("target_shifts", D_non_mand) - D_non_mand
@@ -3935,7 +3971,8 @@ class ScheduleBuilder:
                 if mandatory_str:
                     try:
                         mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
-                    except Exception:
+                    except (TypeError, ValueError) as e:
+                        logging.debug(f"Error parsing mandatory_days for {worker_X_id} in swap candidate scoring: {e!s}")
                         pass
                 mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
                 non_mandatory_assigned = current_assignments - mandatory_assigned
@@ -5010,7 +5047,8 @@ class ScheduleBuilder:
             if _mandatory_str:
                 try:
                     _mandatory_dates = set(self.date_utils.parse_dates(_mandatory_str))
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(f"Error parsing mandatory_days for {wid} in monthly rebalance: {e!s}")
                     pass
 
             month_counts = {}
@@ -7405,7 +7443,8 @@ class ScheduleBuilder:
             if mandatory_str:
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(f"Error parsing mandatory_days for {worker_id} in balance pass: {e!s}")
                     pass
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
             current = total - mandatory_assigned
@@ -7445,7 +7484,8 @@ class ScheduleBuilder:
             if worker_data and worker_data.get("mandatory_days"):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker_data["mandatory_days"]))
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(f"Error parsing mandatory_days for {over_id} when finding transferable dates: {e!s}")
                     pass
 
             transferable_dates = [d for d in self.worker_assignments.get(over_id, set()) if d not in mandatory_dates]
@@ -7552,7 +7592,8 @@ class ScheduleBuilder:
             if worker.get("mandatory_days"):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker["mandatory_days"]))
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(f"Error parsing mandatory_days for {worker_id} in balance summary: {e!s}")
                     pass
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
             current = len(all_assignments) - mandatory_assigned
@@ -7722,7 +7763,8 @@ class ScheduleBuilder:
             if worker.get("mandatory_days"):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker["mandatory_days"]))
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(f"Error parsing mandatory_days for {w_id} in intermediary selection: {e!s}")
                     pass
             non_mandatory = len(all_assignments) - sum(1 for d in all_assignments if d in mandatory_dates)
             deviation = non_mandatory - target
@@ -8033,7 +8075,8 @@ class ScheduleBuilder:
             if mandatory_str:
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(f"Error parsing mandatory_days for {worker_id} in redistribution scan: {e!s}")
                     pass
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
             current = total - mandatory_assigned  # Solo non-mandatory

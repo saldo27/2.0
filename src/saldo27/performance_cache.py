@@ -235,7 +235,8 @@ def get_cache() -> PerformanceCache:
         if _CACHE_SESSION_KEY not in st.session_state:
             st.session_state[_CACHE_SESSION_KEY] = PerformanceCache()
         return st.session_state[_CACHE_SESSION_KEY]  # type: ignore[no-any-return]
-    except Exception:
+    except (AttributeError, ImportError, KeyError, ModuleNotFoundError, RuntimeError) as exc:
+        logging.debug(f"Falling back to global PerformanceCache: {exc}")
         global _global_cache
         if _global_cache is None:
             _global_cache = PerformanceCache()
@@ -381,7 +382,8 @@ def get_performance_monitor() -> PerformanceMonitor:
         if _MONITOR_SESSION_KEY not in st.session_state:
             st.session_state[_MONITOR_SESSION_KEY] = PerformanceMonitor()
         return st.session_state[_MONITOR_SESSION_KEY]  # type: ignore[no-any-return]
-    except Exception:
+    except (AttributeError, ImportError, KeyError, ModuleNotFoundError, RuntimeError) as exc:
+        logging.debug(f"Falling back to global PerformanceMonitor: {exc}")
         global _global_monitor
         if _global_monitor is None:
             _global_monitor = PerformanceMonitor()

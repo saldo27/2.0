@@ -260,8 +260,8 @@ class StatisticsCalculator:
         if worker.get("mandatory_days") and hasattr(self.scheduler, "date_utils"):
             try:
                 mandatory_dates = set(self.scheduler.date_utils.parse_dates(worker["mandatory_days"]))
-            except Exception:
-                pass
+            except (TypeError, ValueError) as exc:
+                logging.debug(f"Could not parse mandatory_days for worker {worker_id}: {exc}")
         mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
         non_mandatory = len(all_assignments) - mandatory_assigned
 
@@ -470,8 +470,8 @@ class StatisticsCalculator:
             if worker.get("mandatory_days") and hasattr(self.scheduler, "date_utils"):
                 try:
                     mandatory_dates = set(self.scheduler.date_utils.parse_dates(worker["mandatory_days"]))
-                except Exception:
-                    pass
+                except (TypeError, ValueError) as exc:
+                    logging.debug(f"Could not parse mandatory_days for worker {worker_id}: {exc}")
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
             assignments = len(all_assignments) - mandatory_assigned
 

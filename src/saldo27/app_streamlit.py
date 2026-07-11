@@ -57,8 +57,8 @@ class SidebarLogHandler(logging.Handler):
                 self.messages.append(msg)
                 if len(self.messages) > self.max_messages:
                     self.messages = self.messages[-self.max_messages :]
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            self.handleError(record)
 
     def get_messages(self, last_n=15):
         with self._lock:
@@ -667,7 +667,8 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
                         final_score = _metrics.calculate_overall_schedule_score()
                     else:
                         final_score = _pm.iteration_data[-1].get("current_score", 0)
-                except Exception:
+                except (AttributeError, IndexError, TypeError, ValueError) as exc:
+                    logging.debug(f"No se pudo calcular el score final real; usando el score de iteración: {exc}")
                     final_score = _pm.iteration_data[-1].get("current_score", 0)
 
                 summary_lines.append("📊 Resumen de ejecución:")
@@ -709,8 +710,8 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
                             )
                     if n_violations > 5:
                         summary_lines.append(f"   ... y {n_violations - 5} más")
-            except Exception:
-                pass
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+                logging.debug(f"No se pudo generar el resumen de violaciones para el sidebar: {exc}")
 
             if summary_lines:
                 log_text = "\n".join(summary_lines)

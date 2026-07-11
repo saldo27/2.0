@@ -429,8 +429,8 @@ class ConstraintChecker:
                             1 for d in mand_dates if self.scheduler.start_date <= d <= self.scheduler.end_date
                         )
                         total_target_for_weekend += mand_in_period
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        logging.debug(f"Could not parse mandatory_days for weekend target fallback: {exc}")
 
             if total_target_for_weekend <= 0:
                 return False
