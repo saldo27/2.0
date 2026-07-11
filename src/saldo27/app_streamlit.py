@@ -93,13 +93,13 @@ import locale
 
 try:
     locale.setlocale(locale.LC_TIME, "es_ES.utf8")
-except:
+except locale.Error:
     try:
         locale.setlocale(locale.LC_TIME, "es_ES.UTF-8")
-    except:
+    except locale.Error:
         try:
             locale.setlocale(locale.LC_TIME, "es_ES")
-        except:
+        except locale.Error:
             pass  # Mantener locale por defecto si no está disponible
 
 
