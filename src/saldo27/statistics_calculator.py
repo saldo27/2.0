@@ -409,7 +409,7 @@ class StatisticsCalculator:
             weekend_shifts = sum(
                 1
                 for date in assignments
-                if (date.weekday() >= 4 or date in holidays_set or (date + timedelta(days=1)) in holidays_set)
+                if self.scheduler.date_utils.is_weekend_day(date, holidays_set)
             )
             weekday_shifts = total_shifts_count - weekend_shifts
 
@@ -703,7 +703,7 @@ class StatisticsCalculator:
                     day_type = " [HOLIDAY]"
                 elif (date + timedelta(days=1)) in self.scheduler.holidays:
                     day_type = " [PRE-HOLIDAY]"
-                elif date.weekday() >= 4:  # Friday, Saturday or Sunday
+                elif self.scheduler.date_utils.is_weekend_day(date, self.scheduler.holidays):
                     day_type = " [WEEKEND]"
 
                 report.append(f"  {date_str} ({day_name}){day_type}: {post}")

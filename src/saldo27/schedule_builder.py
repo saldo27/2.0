@@ -127,15 +127,12 @@ class ScheduleBuilder:
         current_date = self.start_date
         holiday_set = set(self.holidays)
         while current_date <= self.end_date:
+            is_special_day = self.date_utils.is_weekend_day(current_date, holiday_set)
             self._date_cache[current_date] = {
                 "weekday": current_date.weekday(),
-                "is_weekend": current_date.weekday() >= 4,
+                "is_weekend": is_special_day,
                 "is_holiday": current_date in holiday_set,
-                "is_special": (
-                    current_date.weekday() >= 4
-                    or current_date in holiday_set
-                    or (current_date + timedelta(days=1)) in holiday_set
-                ),
+                "is_special": is_special_day,
             }
             current_date += timedelta(days=1)
 
@@ -648,11 +645,7 @@ class ScheduleBuilder:
                 weekend_days_count = sum(
                     1
                     for i in range(total_days_in_period)
-                    if (
-                        (self.start_date + timedelta(days=i)).weekday() >= 4
-                        or (self.start_date + timedelta(days=i)) in holidays_set
-                        or (self.start_date + timedelta(days=i + 1)) in holidays_set
-                    )
+                    if self.date_utils.is_weekend_day(self.start_date + timedelta(days=i), holidays_set)
                 )
                 self._cached_weekend_ratio = (
                     weekend_days_count / total_days_in_period if total_days_in_period > 0 else 0
@@ -1238,11 +1231,7 @@ class ScheduleBuilder:
         2. Proportional weekend distribution (target_shifts * weekend_ratio ± tolerance)
         """
         # Check if date is a weekend/holiday
-        is_target_weekend = (
-            date.weekday() >= 4
-            or date in self.scheduler.holidays
-            or (date + timedelta(days=1)) in self.scheduler.holidays
-        )
+        is_target_weekend = self._is_weekend_day(date)
         if not is_target_weekend:
             return False
 
@@ -1257,11 +1246,7 @@ class ScheduleBuilder:
         # Get weekend assignments and add the current date
         weekend_dates = []
         for d_val in simulated_assignments.get(worker_id, set()):
-            if (
-                d_val.weekday() >= 4
-                or d_val in self.scheduler.holidays
-                or (d_val + timedelta(days=1)) in self.scheduler.holidays
-            ):
+            if self._is_weekend_day(d_val):
                 weekend_dates.append(d_val)
 
         # Add the date if it's not already in the list
@@ -1346,11 +1331,7 @@ class ScheduleBuilder:
         total_weekend_days = sum(
             1
             for i in range(total_schedule_days)
-            if (
-                (self.scheduler.start_date + timedelta(days=i)).weekday() >= 4
-                or (self.scheduler.start_date + timedelta(days=i)) in self.scheduler.holidays
-                or (self.scheduler.start_date + timedelta(days=i + 1)) in self.scheduler.holidays
-            )
+            if self._is_weekend_day(self.scheduler.start_date + timedelta(days=i))
         )
 
         if total_schedule_days == 0 or total_weekend_days == 0:
@@ -1402,11 +1383,7 @@ class ScheduleBuilder:
                 continue  # Don't count the target date
             if week_start <= d <= week_end:
                 # Check if this is a weekend/holiday/pre-holiday
-                if (
-                    d.weekday() >= 4
-                    or d in self.scheduler.holidays
-                    or (d + timedelta(days=1)) in self.scheduler.holidays
-                ):
+                if self._is_weekend_day(d):
                     return True
 
         return False
@@ -4409,7 +4386,7 @@ class ScheduleBuilder:
         num_shifts = scheduler.num_shifts
 
         def _is_wknd(d: datetime) -> bool:
-            return d.weekday() >= 4 or d in holidays or (d + timedelta(days=1)) in holidays
+            return self.date_utils.is_weekend_day(d, holidays)
 
         # ── Per-worker stats ──
         worker_stats: dict[str, dict] = {}
@@ -5663,11 +5640,7 @@ class ScheduleBuilder:
                 count = 0
                 for date_val in dates_in_month:
                     # MANUALLY EMBEDDED CHECK
-                    is_special_day = (
-                        date_val.weekday() >= 4  # Friday, Saturday, Sunday
-                        or date_val in self.holidays
-                        or (date_val + timedelta(days=1)) in self.holidays
-                    )
+                    is_special_day = self._is_weekend_day(date_val)
 
                     if date_val in self.scheduler.worker_assignments.get(worker_id_val, set()) and is_special_day:
                         count += 1
@@ -5685,7 +5658,7 @@ class ScheduleBuilder:
             total_special_days_in_month = sum(
                 1
                 for d in month_dates
-                if (d.weekday() >= 4 or d in self.holidays or (d + timedelta(days=1)) in self.holidays)
+                if self._is_weekend_day(d)
             )
             total_days_in_month = len(month_dates)
 
@@ -5736,11 +5709,7 @@ class ScheduleBuilder:
             special_days_this_month_list = []
             for date_val in month_dates_list:
                 # MANUALLY EMBEDDED CHECK
-                is_special_day = (
-                    date_val.weekday() >= 4
-                    or date_val in self.holidays
-                    or (date_val + timedelta(days=1)) in self.holidays
-                )
+                is_special_day = self._is_weekend_day(date_val)
                 if is_special_day:
                     special_days_this_month_list.append(date_val)
 
@@ -5898,7 +5867,7 @@ class ScheduleBuilder:
         # Add all Fridays, Saturdays, Sundays
         current = self.start_date
         while current <= self.end_date:
-            if current.weekday() >= 4:  # Friday, Saturday, Sunday
+            if self._is_weekend_day(current):
                 special_days.add(current)
             current += timedelta(days=1)
 
@@ -7260,7 +7229,7 @@ class ScheduleBuilder:
         holidays = self.holidays
 
         def is_special(d):
-            return d.weekday() >= 4 or d in holidays or (d + timedelta(days=1)) in holidays
+            return self.date_utils.is_weekend_day(d, holidays)
 
         # ── Compute per-worker weekend stats ──
         total_schedule_days = (self.end_date - self.start_date).days + 1
@@ -7964,11 +7933,7 @@ class ScheduleBuilder:
         Also checks the new constraint: maximum 1 weekend shift per calendar week.
         """
         # Check if this is a weekend/holiday
-        is_weekend = (
-            date.weekday() >= 4
-            or date in self.scheduler.holidays
-            or (date + timedelta(days=1)) in self.scheduler.holidays
-        )
+        is_weekend = self._is_weekend_day(date)
 
         if not is_weekend:
             return False  # Not a weekend, no balance concern
@@ -7986,12 +7951,12 @@ class ScheduleBuilder:
         receiver_weekends = sum(
             1
             for d in self.worker_assignments.get(receiver_worker_id, set())
-            if d.weekday() >= 4 or d in self.scheduler.holidays
+            if self._is_weekend_day(d)
         )
         giver_weekends = sum(
             1
             for d in self.worker_assignments.get(giver_worker_id, set())
-            if d.weekday() >= 4 or d in self.scheduler.holidays
+            if self._is_weekend_day(d)
         )
 
         # Get target weekends proportional to each worker's target_shifts
@@ -8006,11 +7971,7 @@ class ScheduleBuilder:
             weekend_days_count = sum(
                 1
                 for i in range(total_days_in_period)
-                if (
-                    (self.start_date + timedelta(days=i)).weekday() >= 4
-                    or (self.start_date + timedelta(days=i)) in holidays_set
-                    or (self.start_date + timedelta(days=i + 1)) in holidays_set
-                )
+                if self._is_weekend_day(self.start_date + timedelta(days=i))
             )
             self._cached_weekend_ratio = weekend_days_count / total_days_in_period if total_days_in_period > 0 else 0
 

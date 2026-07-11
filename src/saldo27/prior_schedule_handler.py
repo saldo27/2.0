@@ -21,13 +21,17 @@ The exported JSON format (produced by scheduler.export_schedule_json) is:
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
+
+from saldo27.utilities import DateTimeUtils
+
+_DATE_UTILS = DateTimeUtils()
 
 
 def _is_weekend_or_holiday(date: datetime, holidays: set[datetime]) -> bool:
     """Return True if date is Fri/Sat/Sun, a holiday, or the day before a holiday."""
-    return date.weekday() >= 4 or date in holidays or (date + timedelta(days=1)) in holidays
+    return _DATE_UTILS.is_weekend_day(date, holidays)
 
 
 def load_prior_schedule(

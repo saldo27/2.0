@@ -753,7 +753,7 @@ class DataManager:
             weekend_assignments = [
                 date
                 for date in assignments
-                if (date.weekday() >= 4 or date in self._holiday_set or (date + timedelta(days=1)) in self._holiday_set)
+                if self._is_weekend_day(date)
             ]
 
             if len(weekend_assignments) <= 3:

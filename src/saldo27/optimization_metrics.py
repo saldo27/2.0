@@ -173,11 +173,7 @@ class OptimizationMetrics:
                     1
                     for date in assignments
                     if hasattr(date, "weekday")
-                    and (
-                        date.weekday() >= 4  # Viernes, Sábado, Domingo
-                        or date in holidays  # Festivos
-                        or (date + timedelta(days=1)) in holidays  # Prefestivos
-                    )
+                    and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
 
             total_all = sum(worker_total_raw.values())
@@ -419,11 +415,7 @@ class OptimizationMetrics:
                     1
                     for date in assignments
                     if hasattr(date, "weekday")
-                    and (
-                        date.weekday() >= 4  # Viernes, Sábado, Domingo
-                        or date in holidays  # Festivos
-                        or (date + timedelta(days=1)) in holidays  # Prefestivos
-                    )
+                    and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
 
                 if target_shifts > 0:

@@ -16,10 +16,45 @@ está en schedule_builder._would_violate_tolerance()
 
 import logging
 from datetime import datetime
+from typing import Any
 
 
 class BalanceValidator:
     """Validador estricto de balance de turnos con sistema de fases"""
+
+    @staticmethod
+    def compute_non_mandatory_assigned(
+        worker: dict[str, Any],
+        assignments: set,
+        date_utils: Any = None,
+    ) -> tuple[int, int]:
+        """Calcula turnos mandatory/non-mandatory asignados a un trabajador.
+
+        ``target_shifts`` ya tiene los turnos mandatory restados, así que hay
+        que comparar siempre con el número de asignaciones non-mandatory.
+        Este cálculo estaba duplicado en ``AdvancedDistributionEngine`` y
+        ``StrictBalanceOptimizer``; ahora ambos delegan aquí.
+
+        Args:
+            worker: Diccionario de datos del worker (debe incluir "mandatory_days").
+            assignments: Conjunto de fechas asignadas al worker.
+            date_utils: Instancia con ``parse_dates()`` para interpretar "mandatory_days".
+
+        Returns:
+            tuple[int, int]: (mandatory_assigned, non_mandatory_assigned)
+        """
+        total_assigned = len(assignments)
+        mandatory_dates: set = set()
+        mandatory_str = worker.get("mandatory_days", "")
+        if mandatory_str and date_utils is not None and hasattr(date_utils, "parse_dates"):
+            try:
+                mandatory_dates = set(date_utils.parse_dates(mandatory_str))
+            except (ValueError, TypeError) as e:
+                logging.debug(f"Could not parse mandatory_days '{mandatory_str}' for worker {worker.get('id')}: {e}")
+
+        mandatory_assigned = sum(1 for d in assignments if d in mandatory_dates)
+        non_mandatory_assigned = total_assigned - mandatory_assigned
+        return mandatory_assigned, non_mandatory_assigned
 
     def __init__(self, tolerance_percentage: float = 10.0):
         """
@@ -183,7 +218,7 @@ class BalanceValidator:
                 if not is_mandatory:
                     for worker in assignments:
                         # Comparar con diferentes formatos de ID
-                        if worker == worker_id or str(worker) == str(worker_id):
+                        if str(worker) == str(worker_id):
                             count += 1
 
         return count
@@ -209,7 +244,7 @@ class BalanceValidator:
                 pass
             if is_mandatory:
                 for worker in assignments:
-                    if worker == worker_id or str(worker) == str(worker_id):
+                    if str(worker) == str(worker_id):
                         count += 1
         return count
 

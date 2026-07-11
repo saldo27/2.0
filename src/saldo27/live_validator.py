@@ -488,11 +488,7 @@ class LiveValidator:
     def _check_weekend_limits(self, worker_id: str, shift_date: datetime) -> ValidationResult:
         """Check weekend/holiday shift limits for existing assignments"""
         # Check if this is a weekend/holiday day using the same logic as constraint checker
-        is_weekend_or_holiday = (
-            shift_date.weekday() >= 4  # Friday, Saturday, Sunday
-            or shift_date in self.scheduler.holidays
-            or (shift_date + timedelta(days=1)) in self.scheduler.holidays  # Day before holiday
-        )
+        is_weekend_or_holiday = self.scheduler.date_utils.is_weekend_day(shift_date, self.scheduler.holidays)
 
         if not is_weekend_or_holiday:
             return ValidationResult(

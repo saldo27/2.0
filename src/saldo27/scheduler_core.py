@@ -1887,7 +1887,7 @@ class SchedulerCore:
             for dk in schedule:
                 try:
                     d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                    if d.weekday() >= 4 or d in holidays or (d + timedelta(days=1)) in holidays:
+                    if self.scheduler.date_utils.is_weekend_day(d, holidays):
                         weekend_dates.add(dk)
                     else:
                         weekday_dates.add(dk)
@@ -2013,7 +2013,7 @@ class SchedulerCore:
         for dk in optimized:
             try:
                 d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                if d.weekday() >= 4 or d in holidays or (d + timedelta(days=1)) in holidays:
+                if self.scheduler.date_utils.is_weekend_day(d, holidays):
                     weekend_dates.add(dk)
                 else:
                     weekday_dates.add(dk)

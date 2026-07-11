@@ -10,7 +10,7 @@ from reportlab.lib.units import cm, inch  # Use cm for better control maybe
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from saldo27.performance_cache import monitor_performance, time_function
-from saldo27.utilities import numeric_sort_key
+from saldo27.utilities import DateTimeUtils, numeric_sort_key
 
 
 class PDFExporter:
@@ -26,6 +26,7 @@ class PDFExporter:
         # Performance optimization: Pre-compute frequently used data
         self.holidays_set = set(self.holidays)  # O(1) lookup
         self.workers_dict = {worker.get("id"): worker for worker in self.workers_data}  # O(1) lookup
+        self.date_utils = DateTimeUtils()
 
     @time_function
     @monitor_performance("export_summary_pdf")
@@ -403,11 +404,7 @@ class PDFExporter:
             weekend_shifts = sum(
                 1
                 for date in assignments
-                if (
-                    date.weekday() >= 4  # Fri, Sat, Sun
-                    or date in self.holidays_set  # Holiday
-                    or (date + timedelta(days=1)) in self.holidays_set
-                )
+                if self.date_utils.is_weekend_day(date, self.holidays_set)
             )  # Pre-holiday
             holiday_shifts = sum(1 for date in assignments if date in self.holidays_set)
 

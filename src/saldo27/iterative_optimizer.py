@@ -1467,11 +1467,7 @@ class IterativeOptimizer:
             holidays_set = (
                 set(getattr(self.scheduler, "holidays", [])) if hasattr(self, "scheduler") and self.scheduler else set()
             )
-            is_weekend = (
-                shift_date.weekday() >= 4  # Fri/Sat/Sun
-                or shift_date in holidays_set  # Holiday
-                or (shift_date + timedelta(days=1)) in holidays_set
-            )  # Day before holiday
+            is_weekend = self.scheduler.date_utils.is_weekend_day(shift_date, holidays_set)
 
             if is_weekend and hasattr(self, "scheduler") and self.scheduler:
                 max_consecutive_weekends = getattr(self.scheduler, "max_consecutive_weekends", 3)
@@ -1484,7 +1480,7 @@ class IterativeOptimizer:
                     [
                         d
                         for d in worker_assignments
-                        if (d.weekday() >= 4 or d in holidays_set or (d + timedelta(days=1)) in holidays_set)
+                        if self.scheduler.date_utils.is_weekend_day(d, holidays_set)
                     ]
                 )
 
@@ -1541,10 +1537,8 @@ class IterativeOptimizer:
                 total_weekend_days = sum(
                     1
                     for i in range(total_schedule_days)
-                    if (
-                        (self.scheduler.start_date + timedelta(days=i)).weekday() >= 4
-                        or (self.scheduler.start_date + timedelta(days=i)) in holidays_set
-                        or (self.scheduler.start_date + timedelta(days=i + 1)) in holidays_set
+                    if self.scheduler.date_utils.is_weekend_day(
+                        self.scheduler.start_date + timedelta(days=i), holidays_set
                     )
                 )
 
@@ -1821,11 +1815,7 @@ class IterativeOptimizer:
                     date_obj = datetime.strptime(date_key, "%Y-%m-%d")
                     date_str = date_key
 
-                if (
-                    date_obj.weekday() >= 4  # Fri/Sat/Sun
-                    or date_obj in _holidays_rw  # holiday
-                    or (date_obj + timedelta(days=1)) in _holidays_rw
-                ):  # puente
+                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays_rw):
                     weekend_dates.append(date_key)  # Use original key format
             except (ValueError, AttributeError):
                 continue  # Skip invalid date format
@@ -2007,7 +1997,7 @@ class IterativeOptimizer:
             for dk in optimized_schedule:
                 try:
                     d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                    if d.weekday() >= 4 or d in _holidays_rw or (d + timedelta(days=1)) in _holidays_rw:
+                    if self.scheduler.date_utils.is_weekend_day(d, _holidays_rw):
                         weekend_date_set.add(dk)
                     else:
                         weekday_date_set.add(dk)
@@ -2155,7 +2145,7 @@ class IterativeOptimizer:
             for dk in optimized_schedule:
                 try:
                     d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                    if d.weekday() >= 4 or d in _holidays_rw or (d + timedelta(days=1)) in _holidays_rw:
+                    if self.scheduler.date_utils.is_weekend_day(d, _holidays_rw):
                         ep_weekend_set.add(dk)
                 except (ValueError, AttributeError):
                     continue
@@ -2361,11 +2351,7 @@ class IterativeOptimizer:
                 else:
                     date_obj = datetime.strptime(date_key, "%Y-%m-%d")
 
-                if (
-                    date_obj.weekday() >= 4  # Fri/Sat/Sun
-                    or date_obj in _holidays_ws  # holiday
-                    or (date_obj + timedelta(days=1)) in _holidays_ws
-                ):  # puente
+                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays_ws):
                     weekend_dates.append(date_key)
             except (ValueError, AttributeError):
                 continue  # Skip invalid date format
@@ -2565,7 +2551,7 @@ class IterativeOptimizer:
         for date_key in optimized_schedule:
             try:
                 date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
-                if date_obj.weekday() >= 4 or date_obj in _holidays or (date_obj + timedelta(days=1)) in _holidays:
+                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays):
                     weekend_date_set.add(date_key)
                 else:
                     weekday_date_set.add(date_key)
@@ -2754,7 +2740,7 @@ class IterativeOptimizer:
         for date_key in optimized_schedule:
             try:
                 date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
-                if date_obj.weekday() >= 4 or date_obj in _holidays or (date_obj + timedelta(days=1)) in _holidays:
+                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays):
                     weekend_dates.append(date_key)
             except (ValueError, AttributeError):
                 continue
@@ -2916,7 +2902,7 @@ class IterativeOptimizer:
         for dk in optimized_schedule:
             try:
                 dobj = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                if dobj.weekday() >= 4 or dobj in _holidays or (dobj + timedelta(days=1)) in _holidays:
+                if self.scheduler.date_utils.is_weekend_day(dobj, _holidays):
                     weekend_date_set.add(dk)
             except Exception:
                 continue
@@ -3188,7 +3174,7 @@ class IterativeOptimizer:
             for dk in optimized_schedule:
                 try:
                     dobj = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                    if dobj.weekday() >= 4 or dobj in _sa_holidays or (dobj + timedelta(days=1)) in _sa_holidays:
+                    if self.scheduler.date_utils.is_weekend_day(dobj, _sa_holidays):
                         _sa_weekend_dates.append(dk)
                     else:
                         _sa_weekday_dates.append(dk)

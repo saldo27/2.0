@@ -68,6 +68,23 @@ class Scheduler:
     # Init sub-phases (called only from __init__)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_worker_ids(workers_data: list[dict[str, Any]]) -> None:
+        """Normalize worker IDs to ``str`` at the single data-ingestion point.
+
+        Worker IDs may arrive as ``int`` or ``str`` depending on the source
+        (UI forms, JSON imports, etc.). Normalizing them here — once, at
+        ingestion — avoids the need for defensive ``worker == worker_id or
+        str(worker) == str(worker_id)`` comparisons scattered across the
+        codebase.
+        """
+        for worker in workers_data:
+            if "id" in worker and worker["id"] is not None:
+                worker["id"] = str(worker["id"])
+            incompatible_with = worker.get("incompatible_with")
+            if incompatible_with:
+                worker["incompatible_with"] = [str(w_id) for w_id in incompatible_with]
+
     def _init_config(self, config: dict[str, Any]) -> None:
         """Phase 1: Extract configuration into instance attributes."""
         self.config = config
@@ -76,6 +93,7 @@ class Scheduler:
         self.num_shifts = config["num_shifts"]
         self.variable_shifts = config.get("variable_shifts", [])
         self.workers_data = config["workers_data"]
+        self._normalize_worker_ids(self.workers_data)
         self.holidays = config.get("holidays", [])
         self.enable_proportional_weekends = config.get("enable_proportional_weekends", True)
         self.weekend_tolerance = config.get("weekend_tolerance", 1)
@@ -960,9 +978,7 @@ class Scheduler:
                     )
 
                 # Update weekend tracking
-                is_special_day = (
-                    date.weekday() >= 4 or date in self.holidays or (date + timedelta(days=1)) in self.holidays
-                )
+                is_special_day = self.date_utils.is_weekend_day(date, self.holidays)
 
                 if is_special_day:
                     current_weekends = self.worker_weekends.get(worker_id)  # Use .get for safety
@@ -1002,9 +1018,7 @@ class Scheduler:
                 weekday = date.weekday()
                 self.worker_weekdays[worker_id][weekday] = self.worker_weekdays[worker_id].get(weekday, 0) + 1
 
-                is_special_day = (
-                    date.weekday() >= 4 or date in self.holidays or (date + timedelta(days=1)) in self.holidays
-                )
+                is_special_day = self.date_utils.is_weekend_day(date, self.holidays)
 
                 if is_special_day:
                     current_weekends = self.worker_weekends.setdefault(worker_id, [])  # Ensures list exists
@@ -2696,7 +2710,7 @@ class Scheduler:
                 for worker in self.workers_data:
                     worker_id = worker["id"]
                     shift_count = len(self.worker_assignments.get(worker_id, []))
-                    weekend_count = len([d for d in self.worker_assignments.get(worker_id, []) if d.weekday() >= 4])
+                    weekend_count = len([d for d in self.worker_assignments.get(worker_id, []) if self.date_utils.is_weekend_day(d, self.holidays)])
                     f.write(f"{worker['name']} ({worker_id}): {shift_count} turnos, {weekend_count} fines de semana\n")
 
         logging.info(f"Schedule exported to {filename}")
