@@ -192,7 +192,12 @@ class ScheduleBuilder:
 
     def _verify_assignment_consistency(self) -> None:
         """
-        Optimized verification and fixing of data consistency between schedule and tracking data
+        Optimized verification and fixing of data consistency between schedule and tracking data.
+
+        This is the canonical implementation while a ScheduleBuilder is active during
+        generation: unlike DataManager._verify_assignment_consistency (used before/after
+        generation), it protects mandatory assignments from being removed. DataManager
+        delegates here whenever a ScheduleBuilder is present.
         """
         inconsistencies_fixed = 0
 
@@ -9101,8 +9106,7 @@ class ScheduleBuilder:
         }
 
     def calculate_score(self, schedule_to_score=None, assignments_to_score=None):
-        """Calculate score for the current or provided schedule"""
-        # Use scheduler's score calculation for consistency
+        """Delegate to the canonical Scheduler.calculate_score implementation."""
         try:
             return self.scheduler.calculate_score(
                 schedule_to_score or self.schedule, assignments_to_score or self.worker_assignments

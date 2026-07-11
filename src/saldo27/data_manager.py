@@ -268,34 +268,13 @@ class DataManager:
 
     def _ensure_data_integrity(self):
         """
-        Ensure all data structures are consistent before schedule operations
+        Ensure all data structures are consistent before schedule operations.
+
+        Delegates to the canonical implementation in Scheduler, which correctly
+        pads each schedule entry with `[None] * expected_shifts` instead of an
+        empty list, so post-index lookups stay valid.
         """
-        # Ensure all workers have proper data structures
-        for worker in self.workers_data:
-            worker_id = worker["id"]
-
-            # Ensure worker assignments tracking
-            if worker_id not in self.worker_assignments:
-                self.worker_assignments[worker_id] = set()
-
-            # Ensure worker posts tracking
-            if worker_id not in self.worker_posts:
-                self.worker_posts[worker_id] = set()
-
-            # Ensure weekday tracking
-            if worker_id not in self.worker_weekdays:
-                self.worker_weekdays[worker_id] = {i: 0 for i in range(7)}
-
-            # Ensure weekend tracking
-            if worker_id not in self.worker_weekends:
-                self.worker_weekends[worker_id] = []
-
-        # Ensure schedule dictionary is initialized
-        for current_date in self._get_date_range(self.scheduler.start_date, self.scheduler.end_date):
-            if current_date not in self.schedule:
-                self.schedule[current_date] = []
-
-        return True
+        return self.scheduler._ensure_data_integrity()
 
     def _get_date_range(self, start_date, end_date):
         """Delegate to DateTimeUtils.get_date_range (canonical implementation)."""
@@ -308,8 +287,16 @@ class DataManager:
     def _verify_assignment_consistency(self):
         """
         Verify that worker_assignments and schedule are consistent with each other
-        and fix any inconsistencies found
+        and fix any inconsistencies found.
+
+        When a ScheduleBuilder is active (i.e. during schedule generation), delegate
+        to its implementation, which additionally protects mandatory assignments from
+        being removed. Otherwise (e.g. right after loading data, before generation
+        starts) fall back to this generic reconciliation.
         """
+        schedule_builder = getattr(self.scheduler, "schedule_builder", None)
+        if schedule_builder is not None:
+            return schedule_builder._verify_assignment_consistency()
 
         # Ensure data consistency before proceeding
         self._ensure_data_integrity()

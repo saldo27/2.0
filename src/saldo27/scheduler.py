@@ -2067,11 +2067,14 @@ class Scheduler:
     def calculate_score(self, schedule_to_score=None, assignments_to_score=None):
         """
         Calculate the score of the given schedule.
-        This is a placeholder and should be implemented with actual scoring logic.
+
+        This is the canonical scoring implementation, used directly by
+        SchedulerCore and indirectly by ScheduleBuilder.calculate_score(),
+        which delegates here for consistency. Currently scores based on the
+        percentage of filled shifts; constraint-violation penalties are not
+        yet applied (see commented-out example below).
         """
-        logging.debug("Scheduler.calculate_score called (placeholder)")
-        # Placeholder scoring logic:
-        # For example, count filled shifts, penalize constraint violations, etc.
+        logging.debug("Scheduler.calculate_score called")
         score = 0
 
         current_schedule = schedule_to_score if schedule_to_score is not None else self.schedule
