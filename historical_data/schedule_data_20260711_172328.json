@@ -1,0 +1,1689 @@
+{
+  "timestamp": "2026-07-11T17:23:28.546043",
+  "schedule_period": {
+    "start_date": "2026-07-01T00:00:00",
+    "end_date": "2026-07-31T00:00:00",
+    "total_days": 31
+  },
+  "shift_metrics": {
+    "daily_fill_rates": {
+      "2026-07-01": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-02": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-03": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-04": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-05": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-06": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-07": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-08": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-09": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-10": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-11": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-12": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-13": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-14": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-15": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-16": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-17": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-18": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-19": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-20": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-21": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-22": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-23": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-24": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-25": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-26": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      "2026-07-27": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-28": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-29": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-30": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      "2026-07-31": {
+        "fill_rate": 0.0,
+        "filled_slots": 0,
+        "total_slots": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      }
+    },
+    "average_fill_rate": 0.0,
+    "peak_demand_days": [],
+    "low_demand_days": [
+      "2026-07-01",
+      "2026-07-02",
+      "2026-07-03",
+      "2026-07-04",
+      "2026-07-05",
+      "2026-07-06",
+      "2026-07-07",
+      "2026-07-08",
+      "2026-07-09",
+      "2026-07-10",
+      "2026-07-11",
+      "2026-07-12",
+      "2026-07-13",
+      "2026-07-14",
+      "2026-07-15",
+      "2026-07-16",
+      "2026-07-17",
+      "2026-07-18",
+      "2026-07-19",
+      "2026-07-20",
+      "2026-07-21",
+      "2026-07-22",
+      "2026-07-23",
+      "2026-07-24",
+      "2026-07-25",
+      "2026-07-26",
+      "2026-07-27",
+      "2026-07-28",
+      "2026-07-29",
+      "2026-07-30",
+      "2026-07-31"
+    ]
+  },
+  "worker_metrics": {
+    "availability_patterns": {
+      "JULIA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "KIKO": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "MARINA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "ROBERTO": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "BEA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "VALLE": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "AGUEDA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "ANGEL": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "MARIA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "ELENA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "RICARDO": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "LUIS H": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "SALVA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "MONICA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "M.JOSE": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "M.CARMEN": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "PABLO": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "PAULA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "MANUEL": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "CAROL": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "SARA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "MAR": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "SANTI": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "LUIS R": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "LAURA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "CHEMA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "DAVID": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "LOLA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "JOSE": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "ANGELA": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "GABI": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      },
+      "GABRIEL": {
+        "availability_rate": 0.0,
+        "weekend_preference": 0,
+        "shift_consistency": 0.0,
+        "post_rotation_balance": 1.0
+      }
+    },
+    "workload_distribution": {
+      "JULIA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "KIKO": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "MARINA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "ROBERTO": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "BEA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "VALLE": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "AGUEDA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "ANGEL": {
+        "total_shifts": 0,
+        "target_shifts": 3,
+        "shift_ratio": 0.0,
+        "monthly_variance": 0.0
+      },
+      "MARIA": {
+        "total_shifts": 0,
+        "target_shifts": 3,
+        "shift_ratio": 0.0,
+        "monthly_variance": 0.0
+      },
+      "ELENA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "RICARDO": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "LUIS H": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "SALVA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "MONICA": {
+        "total_shifts": 0,
+        "target_shifts": 2,
+        "shift_ratio": 0.0,
+        "monthly_variance": 0.0
+      },
+      "M.JOSE": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "M.CARMEN": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "PABLO": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "PAULA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "MANUEL": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "CAROL": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "SARA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "MAR": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "SANTI": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "LUIS R": {
+        "total_shifts": 0,
+        "target_shifts": 3,
+        "shift_ratio": 0.0,
+        "monthly_variance": 0.0
+      },
+      "LAURA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "CHEMA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "DAVID": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "LOLA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "JOSE": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "ANGELA": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      },
+      "GABI": {
+        "total_shifts": 0,
+        "target_shifts": 5,
+        "shift_ratio": 0.0,
+        "monthly_variance": 0.0
+      },
+      "GABRIEL": {
+        "total_shifts": 0,
+        "target_shifts": 0,
+        "shift_ratio": 0,
+        "monthly_variance": 0.0
+      }
+    },
+    "performance_indicators": {}
+  },
+  "coverage_metrics": {
+    "overall_coverage": 0.0,
+    "post_coverage": {
+      "1": 0.0,
+      "2": 0.0,
+      "3": 0.0
+    },
+    "time_gaps": [
+      {
+        "date": "2026-07-01",
+        "post": 1,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-01",
+        "post": 2,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-01",
+        "post": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-02",
+        "post": 1,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-02",
+        "post": 2,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-02",
+        "post": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-03",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-03",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-03",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-04",
+        "post": 1,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-04",
+        "post": 2,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-04",
+        "post": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-05",
+        "post": 1,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-05",
+        "post": 2,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-05",
+        "post": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-06",
+        "post": 1,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-06",
+        "post": 2,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-06",
+        "post": 3,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-07",
+        "post": 1,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-07",
+        "post": 2,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-07",
+        "post": 3,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-08",
+        "post": 1,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-08",
+        "post": 2,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-08",
+        "post": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-09",
+        "post": 1,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-09",
+        "post": 2,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-09",
+        "post": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-10",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-10",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-10",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-11",
+        "post": 1,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-11",
+        "post": 2,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-11",
+        "post": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-12",
+        "post": 1,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-12",
+        "post": 2,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-12",
+        "post": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-13",
+        "post": 1,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-13",
+        "post": 2,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-13",
+        "post": 3,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-14",
+        "post": 1,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-14",
+        "post": 2,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-14",
+        "post": 3,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-15",
+        "post": 1,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-15",
+        "post": 2,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-15",
+        "post": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-16",
+        "post": 1,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-16",
+        "post": 2,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-16",
+        "post": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-17",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-17",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-17",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-18",
+        "post": 1,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-18",
+        "post": 2,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-18",
+        "post": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-19",
+        "post": 1,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-19",
+        "post": 2,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-19",
+        "post": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-20",
+        "post": 1,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-20",
+        "post": 2,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-20",
+        "post": 3,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-21",
+        "post": 1,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-21",
+        "post": 2,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-21",
+        "post": 3,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-22",
+        "post": 1,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-22",
+        "post": 2,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-22",
+        "post": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-23",
+        "post": 1,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-23",
+        "post": 2,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-23",
+        "post": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-24",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-24",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-24",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-25",
+        "post": 1,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-25",
+        "post": 2,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-25",
+        "post": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-26",
+        "post": 1,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-26",
+        "post": 2,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-26",
+        "post": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-27",
+        "post": 1,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-27",
+        "post": 2,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-27",
+        "post": 3,
+        "weekday": "Monday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-28",
+        "post": 1,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-28",
+        "post": 2,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-28",
+        "post": 3,
+        "weekday": "Tuesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-29",
+        "post": 1,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-29",
+        "post": 2,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-29",
+        "post": 3,
+        "weekday": "Wednesday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-30",
+        "post": 1,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-30",
+        "post": 2,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-30",
+        "post": 3,
+        "weekday": "Thursday",
+        "is_weekend": false,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-31",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-31",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-31",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      }
+    ],
+    "critical_gaps": [
+      {
+        "date": "2026-07-03",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-03",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-03",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-04",
+        "post": 1,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-04",
+        "post": 2,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-04",
+        "post": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-05",
+        "post": 1,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-05",
+        "post": 2,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-05",
+        "post": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-10",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-10",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-10",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-11",
+        "post": 1,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-11",
+        "post": 2,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-11",
+        "post": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-12",
+        "post": 1,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-12",
+        "post": 2,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-12",
+        "post": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-17",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-17",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-17",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-18",
+        "post": 1,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-18",
+        "post": 2,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-18",
+        "post": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-19",
+        "post": 1,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-19",
+        "post": 2,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-19",
+        "post": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-24",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-24",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-24",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-25",
+        "post": 1,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-25",
+        "post": 2,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-25",
+        "post": 3,
+        "weekday": "Saturday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-26",
+        "post": 1,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-26",
+        "post": 2,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-26",
+        "post": 3,
+        "weekday": "Sunday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-31",
+        "post": 1,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-31",
+        "post": 2,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      },
+      {
+        "date": "2026-07-31",
+        "post": 3,
+        "weekday": "Friday",
+        "is_weekend": true,
+        "is_holiday": false
+      }
+    ]
+  },
+  "constraint_metrics": {
+    "total_violations": 0,
+    "violation_types": {
+      "gap": 0,
+      "incompatibility": 0,
+      "reduced_gap": 0
+    },
+    "worker_violations": {
+      "JULIA": 0,
+      "KIKO": 0,
+      "MARINA": 0,
+      "ROBERTO": 0,
+      "BEA": 0,
+      "VALLE": 0,
+      "AGUEDA": 0,
+      "ANGEL": 0,
+      "MARIA": 0,
+      "ELENA": 0,
+      "RICARDO": 0,
+      "LUIS H": 0,
+      "SALVA": 0,
+      "MONICA": 0,
+      "M.JOSE": 0,
+      "M.CARMEN": 0,
+      "PABLO": 0,
+      "PAULA": 0,
+      "MANUEL": 0,
+      "CAROL": 0,
+      "SARA": 0,
+      "MAR": 0,
+      "SANTI": 0,
+      "LUIS R": 0,
+      "LAURA": 0,
+      "CHEMA": 0,
+      "DAVID": 0,
+      "LOLA": 0,
+      "JOSE": 0,
+      "ANGELA": 0,
+      "GABI": 0,
+      "GABRIEL": 0
+    },
+    "temporal_patterns": {}
+  },
+  "seasonal_indicators": {
+    "monthly_patterns": {
+      "2026-07": {
+        "filled": 0,
+        "total": 93
+      }
+    },
+    "weekday_patterns": {
+      "0": 0,
+      "1": 0,
+      "2": 0,
+      "3": 0,
+      "4": 0,
+      "5": 0,
+      "6": 0
+    },
+    "holiday_impact": {
+      "fill_rate": 0,
+      "total_holiday_shifts": 0,
+      "total_holiday_slots": 0
+    },
+    "seasonal_trends": []
+  },
+  "efficiency_score": 0.8
+}
