@@ -536,10 +536,7 @@ class DataManager:
         """
         self.scheduler._calculate_monthly_targets()
         # Mirror results into self.monthly_targets for any internal callers
-        self.monthly_targets = {
-            worker["id"]: worker.get("monthly_targets", {})
-            for worker in self.workers_data
-        }
+        self.monthly_targets = {worker["id"]: worker.get("monthly_targets", {}) for worker in self.workers_data}
 
     def get_worker_schedule(self, worker_id):
         """
