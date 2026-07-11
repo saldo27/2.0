@@ -24,7 +24,7 @@ class LicenseManager:
         # Limitaciones DEMO
         self.DEMO_MAX_USES = 10  # Máximo 10 generaciones de horarios
         self.DEMO_MAX_WORKERS = 15  # Máximo 15 trabajadores
-        self.DEMO_MAX_DAYS = 62  # Máximo 31 días de horario
+        self.DEMO_MAX_DAYS = 62  # Máximo 62 días de horario
         self.DEMO_WATERMARK = True  # Marca de agua en PDFs
 
         # Usage counting is backed by a shared file (intentional: the DEMO limit

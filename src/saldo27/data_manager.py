@@ -294,10 +294,11 @@ class DataManager:
         being removed. Otherwise (e.g. right after loading data, before generation
         starts) fall back to this generic reconciliation.
         """
-        # scheduler.schedule_builder is always initialized to None in
-        # Scheduler._init_tracking_state and set by SchedulerCore once
-        # generation starts. Use getattr defensively in case that invariant
-        # ever changes.
+        # scheduler.schedule_builder is expected to be initialized to None in
+        # Scheduler._init_tracking_state and set by SchedulerCore once generation
+        # starts. Use getattr (rather than direct attribute access) defensively,
+        # since self.scheduler may be a lightweight/mock object (e.g. in tests)
+        # that doesn't define the attribute at all.
         schedule_builder = getattr(self.scheduler, "schedule_builder", None)
         if schedule_builder is not None:
             # Cross-collaborator call to a "private" method is an established
