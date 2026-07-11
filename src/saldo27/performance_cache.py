@@ -70,7 +70,7 @@ class PerformanceCache:
             fallback_key = f"{func_name}_{id(args)}_{id(kwargs)}"
             return hashlib.sha256(fallback_key.encode()).hexdigest()
 
-    def _make_hashable(self, obj):
+    def _make_hashable(self, obj: Any) -> Any:
         """Convert objects to hashable representations"""
         if isinstance(obj, dict):
             return tuple(sorted((k, self._make_hashable(v)) for k, v in obj.items()))
@@ -278,7 +278,7 @@ def time_function(func: Callable[..., Any]) -> Callable[..., Any]:
     """
 
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         start_time = time.time()
         try:
             result = func(*args, **kwargs)
@@ -364,14 +364,14 @@ def get_performance_monitor() -> PerformanceMonitor:
     return _global_monitor
 
 
-def monitor_performance(metric_name: str):
+def monitor_performance(metric_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to monitor function performance"""
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         monitor = get_performance_monitor()
 
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             start_time = time.time()
             try:
                 result = func(*args, **kwargs)
