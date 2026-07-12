@@ -4371,16 +4371,17 @@ class IterativeOptimizer:
             stats[worker_name] = {"total_shifts": 0, "weekend_shifts": 0}
 
         # Count assignments
+        holidays_set = set(getattr(self.scheduler, "holidays", None) or [])
         for date, assignments in schedule.items():
             is_weekend = False
             try:
                 if hasattr(date, "weekday"):
-                    is_weekend = date.weekday() in [5, 6]
+                    is_weekend = self.scheduler.date_utils.is_weekend_day(date, holidays_set)
                 elif isinstance(date, str):
                     from datetime import datetime
 
                     date_obj = datetime.strptime(date, "%Y-%m-%d")
-                    is_weekend = date_obj.weekday() in [5, 6]
+                    is_weekend = self.scheduler.date_utils.is_weekend_day(date_obj, holidays_set)
             except ValueError:
                 pass  # Skip invalid date format
 
