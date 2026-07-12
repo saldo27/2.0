@@ -531,10 +531,7 @@ class DataManager:
         """
         self.scheduler._calculate_monthly_targets()
         # Mirror results into self.monthly_targets for any internal callers
-        self.monthly_targets = {
-            worker["id"]: worker.get("monthly_targets", {})
-            for worker in self.workers_data
-        }
+        self.monthly_targets = {worker["id"]: worker.get("monthly_targets", {}) for worker in self.workers_data}
 
     def get_worker_schedule(self, worker_id):
         """
@@ -750,11 +747,7 @@ class DataManager:
                 return
 
             # Pre-calculate weekend/holiday status for all assignments
-            weekend_assignments = [
-                date
-                for date in assignments
-                if self._is_weekend_day(date)
-            ]
+            weekend_assignments = [date for date in assignments if self._is_weekend_day(date)]
 
             if len(weekend_assignments) <= 3:
                 return  # Can't violate with 3 or fewer weekend assignments

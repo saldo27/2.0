@@ -402,9 +402,7 @@ class PDFExporter:
             # CRITICAL: Include pre-holidays in weekend count for consistency with scheduling logic
             total_shifts = len(assignments)
             weekend_shifts = sum(
-                1
-                for date in assignments
-                if self.date_utils.is_weekend_day(date, self.holidays_set)
+                1 for date in assignments if self.date_utils.is_weekend_day(date, self.holidays_set)
             )  # Pre-holiday
             holiday_shifts = sum(1 for date in assignments if date in self.holidays_set)
 

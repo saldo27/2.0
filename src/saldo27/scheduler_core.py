@@ -289,7 +289,9 @@ class SchedulerCore:
                     self.scheduler.schedule[current_date].extend([None] * (expected_slots - actual_slots))
                     state_changed = True
                 elif actual_slots > expected_slots:
-                    stray_prefilled_slots += sum(1 for worker in self.scheduler.schedule[current_date][expected_slots:] if worker)
+                    stray_prefilled_slots += sum(
+                        1 for worker in self.scheduler.schedule[current_date][expected_slots:] if worker
+                    )
                     self.scheduler.schedule[current_date] = self.scheduler.schedule[current_date][:expected_slots]
                     state_changed = True
 
