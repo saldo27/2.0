@@ -172,8 +172,7 @@ class OptimizationMetrics:
                 worker_weekend_raw[worker_id] = sum(
                     1
                     for date in assignments
-                    if hasattr(date, "weekday")
-                    and self.scheduler.date_utils.is_weekend_day(date, holidays)
+                    if hasattr(date, "weekday") and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
 
             total_all = sum(worker_total_raw.values())
@@ -414,8 +413,7 @@ class OptimizationMetrics:
                 weekend_count = sum(
                     1
                     for date in assignments
-                    if hasattr(date, "weekday")
-                    and self.scheduler.date_utils.is_weekend_day(date, holidays)
+                    if hasattr(date, "weekday") and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
 
                 if target_shifts > 0:

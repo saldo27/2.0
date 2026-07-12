@@ -1337,9 +1337,7 @@ class ScheduleBuilder:
         # Calculate total schedule days and weekend days
         total_schedule_days = (self.scheduler.end_date - self.scheduler.start_date).days + 1
         total_weekend_days = sum(
-            1
-            for i in range(total_schedule_days)
-            if self._is_weekend_day(self.scheduler.start_date + timedelta(days=i))
+            1 for i in range(total_schedule_days) if self._is_weekend_day(self.scheduler.start_date + timedelta(days=i))
         )
 
         if total_schedule_days == 0 or total_weekend_days == 0:
@@ -1645,9 +1643,7 @@ class ScheduleBuilder:
             try:
                 mandatory_dates = set(self.date_utils.parse_dates(worker_config["mandatory_days"]))
             except (TypeError, ValueError) as e:
-                logging.debug(
-                    f"Error parsing mandatory_days for {worker_id} in monthly target score: {e!s}"
-                )
+                logging.debug(f"Error parsing mandatory_days for {worker_id} in monthly target score: {e!s}")
                 pass
 
         all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
@@ -3972,7 +3968,9 @@ class ScheduleBuilder:
                     try:
                         mandatory_dates = set(self.date_utils.parse_dates(mandatory_str))
                     except (TypeError, ValueError) as e:
-                        logging.debug(f"Error parsing mandatory_days for {worker_X_id} in swap candidate scoring: {e!s}")
+                        logging.debug(
+                            f"Error parsing mandatory_days for {worker_X_id} in swap candidate scoring: {e!s}"
+                        )
                         pass
                 mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
                 non_mandatory_assigned = current_assignments - mandatory_assigned
@@ -5693,11 +5691,7 @@ class ScheduleBuilder:
 
             # Calculate total special days in this month
             month_dates = months[month_key]
-            total_special_days_in_month = sum(
-                1
-                for d in month_dates
-                if self._is_weekend_day(d)
-            )
+            total_special_days_in_month = sum(1 for d in month_dates if self._is_weekend_day(d))
             total_days_in_month = len(month_dates)
 
             # Calculate the weekend ratio for this month
@@ -7991,15 +7985,9 @@ class ScheduleBuilder:
 
         # Get weekend counts for both workers
         receiver_weekends = sum(
-            1
-            for d in self.worker_assignments.get(receiver_worker_id, set())
-            if self._is_weekend_day(d)
+            1 for d in self.worker_assignments.get(receiver_worker_id, set()) if self._is_weekend_day(d)
         )
-        giver_weekends = sum(
-            1
-            for d in self.worker_assignments.get(giver_worker_id, set())
-            if self._is_weekend_day(d)
-        )
+        giver_weekends = sum(1 for d in self.worker_assignments.get(giver_worker_id, set()) if self._is_weekend_day(d))
 
         # Get target weekends proportional to each worker's target_shifts
         receiver_config = next((w for w in self.workers_data if w["id"] == receiver_worker_id), None)
@@ -8011,9 +7999,7 @@ class ScheduleBuilder:
             total_days_in_period = (self.end_date - self.start_date).days + 1
             holidays_set = set(self.scheduler.holidays) if self.scheduler.holidays else set()
             weekend_days_count = sum(
-                1
-                for i in range(total_days_in_period)
-                if self._is_weekend_day(self.start_date + timedelta(days=i))
+                1 for i in range(total_days_in_period) if self._is_weekend_day(self.start_date + timedelta(days=i))
             )
             self._cached_weekend_ratio = weekend_days_count / total_days_in_period if total_days_in_period > 0 else 0
 

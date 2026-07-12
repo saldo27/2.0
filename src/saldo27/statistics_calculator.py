@@ -407,9 +407,7 @@ class StatisticsCalculator:
             # Calculate weekend and holiday shifts efficiently
             # Include pre-holidays (day before holiday) for consistency with scheduling
             weekend_shifts = sum(
-                1
-                for date in assignments
-                if self.scheduler.date_utils.is_weekend_day(date, holidays_set)
+                1 for date in assignments if self.scheduler.date_utils.is_weekend_day(date, holidays_set)
             )
             weekday_shifts = total_shifts_count - weekend_shifts
 

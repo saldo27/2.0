@@ -405,9 +405,7 @@ class ConstraintChecker:
 
             total_schedule_days = len(all_schedule_days)
             total_weekend_days = sum(
-                1
-                for d in all_schedule_days
-                if self.date_utils.is_weekend_day(d, self.scheduler.holidays)
+                1 for d in all_schedule_days if self.date_utils.is_weekend_day(d, self.scheduler.holidays)
             )
 
             if total_schedule_days == 0 or total_weekend_days == 0:

@@ -1480,11 +1480,7 @@ class IterativeOptimizer:
 
                 # Get weekend/holiday dates from worker assignments (consistent with rest of code)
                 weekend_dates = sorted(
-                    [
-                        d
-                        for d in worker_assignments
-                        if self.scheduler.date_utils.is_weekend_day(d, holidays_set)
-                    ]
+                    [d for d in worker_assignments if self.scheduler.date_utils.is_weekend_day(d, holidays_set)]
                 )
 
                 # ========================================

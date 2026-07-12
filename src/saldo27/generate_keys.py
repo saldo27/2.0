@@ -10,9 +10,9 @@ import string
 
 def generate_license_key():
     """Generar clave de licencia válida (formato GP-XXXX-XXXX-XXXX-YYYY)"""
-    part1 = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    part2 = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    part3 = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    part1 = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    part2 = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    part3 = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
 
     # Calcular checksum
     base = f"GP-{part1}-{part2}-{part3}"
@@ -20,6 +20,7 @@ def generate_license_key():
 
     # Clave completa:  GP-XXXX-XXXX-XXXX-YYYY (19 caracteres)
     return f"{base}-{checksum}"
+
 
 def verify_key(key):
     """Verificar si una clave es válida"""
@@ -32,13 +33,13 @@ def verify_key(key):
         return False, f"Formato inválido (longitud: {len(key)}, esperado: 19)"
 
     try:
-        parts = key.split('-')
+        parts = key.split("-")
         if len(parts) != 4:
             return False, f"Número de partes incorrecto ({len(parts)}, esperado: 4)"
 
         # Calcular checksum esperado
-        base = '-'.join(parts[: 3])
-        expected = hashlib.md5(base. encode()).hexdigest()[:4].upper()
+        base = "-".join(parts[:3])
+        expected = hashlib.md5(base.encode()).hexdigest()[:4].upper()
 
         if parts[3] == expected:
             return True, "Clave válida ✓"
@@ -47,7 +48,8 @@ def verify_key(key):
     except Exception as e:
         return False, f"Error al verificar:  {e}"
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     print("=" * 60)
     print("  GENERADOR DE CLAVES - GuardiasApp v2.0")
     print("=" * 60)
@@ -66,7 +68,7 @@ if __name__ == '__main__':
         key = generate_license_key()
         is_valid, message = verify_key(key)
         status = "✓" if is_valid else "✗"
-        print(f"{i+1:2d}. {key}  {status}")
+        print(f"{i + 1:2d}. {key}  {status}")
 
     print()
     print("=" * 60)
@@ -76,11 +78,7 @@ if __name__ == '__main__':
     print("PRUEBA DE VALIDACIÓN:")
     print()
 
-    test_keys = [
-        "GUARDIAS-PRO-2025-FULL",
-        generate_license_key(),
-        "GP-INVALID-KEY-TEST-0000"
-    ]
+    test_keys = ["GUARDIAS-PRO-2025-FULL", generate_license_key(), "GP-INVALID-KEY-TEST-0000"]
 
     for test_key in test_keys:
         is_valid, message = verify_key(test_key)

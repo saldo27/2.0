@@ -1357,9 +1357,7 @@ class Scheduler:
                 try:
                     work_ranges = self.date_utils.parse_date_ranges(work_periods_str)
                 except (TypeError, ValueError) as exc:
-                    logging.warning(
-                        f"Worker {worker_id} invalid work_periods for monthly target distribution: {exc}"
-                    )
+                    logging.warning(f"Worker {worker_id} invalid work_periods for monthly target distribution: {exc}")
                     work_ranges = []
             else:
                 work_ranges = []
@@ -2714,7 +2712,13 @@ class Scheduler:
                 for worker in self.workers_data:
                     worker_id = worker["id"]
                     shift_count = len(self.worker_assignments.get(worker_id, []))
-                    weekend_count = len([d for d in self.worker_assignments.get(worker_id, []) if self.date_utils.is_weekend_day(d, self.holidays)])
+                    weekend_count = len(
+                        [
+                            d
+                            for d in self.worker_assignments.get(worker_id, [])
+                            if self.date_utils.is_weekend_day(d, self.holidays)
+                        ]
+                    )
                     f.write(f"{worker['name']} ({worker_id}): {shift_count} turnos, {weekend_count} fines de semana\n")
 
         logging.info(f"Schedule exported to {filename}")

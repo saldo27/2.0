@@ -574,6 +574,7 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
         root_logger = logging.getLogger()
         root_logger.addHandler(sidebar_handler)
         try:
+
             def _run_generation():
                 try:
                     generation_result["success"] = scheduler.generate_schedule()
@@ -2167,9 +2168,7 @@ with tab2:
 
                                     # Weekend = Fri/Sat/Sun + holidays + pre-holidays
                                     weekends_count = sum(
-                                        1
-                                        for d in assignments
-                                        if scheduler.date_utils.is_weekend_day(d, holidays_set)
+                                        1 for d in assignments if scheduler.date_utils.is_weekend_day(d, holidays_set)
                                     )
                                     # Holidays = holidays + pre-holidays
                                     holidays_count = sum(
@@ -3357,11 +3356,7 @@ with tab6:
 
             _doblete_analyzer = st.session_state.get("revision_analyzer")
             _dobletes = []
-            if (
-                _doblete_analyzer
-                and hasattr(_doblete_analyzer, "calendar_data")
-                and _doblete_analyzer.calendar_data
-            ):
+            if _doblete_analyzer and hasattr(_doblete_analyzer, "calendar_data") and _doblete_analyzer.calendar_data:
                 _date_workers: dict = {}
                 for _day in _doblete_analyzer.calendar_data:
                     _date_workers[_day["date"]] = set(_day.get("workers", []))
@@ -3380,9 +3375,7 @@ with tab6:
 
             if _dobletes:
                 for _db in _dobletes:
-                    st.info(
-                        f"**{_db['Médico']}**: Doblete los días {_db['Fecha 1']} y {_db['Fecha 2']} (Gap = 2)"
-                    )
+                    st.info(f"**{_db['Médico']}**: Doblete los días {_db['Fecha 1']} y {_db['Fecha 2']} (Gap = 2)")
             else:
                 st.success("✅ No hay dobletes detectados")
 
