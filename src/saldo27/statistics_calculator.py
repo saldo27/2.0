@@ -260,8 +260,8 @@ class StatisticsCalculator:
         if worker.get("mandatory_days") and hasattr(self.scheduler, "date_utils"):
             try:
                 mandatory_dates = set(self.scheduler.date_utils.parse_dates(worker["mandatory_days"]))
-            except Exception:
-                pass
+            except (TypeError, ValueError) as exc:
+                logging.debug(f"Could not parse mandatory_days for worker {worker_id}: {exc}")
         mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
         non_mandatory = len(all_assignments) - mandatory_assigned
 
@@ -409,7 +409,7 @@ class StatisticsCalculator:
             weekend_shifts = sum(
                 1
                 for date in assignments
-                if (date.weekday() >= 4 or date in holidays_set or (date + timedelta(days=1)) in holidays_set)
+                if self.scheduler.date_utils.is_weekend_day(date, holidays_set)
             )
             weekday_shifts = total_shifts_count - weekend_shifts
 
@@ -470,8 +470,8 @@ class StatisticsCalculator:
             if worker.get("mandatory_days") and hasattr(self.scheduler, "date_utils"):
                 try:
                     mandatory_dates = set(self.scheduler.date_utils.parse_dates(worker["mandatory_days"]))
-                except Exception:
-                    pass
+                except (TypeError, ValueError) as exc:
+                    logging.debug(f"Could not parse mandatory_days for worker {worker_id}: {exc}")
             mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
             assignments = len(all_assignments) - mandatory_assigned
 
@@ -703,7 +703,7 @@ class StatisticsCalculator:
                     day_type = " [HOLIDAY]"
                 elif (date + timedelta(days=1)) in self.scheduler.holidays:
                     day_type = " [PRE-HOLIDAY]"
-                elif date.weekday() >= 4:  # Friday, Saturday or Sunday
+                elif self.scheduler.date_utils.is_weekend_day(date, self.scheduler.holidays):
                     day_type = " [WEEKEND]"
 
                 report.append(f"  {date_str} ({day_name}){day_type}: {post}")

@@ -32,6 +32,20 @@ packaging/            # PyInstaller hooks, .spec file, Windows installer
 | `event_bus.py` | Internal pub/sub event system |
 | `performance_cache.py` | Caching decorators and monitoring |
 
+### Balance/distribution engines (`scheduler_core.py`'s `_iterative_improvement_phase`)
+
+Three modules apply shift-balance adjustments during Phase 3 of optimization. They are **not**
+alternatives to pick from — they run in sequence, each with a distinct scope:
+
+| Module | Role | Instantiated by |
+|--------|------|------------------|
+| `advanced_distribution_engine.py` (`AdvancedDistributionEngine`) | Runs first; broad post/weekday redistribution passes | `scheduler_core.py` (`_iterative_improvement_phase`) |
+| `strict_balance_optimizer.py` (`StrictBalanceOptimizer`) | Runs after the advanced engine; enforces exact `target_shifts` balance per worker | `scheduler_core.py` (`_iterative_improvement_phase`) |
+| `balance_validator.py` (`BalanceValidator`) | Used separately by `IterativeOptimizer` to *validate* (not mutate) whether a schedule is within tolerance | `iterative_optimizer.py` (`__init__`) |
+
+When modifying shift-balance behaviour, check all three call sites above — a fix applied to only
+one of them may be silently overridden or duplicated by another.
+
 ## Code style
 
 - **Language**: Python 3.10+. The UI strings and comments are in Spanish; code identifiers are in English.

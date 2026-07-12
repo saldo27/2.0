@@ -173,11 +173,7 @@ class OptimizationMetrics:
                     1
                     for date in assignments
                     if hasattr(date, "weekday")
-                    and (
-                        date.weekday() >= 4  # Viernes, Sábado, Domingo
-                        or date in holidays  # Festivos
-                        or (date + timedelta(days=1)) in holidays  # Prefestivos
-                    )
+                    and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
 
             total_all = sum(worker_total_raw.values())
@@ -374,8 +370,8 @@ class OptimizationMetrics:
                 if mandatory_str and hasattr(self.scheduler, "date_utils"):
                     try:
                         mandatory_dates = set(self.scheduler.date_utils.parse_dates(mandatory_str))
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        logging.debug(f"Could not parse mandatory_days for worker {worker_id}: {exc}")
 
                 mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
                 non_mandatory_count = total_count - mandatory_assigned
@@ -419,11 +415,7 @@ class OptimizationMetrics:
                     1
                     for date in assignments
                     if hasattr(date, "weekday")
-                    and (
-                        date.weekday() >= 4  # Viernes, Sábado, Domingo
-                        or date in holidays  # Festivos
-                        or (date + timedelta(days=1)) in holidays  # Prefestivos
-                    )
+                    and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
 
                 if target_shifts > 0:

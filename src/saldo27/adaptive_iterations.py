@@ -435,11 +435,7 @@ class AdaptiveIterationManager:
         holidays_set = set(scheduler_instance.holidays) if hasattr(scheduler_instance, "holidays") else set()
 
         for date, shifts in scheduler_instance.schedule.items():
-            is_weekend_or_holiday = (
-                date.weekday() >= 4  # Viernes, Sábado, Domingo
-                or date in holidays_set  # Festivos
-                or (date + timedelta(days=1)) in holidays_set  # Prefestivos
-            )
+            is_weekend_or_holiday = self.scheduler.date_utils.is_weekend_day(date, holidays_set)
             if is_weekend_or_holiday:
                 for worker_id in shifts:
                     if worker_id is not None:
@@ -825,7 +821,7 @@ class AdaptiveIterationManager:
 
         return adaptive_config
 
-    def get_optimization_summary(self) -> dict[str, Any]:
+    def get_adaptive_iteration_summary(self) -> dict[str, Any]:
         """Get a comprehensive summary of optimization performance and learning"""
         summary = {
             "total_optimizations_recorded": len(self.optimization_history),

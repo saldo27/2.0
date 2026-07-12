@@ -1232,7 +1232,7 @@ class IterativeOptimizer:
                     # Also check the reverse direction
                     for other in others_on_date:
                         other_data = next(
-                            (w for w in workers_data if str(w.get("id", "")) == str(other) or w.get("id") == other),
+                            (w for w in workers_data if str(w.get("id", "")) == str(other)),
                             None,
                         )
                         if other_data:
@@ -1335,7 +1335,8 @@ class IterativeOptimizer:
                         except (KeyError, ValueError, AttributeError) as e:
                             logging.debug(f"Error counting mandatory shifts: {e}")
                             continue
-                except Exception:
+                except (AttributeError, TypeError) as e:
+                    logging.debug(f"Error parsing mandatory days while checking monthly balance: {e}")
                     pass
 
             non_mandatory_shifts = current_shifts - mandatory_count
@@ -1382,7 +1383,8 @@ class IterativeOptimizer:
                         sd = self.scheduler.start_date
                         ed = self.scheduler.end_date
                         months_in_period = (ed.year - sd.year) * 12 + ed.month - sd.month + 1
-                    except Exception:
+                    except (AttributeError, TypeError) as e:
+                        logging.debug(f"Error deriving months_in_period from scheduler dates: {e}")
                         pass
                 expected_monthly_rough = raw_target / months_in_period
 
@@ -1432,7 +1434,8 @@ class IterativeOptimizer:
                                 sd = self.scheduler.start_date
                                 ed = self.scheduler.end_date
                                 months_in_period = (ed.year - sd.year) * 12 + ed.month - sd.month + 1
-                            except Exception:
+                            except (AttributeError, TypeError) as e:
+                                logging.debug(f"Error deriving fallback months_in_period from scheduler dates: {e}")
                                 pass
                         max_monthly = raw_target / months_in_period
 
@@ -1467,11 +1470,7 @@ class IterativeOptimizer:
             holidays_set = (
                 set(getattr(self.scheduler, "holidays", [])) if hasattr(self, "scheduler") and self.scheduler else set()
             )
-            is_weekend = (
-                shift_date.weekday() >= 4  # Fri/Sat/Sun
-                or shift_date in holidays_set  # Holiday
-                or (shift_date + timedelta(days=1)) in holidays_set
-            )  # Day before holiday
+            is_weekend = self.scheduler.date_utils.is_weekend_day(shift_date, holidays_set)
 
             if is_weekend and hasattr(self, "scheduler") and self.scheduler:
                 max_consecutive_weekends = getattr(self.scheduler, "max_consecutive_weekends", 3)
@@ -1484,7 +1483,7 @@ class IterativeOptimizer:
                     [
                         d
                         for d in worker_assignments
-                        if (d.weekday() >= 4 or d in holidays_set or (d + timedelta(days=1)) in holidays_set)
+                        if self.scheduler.date_utils.is_weekend_day(d, holidays_set)
                     ]
                 )
 
@@ -1541,10 +1540,8 @@ class IterativeOptimizer:
                 total_weekend_days = sum(
                     1
                     for i in range(total_schedule_days)
-                    if (
-                        (self.scheduler.start_date + timedelta(days=i)).weekday() >= 4
-                        or (self.scheduler.start_date + timedelta(days=i)) in holidays_set
-                        or (self.scheduler.start_date + timedelta(days=i + 1)) in holidays_set
+                    if self.scheduler.date_utils.is_weekend_day(
+                        self.scheduler.start_date + timedelta(days=i), holidays_set
                     )
                 )
 
@@ -1693,7 +1690,7 @@ class IterativeOptimizer:
             worker_data = None
             for w in workers_data:
                 w_id = w.get("id", "")
-                if w_id == worker_name or str(w_id) == str(worker_name):
+                if str(w_id) == str(worker_name):
                     worker_data = w
                     break
                 elif worker_name.startswith("Worker "):
@@ -1821,11 +1818,7 @@ class IterativeOptimizer:
                     date_obj = datetime.strptime(date_key, "%Y-%m-%d")
                     date_str = date_key
 
-                if (
-                    date_obj.weekday() >= 4  # Fri/Sat/Sun
-                    or date_obj in _holidays_rw  # holiday
-                    or (date_obj + timedelta(days=1)) in _holidays_rw
-                ):  # puente
+                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays_rw):
                     weekend_dates.append(date_key)  # Use original key format
             except (ValueError, AttributeError):
                 continue  # Skip invalid date format
@@ -2007,7 +2000,7 @@ class IterativeOptimizer:
             for dk in optimized_schedule:
                 try:
                     d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                    if d.weekday() >= 4 or d in _holidays_rw or (d + timedelta(days=1)) in _holidays_rw:
+                    if self.scheduler.date_utils.is_weekend_day(d, _holidays_rw):
                         weekend_date_set.add(dk)
                     else:
                         weekday_date_set.add(dk)
@@ -2155,7 +2148,7 @@ class IterativeOptimizer:
             for dk in optimized_schedule:
                 try:
                     d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                    if d.weekday() >= 4 or d in _holidays_rw or (d + timedelta(days=1)) in _holidays_rw:
+                    if self.scheduler.date_utils.is_weekend_day(d, _holidays_rw):
                         ep_weekend_set.add(dk)
                 except (ValueError, AttributeError):
                     continue
@@ -2361,11 +2354,7 @@ class IterativeOptimizer:
                 else:
                     date_obj = datetime.strptime(date_key, "%Y-%m-%d")
 
-                if (
-                    date_obj.weekday() >= 4  # Fri/Sat/Sun
-                    or date_obj in _holidays_ws  # holiday
-                    or (date_obj + timedelta(days=1)) in _holidays_ws
-                ):  # puente
+                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays_ws):
                     weekend_dates.append(date_key)
             except (ValueError, AttributeError):
                 continue  # Skip invalid date format
@@ -2565,7 +2554,7 @@ class IterativeOptimizer:
         for date_key in optimized_schedule:
             try:
                 date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
-                if date_obj.weekday() >= 4 or date_obj in _holidays or (date_obj + timedelta(days=1)) in _holidays:
+                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays):
                     weekend_date_set.add(date_key)
                 else:
                     weekday_date_set.add(date_key)
@@ -2754,7 +2743,7 @@ class IterativeOptimizer:
         for date_key in optimized_schedule:
             try:
                 date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
-                if date_obj.weekday() >= 4 or date_obj in _holidays or (date_obj + timedelta(days=1)) in _holidays:
+                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays):
                     weekend_dates.append(date_key)
             except (ValueError, AttributeError):
                 continue
@@ -2916,9 +2905,10 @@ class IterativeOptimizer:
         for dk in optimized_schedule:
             try:
                 dobj = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                if dobj.weekday() >= 4 or dobj in _holidays or (dobj + timedelta(days=1)) in _holidays:
+                if self.scheduler.date_utils.is_weekend_day(dobj, _holidays):
                     weekend_date_set.add(dk)
-            except Exception:
+            except (AttributeError, TypeError, ValueError) as e:
+                logging.debug(f"Skipping invalid weekend date in ejection chain: {e}")
                 continue
 
         gap = int(schedule_config.get("gap_between_shifts", getattr(self.scheduler, "gap_between_shifts", 3)))
@@ -3147,7 +3137,8 @@ class IterativeOptimizer:
                 _dm = _dk if isinstance(_dk, datetime) else datetime.strptime(_dk, "%Y-%m-%d")
                 _ym = (_dm.year, _dm.month)
                 _sa_all_months.add(_ym)
-            except Exception:
+            except (TypeError, ValueError) as e:
+                logging.debug(f"Skipping invalid schedule date in SA monthly pre-computation: {e}")
                 continue
             if isinstance(_asgn, dict):
                 for _v in _asgn.values():
@@ -3188,11 +3179,12 @@ class IterativeOptimizer:
             for dk in optimized_schedule:
                 try:
                     dobj = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                    if dobj.weekday() >= 4 or dobj in _sa_holidays or (dobj + timedelta(days=1)) in _sa_holidays:
+                    if self.scheduler.date_utils.is_weekend_day(dobj, _sa_holidays):
                         _sa_weekend_dates.append(dk)
                     else:
                         _sa_weekday_dates.append(dk)
-                except Exception:
+                except (AttributeError, TypeError, ValueError) as e:
+                    logging.debug(f"Skipping invalid schedule date in SA weekend-bias pre-computation: {e}")
                     continue
 
             # Count weekend assignments per worker
@@ -3278,7 +3270,8 @@ class IterativeOptimizer:
             else:
                 try:
                     _rd_obj = datetime.strptime(str(random_date), "%Y-%m-%d")
-                except Exception:
+                except (TypeError, ValueError) as e:
+                    logging.debug(f"Skipping monthly floor check for invalid SA date: {e}")
                     _rd_obj = None
             if _rd_obj is not None:
                 _giver_data = next(
@@ -3532,7 +3525,8 @@ class IterativeOptimizer:
                             _dm_g9 = _dk_g9 if isinstance(_dk_g9, datetime) else datetime.strptime(_dk_g9, "%Y-%m-%d")
                             _ym_g9 = (_dm_g9.year, _dm_g9.month)
                             _g9_all_months.add(_ym_g9)
-                        except Exception:
+                        except (TypeError, ValueError) as e:
+                            logging.debug(f"Skipping invalid schedule date in G9 monthly pre-computation: {e}")
                             continue
                         if isinstance(_asgn_g9, dict):
                             for _v_g9 in _asgn_g9.values():
@@ -3564,7 +3558,8 @@ class IterativeOptimizer:
                     else:
                         try:
                             _g9_dtobj = datetime.strptime(str(date_key_try), "%Y-%m-%d")
-                        except Exception:
+                        except (TypeError, ValueError) as e:
+                            logging.debug(f"Skipping G9 monthly floor check for invalid date: {e}")
                             _g9_dtobj = None
                     if _g9_worker_data:
                         if _g9_dtobj is not None:
@@ -3729,7 +3724,7 @@ class IterativeOptimizer:
         logging.info(f"   ✅ Made {forced_changes} forced redistributions")
         return optimized_schedule
 
-    def get_optimization_summary(self) -> dict:
+    def get_iterative_optimizer_summary(self) -> dict:
         """Get summary of optimization process."""
         if not self.optimization_history:
             return {"message": "No optimization history available"}
@@ -4013,9 +4008,13 @@ class IterativeOptimizer:
                                 if _ds in _mand_parts or _cd.strftime("%Y-%m-%d") in _mand_parts:
                                     if isinstance(_assigns, list) and _wname in _assigns:
                                         _mand_count += 1
-                            except Exception:
+                            except (AttributeError, TypeError, ValueError) as e:
+                                logging.debug(
+                                    f"Skipping invalid mandatory date while scoring empty-slot candidates: {e}"
+                                )
                                 pass
-                    except Exception:
+                    except (AttributeError, TypeError) as e:
+                        logging.debug(f"Error parsing mandatory days for greedy fill priority: {e}")
                         pass
                 mandatory_count_map[_wname] = _mand_count
 
@@ -4163,7 +4162,8 @@ class IterativeOptimizer:
                         continue
                     try:
                         diff = abs((d_e - d_w).days)
-                    except Exception:
+                    except (AttributeError, TypeError) as e:
+                        logging.debug(f"Skipping chain-fill candidate with incompatible date types: {e}")
                         continue
                     if diff == 0:
                         continue
@@ -4171,7 +4171,7 @@ class IterativeOptimizer:
                         if w_name is None:
                             continue
                         w_data = next(
-                            (w for w in workers_data if str(w.get("id", "")) == str(w_name) or w.get("id") == w_name),
+                            (w for w in workers_data if str(w.get("id", "")) == str(w_name)),
                             None,
                         )
                         if w_data is None:
@@ -4314,7 +4314,8 @@ class IterativeOptimizer:
                                 continue
                             try:
                                 diff_check = abs((d_w - d_w2).days)
-                            except Exception:
+                            except (AttributeError, TypeError) as e:
+                                logging.debug(f"Skipping 3-chain conflict check with incompatible date types: {e}")
                                 continue
                             if diff_check == 0 or diff_check >= min_gap_w2:
                                 continue
@@ -4456,7 +4457,7 @@ class IterativeOptimizer:
                         if other in my_incomp:
                             return False
                         other_data = next(
-                            (w for w in workers_data if str(w.get("id", "")) == str(other) or w.get("id") == other),
+                            (w for w in workers_data if str(w.get("id", "")) == str(other)),
                             None,
                         )
                         if other_data and (
@@ -4512,7 +4513,8 @@ class IterativeOptimizer:
                                                     mandatory_count += 1
                                 except (KeyError, ValueError, AttributeError):
                                     continue  # Skip invalid schedule data
-                        except Exception:
+                        except (AttributeError, TypeError) as e:
+                            logging.debug(f"Error parsing mandatory days while checking greedy tolerance: {e}")
                             pass
 
                     non_mandatory_shifts = current_shifts - mandatory_count

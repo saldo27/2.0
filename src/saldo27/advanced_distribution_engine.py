@@ -17,6 +17,7 @@ import logging
 import random
 from datetime import datetime, timedelta
 
+from saldo27.balance_validator import BalanceValidator
 from saldo27.utilities import get_effective_min_gap
 
 
@@ -148,19 +149,12 @@ class AdvancedDistributionEngine:
         for worker in self.scheduler.workers_data:
             worker_id = worker["id"]
             all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
-            current = len(all_assignments)
             target = worker.get("target_shifts", 0)
 
             # Contar mandatory asignados para calcular non-mandatory
-            mandatory_dates = set()
-            mandatory_str = worker.get("mandatory_days", "")
-            if mandatory_str and hasattr(self.builder, "date_utils"):
-                try:
-                    mandatory_dates = set(self.builder.date_utils.parse_dates(mandatory_str))
-                except Exception:
-                    pass
-            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
-            non_mandatory_assigned = current - mandatory_assigned
+            _mandatory_assigned, non_mandatory_assigned = BalanceValidator.compute_non_mandatory_assigned(
+                worker, all_assignments, getattr(self.builder, "date_utils", None)
+            )
 
             deficit = max(0, target - non_mandatory_assigned)
 
@@ -414,7 +408,6 @@ class AdvancedDistributionEngine:
     def _calculate_global_balance_bonus(self, worker_id: str) -> float:
         """Bonus basado en el balance global del trabajador vs otros"""
         all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
-        current = len(all_assignments)
         worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
 
         if not worker_data:
@@ -423,15 +416,9 @@ class AdvancedDistributionEngine:
         target = worker_data.get("target_shifts", 0)
 
         # CRITICAL: Excluir mandatory para calcular déficit correctamente
-        mandatory_dates = set()
-        mandatory_str = worker_data.get("mandatory_days", "")
-        if mandatory_str and hasattr(self.builder, "date_utils"):
-            try:
-                mandatory_dates = set(self.builder.date_utils.parse_dates(mandatory_str))
-            except Exception:
-                pass
-        mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
-        non_mandatory_assigned = current - mandatory_assigned
+        _mandatory_assigned, non_mandatory_assigned = BalanceValidator.compute_non_mandatory_assigned(
+            worker_data, all_assignments, getattr(self.builder, "date_utils", None)
+        )
 
         deficit = target - non_mandatory_assigned
 
@@ -703,7 +690,7 @@ class AdvancedDistributionEngine:
                     return False
 
             # NEW: Validate consecutive weekends
-            if date.weekday() >= 4:  # Weekend
+            if self.builder._is_weekend_day(date):
                 if hasattr(self.builder, "_would_exceed_weekend_limit_simulated"):
                     if self.builder._would_exceed_weekend_limit_simulated(
                         worker_id, date, self.scheduler.worker_assignments

@@ -112,8 +112,8 @@ class ShiftToleranceValidator:
                                 if w == worker_id:
                                     mandatory_assigned += 1
                     assigned_shifts -= mandatory_assigned
-                except Exception:
-                    pass
+                except (TypeError, ValueError) as exc:
+                    logging.debug(f"Could not parse mandatory_days for worker {worker_id}: {exc}")
 
         # Pass is_weekend_only and worker_id to apply zero tolerance for manual workers
         min_shifts, max_shifts = self.calculate_tolerance_bounds(
@@ -177,8 +177,8 @@ class ShiftToleranceValidator:
                             1 for d in mand_dates if self.scheduler.start_date <= d <= self.scheduler.end_date
                         )
                         total_target += mand_in_period
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        logging.debug(f"Could not parse mandatory_days for weekend target fallback: {exc}")
 
             weekend_target = self._calculate_weekend_target(worker_id, total_target)
 
@@ -281,11 +281,7 @@ class ShiftToleranceValidator:
                 for worker_in_post in assigned_workers:
                     if worker_in_post == worker_id:
                         if is_weekend_only:
-                            if (
-                                date.weekday() >= 4
-                                or date in holidays_set
-                                or (date + timedelta(days=1)) in holidays_set
-                            ):
+                            if self.scheduler.date_utils.is_weekend_day(date, holidays_set):
                                 count += 1
                         else:
                             count += 1
@@ -315,11 +311,7 @@ class ShiftToleranceValidator:
         holidays_set = set(self.scheduler.holidays)
 
         while current_date <= self.scheduler.end_date:
-            if (
-                current_date.weekday() >= 4  # Friday, Saturday, Sunday
-                or current_date in holidays_set
-                or (current_date + timedelta(days=1)) in holidays_set
-            ):  # pre-holiday (day before holiday)
+            if self.scheduler.date_utils.is_weekend_day(current_date, holidays_set):
                 weekend_days += 1
             current_date += timedelta(days=1)
 

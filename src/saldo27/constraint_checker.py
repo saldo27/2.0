@@ -229,7 +229,7 @@ class ConstraintChecker:
         # Pre-compute whether the prospective date is a special day (weekend/pre-holiday/holiday)
         # Used by the allow_714_violation path.
         holiday_set = self._holiday_set
-        date_is_special = date.weekday() >= 4 or date in holiday_set or (date + timedelta(days=1)) in holiday_set
+        date_is_special = self.date_utils.is_weekend_day(date, holiday_set)
 
         for prev_date in assignments:
             if prev_date == date:
@@ -289,11 +289,7 @@ class ConstraintChecker:
         """
         try:
             # Check if the date is a weekend or holiday
-            is_weekend_or_holiday = (
-                date.weekday() >= 4  # Fri, Sat, Sun
-                or date in self.scheduler.holidays
-                or (date + timedelta(days=1)) in self.scheduler.holidays
-            )
+            is_weekend_or_holiday = self.date_utils.is_weekend_day(date, self.scheduler.holidays)
             if not is_weekend_or_holiday:
                 return False  # Not a weekend/holiday, no need to check
 
@@ -334,11 +330,7 @@ class ConstraintChecker:
             )
             weekend_dates = []
             for d in current_assignments:
-                if (
-                    d.weekday() >= 4
-                    or d in self.scheduler.holidays
-                    or (d + timedelta(days=1)) in self.scheduler.holidays
-                ):
+                if self.date_utils.is_weekend_day(d, self.scheduler.holidays):
                     weekend_dates.append(d)
 
             # Add the date being checked if it's not already included
@@ -394,11 +386,7 @@ class ConstraintChecker:
             current_only_assignments = self.scheduler.worker_assignments.get(worker_id, set())
             current_period_weekend_dates = []
             for d in current_only_assignments:
-                if (
-                    d.weekday() >= 4
-                    or d in self.scheduler.holidays
-                    or (d + timedelta(days=1)) in self.scheduler.holidays
-                ):
+                if self.date_utils.is_weekend_day(d, self.scheduler.holidays):
                     current_period_weekend_dates.append(d)
             # Include the prospective date if it belongs to the current period
             if (
@@ -419,11 +407,7 @@ class ConstraintChecker:
             total_weekend_days = sum(
                 1
                 for d in all_schedule_days
-                if (
-                    d.weekday() >= 4
-                    or d in self.scheduler.holidays
-                    or (d + timedelta(days=1)) in self.scheduler.holidays
-                )
+                if self.date_utils.is_weekend_day(d, self.scheduler.holidays)
             )
 
             if total_schedule_days == 0 or total_weekend_days == 0:
@@ -445,8 +429,8 @@ class ConstraintChecker:
                             1 for d in mand_dates if self.scheduler.start_date <= d <= self.scheduler.end_date
                         )
                         total_target_for_weekend += mand_in_period
-                    except Exception:
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        logging.debug(f"Could not parse mandatory_days for weekend target fallback: {exc}")
 
             if total_target_for_weekend <= 0:
                 return False
@@ -535,9 +519,7 @@ class ConstraintChecker:
 
             # Check weekend constraints (replacing the custom weekend check)
             # Only check if this is a weekend day or holiday to improve performance
-            is_special_day_for_unavailability_check = (
-                date.weekday() >= 4 or date in self.holidays or (date + timedelta(days=1)) in self.holidays
-            )
+            is_special_day_for_unavailability_check = self.date_utils.is_weekend_day(date, self.holidays)
             if is_special_day_for_unavailability_check:
                 if self._would_exceed_weekend_limit(worker_id, date):  # This now calls the consistently defined limit
                     if _debug_enabled():

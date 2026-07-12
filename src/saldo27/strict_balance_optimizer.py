@@ -27,6 +27,8 @@ Intercambio a 3 bandas (three-way swap):
 import logging
 import random
 
+from saldo27.balance_validator import BalanceValidator
+
 
 class StrictBalanceOptimizer:
     """Optimizador estricto de balance de turnos"""
@@ -220,19 +222,12 @@ class StrictBalanceOptimizer:
             worker_id = worker["id"]
             target = worker.get("target_shifts", 0)
             all_assignments = self.worker_assignments.get(worker_id, set())
-            total_assigned = len(all_assignments)
 
             # CRITICAL: target_shifts ya tiene mandatory restados
             # Debemos comparar con non-mandatory assigned
-            mandatory_dates = set()
-            mandatory_str = worker.get("mandatory_days", "")
-            if mandatory_str and hasattr(self.builder, "date_utils"):
-                try:
-                    mandatory_dates = set(self.builder.date_utils.parse_dates(mandatory_str))
-                except Exception:
-                    pass
-            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
-            non_mandatory_assigned = total_assigned - mandatory_assigned
+            mandatory_assigned, non_mandatory_assigned = BalanceValidator.compute_non_mandatory_assigned(
+                worker, all_assignments, getattr(self.builder, "date_utils", None)
+            )
 
             deviation = non_mandatory_assigned - target
 
@@ -240,7 +235,7 @@ class StrictBalanceOptimizer:
                 "name": worker.get("name", worker_id),
                 "target": target,
                 "assigned": non_mandatory_assigned,  # Solo non-mandatory
-                "total_assigned": total_assigned,  # Total incluyendo mandatory
+                "total_assigned": len(all_assignments),  # Total incluyendo mandatory
                 "mandatory": mandatory_assigned,
                 "deviation": deviation,
                 "work_percentage": worker.get("work_percentage", 100),
@@ -276,19 +271,12 @@ class StrictBalanceOptimizer:
                 continue
 
             all_assignments = self.worker_assignments.get(worker_id, set())
-            total_assigned = len(all_assignments)
 
             # CRITICAL: target_shifts ya tiene mandatory restados
             # Debemos comparar con non-mandatory assigned
-            mandatory_dates = set()
-            mandatory_str = worker.get("mandatory_days", "")
-            if mandatory_str and hasattr(self.builder, "date_utils"):
-                try:
-                    mandatory_dates = set(self.builder.date_utils.parse_dates(mandatory_str))
-                except Exception:
-                    pass
-            mandatory_assigned = sum(1 for d in all_assignments if d in mandatory_dates)
-            non_mandatory_assigned = total_assigned - mandatory_assigned
+            mandatory_assigned, non_mandatory_assigned = BalanceValidator.compute_non_mandatory_assigned(
+                worker, all_assignments, getattr(self.builder, "date_utils", None)
+            )
 
             deviation = non_mandatory_assigned - target
 

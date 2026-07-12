@@ -57,8 +57,8 @@ class SidebarLogHandler(logging.Handler):
                 self.messages.append(msg)
                 if len(self.messages) > self.max_messages:
                     self.messages = self.messages[-self.max_messages :]
-        except Exception:
-            pass
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            self.handleError(record)
 
     def get_messages(self, last_n=15):
         with self._lock:
@@ -667,7 +667,8 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
                         final_score = _metrics.calculate_overall_schedule_score()
                     else:
                         final_score = _pm.iteration_data[-1].get("current_score", 0)
-                except Exception:
+                except (AttributeError, IndexError, TypeError, ValueError) as exc:
+                    logging.debug(f"No se pudo calcular el score final real; usando el score de iteración: {exc}")
                     final_score = _pm.iteration_data[-1].get("current_score", 0)
 
                 summary_lines.append("📊 Resumen de ejecución:")
@@ -709,8 +710,8 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
                             )
                     if n_violations > 5:
                         summary_lines.append(f"   ... y {n_violations - 5} más")
-            except Exception:
-                pass
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+                logging.debug(f"No se pudo generar el resumen de violaciones para el sidebar: {exc}")
 
             if summary_lines:
                 log_text = "\n".join(summary_lines)
@@ -795,11 +796,7 @@ def get_worker_statistics():
     while current_date <= scheduler.end_date:  # Inclusive end_date
         shifts_for_date = scheduler._get_shifts_for_date(current_date)
         total_all_slots += shifts_for_date
-        is_weekend = (
-            current_date.weekday() >= 4  # Vie/Sab/Dom
-            or current_date in holidays_set  # Festivo
-            or (current_date + timedelta(days=1)) in holidays_set  # Pre-festivo
-        )
+        is_weekend = scheduler.date_utils.is_weekend_day(current_date, holidays_set)
         if is_weekend:
             total_weekend_slots += shifts_for_date
         current_date += timedelta(days=1)
@@ -2154,7 +2151,7 @@ with tab2:
                                         # Determine day type
                                         is_holiday = date in holidays_set
                                         is_pre_holiday = (date + timedelta(days=1)) in holidays_set
-                                        is_weekend_day = date.weekday() >= 4  # Fri/Sat/Sun
+                                        is_weekend_day = scheduler.date_utils.is_weekend_day(date, holidays_set)
 
                                         # Shift list
                                         shift_list.append(
@@ -2172,11 +2169,7 @@ with tab2:
                                     weekends_count = sum(
                                         1
                                         for d in assignments
-                                        if (
-                                            d.weekday() >= 4
-                                            or d in holidays_set
-                                            or (d + timedelta(days=1)) in holidays_set
-                                        )
+                                        if scheduler.date_utils.is_weekend_day(d, holidays_set)
                                     )
                                     # Holidays = holidays + pre-holidays
                                     holidays_count = sum(
@@ -2285,11 +2278,7 @@ with tab3:
             holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
             total_weekend_target = 0
             for d in scheduler._get_date_range(scheduler.start_date, scheduler.end_date):
-                is_weekend = (
-                    d.weekday() >= 4  # Vie/Sab/Dom
-                    or d in holidays_set  # Festivo
-                    or (d + timedelta(days=1)) in holidays_set  # Pre-festivo
-                )
+                is_weekend = scheduler.date_utils.is_weekend_day(d, holidays_set)
                 if is_weekend:
                     total_weekend_target += scheduler._get_shifts_for_date(d)
 

@@ -21,13 +21,17 @@ The exported JSON format (produced by scheduler.export_schedule_json) is:
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
+
+from saldo27.utilities import DateTimeUtils
+
+_DATE_UTILS = DateTimeUtils()
 
 
 def _is_weekend_or_holiday(date: datetime, holidays: set[datetime]) -> bool:
     """Return True if date is Fri/Sat/Sun, a holiday, or the day before a holiday."""
-    return date.weekday() >= 4 or date in holidays or (date + timedelta(days=1)) in holidays
+    return _DATE_UTILS.is_weekend_day(date, holidays)
 
 
 def load_prior_schedule(
@@ -141,8 +145,8 @@ def load_prior_schedule(
     for h in raw_holidays:
         try:
             prior_holidays.add(datetime.fromisoformat(str(h).split("T")[0]))
-        except Exception:
-            pass
+        except (TypeError, ValueError) as exc:
+            logging.debug(f"[PriorSchedule] Skipping invalid holiday date {h!r}: {exc}")
     result["holidays"] = prior_holidays
 
     # Merge with new-period holidays for weekend detection near boundary
@@ -154,7 +158,8 @@ def load_prior_schedule(
         for d_raw in date_list:
             try:
                 dates.add(datetime.fromisoformat(str(d_raw).split("T")[0]))
-            except Exception:
+            except (TypeError, ValueError) as exc:
+                logging.debug(f"[PriorSchedule] Skipping invalid assignment date {d_raw!r} for {worker_id}: {exc}")
                 continue
 
         result["prior_assignments"][worker_id] = dates
