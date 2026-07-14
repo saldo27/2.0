@@ -2232,6 +2232,76 @@ with tab2:
             else:
                 st.info("ℹ️ No se encontraron archivos PDF generados")
 
+            # ---- Ajuste Final ------------------------------------------------
+            st.markdown("---")
+            st.subheader("⚖️ Ajuste Final")
+            st.caption(
+                "Ciclo de reequilibrio post-generación: optimiza la distribución de turnos, "
+                "fines de semana y puentes respetando todas las restricciones."
+            )
+
+            if st.button("⚖️ Ejecutar Ajuste Final", type="secondary", key="btn_final_adjustment"):
+                _sched_fa = st.session_state.scheduler
+                if _sched_fa is None or _sched_fa.schedule_builder is None:
+                    st.warning("⚠️ El calendario debe estar completamente generado antes de ejecutar el ajuste final.")
+                else:
+                    with st.spinner("Ejecutando ajuste final… esto puede tardar unos segundos."):
+                        try:
+                            from saldo27.final_adjustment_engine import FinalAdjustmentEngine
+
+                            engine = FinalAdjustmentEngine(_sched_fa)
+                            _before_metrics = engine.compute_metrics()
+                            _fa_results = engine.run(max_iterations=300)
+                            _after_metrics = _fa_results["after"]
+                            _fa_stats = _fa_results["stats"]
+
+                            # Sync session_state.schedule with the (potentially modified) scheduler schedule
+                            st.session_state.schedule = _sched_fa.schedule
+
+                        except Exception as _fa_exc:
+                            st.error(f"Error en el ajuste final: {_fa_exc}")
+                            logging.error("FinalAdjustmentEngine error", exc_info=True)
+                            _fa_results = None
+
+                    if _fa_results is not None:
+                        total_swaps = (
+                            _fa_stats["shift_swaps"]
+                            + _fa_stats["weekend_swaps"]
+                            + _fa_stats["bridge_swaps"]
+                        )
+                        if total_swaps > 0:
+                            st.success(
+                                f"✅ Ajuste completado: {_fa_stats['shift_swaps']} swap(s) de turno, "
+                                f"{_fa_stats['weekend_swaps']} swap(s) de fin-de-semana, "
+                                f"{_fa_stats['bridge_swaps']} swap(s) de puente."
+                            )
+                        else:
+                            st.info("ℹ️ El calendario ya estaba bien equilibrado. No se realizaron cambios.")
+
+                        # Show before/after comparison table
+                        _rows = []
+                        for _wid, _bef in _before_metrics.items():
+                            _aft = _after_metrics.get(_wid, _bef)
+                            _rows.append(
+                                {
+                                    "Médico": _bef["name"],
+                                    "Turnos Obj.": _bef["shift_target"],
+                                    "Turnos Antes": _bef["shift_assigned"],
+                                    "Turnos Desv.": f"{_aft['shift_deviation']:+d}",
+                                    "Wknd Obj.": _bef["weekend_target"],
+                                    "Wknd Antes": _bef["weekend_assigned"],
+                                    "Wknd Desv.": f"{_aft['weekend_deviation']:+d}",
+                                    "Puente Obj.": _bef["bridge_target"],
+                                    "Puente Antes": _bef["bridge_assigned"],
+                                    "Puente Desv.": f"{_aft['bridge_deviation']:+d}",
+                                }
+                            )
+                        if _rows:
+                            with st.expander("📊 Detalle por médico (después del ajuste)", expanded=False):
+                                st.dataframe(pd.DataFrame(_rows), hide_index=True)
+
+                        st.rerun()
+
 # ==================== TAB 3: ESTADÍSTICAS ====================
 with tab3:
     st.header("📊 Estadísticas de Asignación")
