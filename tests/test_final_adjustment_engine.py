@@ -67,6 +67,10 @@ def _make_stub_builder(scheduler):
     """
     Build a minimal ScheduleBuilder stub that has enough state to exercise
     _can_take_in_swap without running the full builder initialization.
+
+    `_is_worker_unavailable` delegates to the real ScheduleBuilder implementation
+    because some tests specifically verify that days-off block a swap; other methods
+    are stubbed trivially because the relevant tests do not exercise them.
     """
     sb = ScheduleBuilder.__new__(ScheduleBuilder)
     sb.scheduler = scheduler
@@ -78,7 +82,6 @@ def _make_stub_builder(scheduler):
     sb.num_shifts = 2
     sb._check_incompatibility_with_list = lambda wid, others: True
     sb._is_mandatory = lambda wid, date: False
-    # Delegate unavailability check to the real ScheduleBuilder method
     sb._is_worker_unavailable = lambda wid, d: ScheduleBuilder._is_worker_unavailable(sb, wid, d)
     return sb
 
@@ -219,3 +222,48 @@ def test_can_take_in_swap_does_not_check_target_tolerance():
     # Without schedule_builder, the method returns True regardless of target count.
     result = engine._can_take_in_swap("B", date_gain, 1, date_lose)
     assert result is True
+
+
+# ---------------------------------------------------------------------------
+# _raw_targets cache – fallback logic
+# ---------------------------------------------------------------------------
+
+def test_raw_targets_fallback_when_raw_target_is_none():
+    """
+    When _raw_target is not present (or None) on a worker dict, the engine must
+    fall back to target_shifts.  The None-guard prevents falsy 0 from triggering
+    an incorrect fallback.
+
+    We inject the workers_data directly onto the scheduler (bypassing the
+    scheduler's own target-computation which always sets _raw_target) so we can
+    test the engine's fallback logic in isolation.
+    """
+    scheduler = _make_scheduler(_simple_workers())
+
+    # Override workers_data with specific raw_target values
+    scheduler.workers_data = [
+        {
+            "id": "X",
+            "name": "Worker X",
+            "target_shifts": 5,
+            # No _raw_target key → should fall back to target_shifts=5
+        },
+        {
+            "id": "Y",
+            "name": "Worker Y",
+            "target_shifts": 7,
+            "_raw_target": None,  # explicitly None → should fall back to target_shifts=7
+        },
+        {
+            "id": "Z",
+            "name": "Worker Z",
+            "target_shifts": 4,
+            "_raw_target": 0,  # explicitly 0 → must NOT fall back; 0 is a valid raw target
+        },
+    ]
+
+    engine = _build_engine(scheduler)
+
+    assert engine._raw_targets["X"] == 5   # fell back to target_shifts
+    assert engine._raw_targets["Y"] == 7   # fell back to target_shifts (None treated as missing)
+    assert engine._raw_targets["Z"] == 0   # raw_target=0 preserved (not a fallback)
