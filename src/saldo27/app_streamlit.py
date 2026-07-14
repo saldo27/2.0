@@ -965,7 +965,12 @@ def build_summary_pdf_stats_data(scheduler: Scheduler) -> dict[str, Any]:
 
 
 def refresh_generated_report_pdfs(scheduler: Scheduler, pdf_exporter_cls: type) -> tuple[list[str], list[str]]:
-    """Regenera los PDFs existentes vinculados al calendario/estadísticas."""
+    """
+    Regenera los PDFs ya existentes vinculados al calendario/estadísticas.
+
+    Returns:
+        tuple[list[str], list[str]]: (archivos regenerados, errores de regeneración).
+    """
     config = {
         "schedule": scheduler.schedule,
         "workers_data": scheduler.workers_data,
@@ -2298,9 +2303,6 @@ with tab2:
                                 + _fa_stats["bridge_swaps"]
                             )
 
-                            # Sync session_state.schedule with the (potentially modified) scheduler schedule
-                            st.session_state.schedule = _sched_fa.schedule
-
                             if _total_swaps > 0:
                                 try:
                                     from saldo27.pdf_exporter import PDFExporter
@@ -2315,6 +2317,9 @@ with tab2:
                             st.error(f"Error en el ajuste final: {_fa_exc}")
                             logging.error("FinalAdjustmentEngine error", exc_info=True)
                             _fa_results = None
+                        finally:
+                            # Sync session_state.schedule with scheduler schedule even if adjustment fails midway
+                            st.session_state.schedule = _sched_fa.schedule
 
                     if _fa_results is not None:
                         if _total_swaps > 0:
