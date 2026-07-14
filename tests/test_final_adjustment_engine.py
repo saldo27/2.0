@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from saldo27.final_adjustment_engine import FinalAdjustmentEngine
-from saldo27.schedule_builder import ScheduleBuilder
 from saldo27.scheduler import Scheduler
+from saldo27.utilities import get_effective_min_gap
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,27 +63,72 @@ def _build_engine(scheduler):
     return FinalAdjustmentEngine(scheduler)
 
 
-def _make_stub_builder(scheduler):
+class _ScheduleBuilderStub:
     """
-    Build a minimal ScheduleBuilder stub that has enough state to exercise
-    _can_take_in_swap without running the full builder initialization.
+    Standalone stub that implements only the ScheduleBuilder interface methods
+    required by FinalAdjustmentEngine._can_take_in_swap.  It does NOT inherit
+    from ScheduleBuilder and does NOT use __new__ to bypass initialisation —
+    it provides the minimal interface needed for testing.
 
-    `_is_worker_unavailable` delegates to the real ScheduleBuilder implementation
-    because some tests specifically verify that days-off block a swap; other methods
-    are stubbed trivially because the relevant tests do not exercise them.
+    Gap and availability logic is implemented directly so these tests remain
+    decoupled from ScheduleBuilder's internal structure.
     """
-    sb = ScheduleBuilder.__new__(ScheduleBuilder)
-    sb.scheduler = scheduler
-    sb.workers_data = scheduler.workers_data
-    sb.worker_assignments = scheduler.worker_assignments
-    sb.date_utils = scheduler.date_utils
-    sb.gap_between_shifts = scheduler.gap_between_shifts
-    sb._locked_mandatory = set()
-    sb.num_shifts = 2
-    sb._check_incompatibility_with_list = lambda wid, others: True
-    sb._is_mandatory = lambda wid, date: False
-    sb._is_worker_unavailable = lambda wid, d: ScheduleBuilder._is_worker_unavailable(sb, wid, d)
-    return sb
+
+    def __init__(self, scheduler, *, allow_all: bool = False):
+        self._scheduler = scheduler
+        self._locked_mandatory: set = set()
+        self.num_shifts: int = 2
+        self._allow_all = allow_all  # when True, mark all workers as available
+
+    def _is_mandatory(self, wid: str, date: datetime) -> bool:
+        return False
+
+    def _check_incompatibility_with_list(self, wid: str, others: list) -> bool:
+        return True
+
+    def _is_worker_unavailable(self, worker_id: str, date: datetime) -> bool:
+        if self._allow_all:
+            return False
+        worker = next(
+            (w for w in self._scheduler.workers_data if w["id"] == worker_id), None
+        )
+        if not worker:
+            return True
+        days_off_str = worker.get("days_off", "") or ""
+        if days_off_str:
+            try:
+                days_off = set(self._scheduler.date_utils.parse_dates(days_off_str))
+                if date in days_off:
+                    return True
+            except Exception:
+                return True
+        return False
+
+    def _check_gap_constraint_simulated(
+        self, worker_id: str, date: datetime, simulated_assignments: dict
+    ) -> bool:
+        worker = next(
+            (w for w in self._scheduler.workers_data if w["id"] == worker_id), None
+        )
+        min_days = get_effective_min_gap(worker, self._scheduler.gap_between_shifts)
+        current = simulated_assignments.get(worker_id, set())
+        prior_raw = getattr(self._scheduler, "prior_assignments", {}).get(worker_id, set())
+        cutoff = self._scheduler.start_date - timedelta(days=90)
+        prior = {d for d in prior_raw if d >= cutoff}
+        for prev in sorted(current | prior):
+            if prev == date:
+                continue
+            days = abs((date - prev).days)
+            if days < min_days:
+                return False
+            if (days == 7 or days == 14) and date.weekday() == prev.weekday():
+                return False
+        return True
+
+
+def _make_stub_builder(scheduler):
+    """Return a _ScheduleBuilderStub wired to the given scheduler."""
+    return _ScheduleBuilderStub(scheduler)
 
 
 # ---------------------------------------------------------------------------

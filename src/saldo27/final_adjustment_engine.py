@@ -331,17 +331,16 @@ class FinalAdjustmentEngine:
 
         # 4. Gap constraint — simulate the post-swap assignment set:
         #    remove date_lose (the date this worker gives up), do NOT yet add date_gain
-        #    (the method checks date_gain against the remaining assignments).
+        #    (_check_gap_constraint_simulated checks date_gain against the remaining dates).
         current_dates = self.worker_assignments.get(worker_id, set())
         simulated_worker_dates = (
-            current_dates - {date_lose} if date_lose is not None else set(current_dates)
+            current_dates - {date_lose} if date_lose is not None else current_dates
         )
-        # _check_gap_constraint_simulated only reads simulated[worker_id]; pass the
-        # full dict so any future extension that reads other workers still works.
-        simulated: dict[str, set] = dict(self.worker_assignments)
-        simulated[worker_id] = simulated_worker_dates
-
-        if not sb._check_gap_constraint_simulated(worker_id, date_gain, simulated):
+        # _check_gap_constraint_simulated only reads simulated[worker_id]; a single-entry
+        # dict is sufficient and avoids copying the entire worker_assignments mapping.
+        if not sb._check_gap_constraint_simulated(
+            worker_id, date_gain, {worker_id: simulated_worker_dates}
+        ):
             return False
 
         return True
