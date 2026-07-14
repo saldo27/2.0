@@ -250,30 +250,98 @@ class FinalAdjustmentEngine:
     # Internal: constraint validation helpers
     # ------------------------------------------------------------------
 
-    def _can_take_shift(self, worker_id: str, date: datetime, post: int) -> bool:
-        """Devuelve True si el trabajador puede ser asignado a (date, post)."""
-        # Use schedule_builder score as the primary gate (mirrors StrictBalanceOptimizer)
-        if self.schedule_builder is None:
-            return True
-        score = self.schedule_builder._calculate_worker_score(
-            next((w for w in self.workers_data if w["id"] == worker_id), {}),
-            date,
-            post,
-            relaxation_level=0,
-        )
-        return score != float("-inf")
-
     def _is_locked(self, worker_id: str, date: datetime) -> bool:
         """True si la asignación está bloqueada (mandatory)."""
         if self.schedule_builder is None:
             return False
         return (worker_id, date) in self.schedule_builder._locked_mandatory
 
-    def _can_modify(self, worker_id: str, date: datetime) -> bool:
-        """True si la asignación puede ser modificada."""
+    def _is_mandatory(self, worker_id: str, date: datetime) -> bool:
+        """True si la asignación es un turno obligatorio (config mandatory)."""
         if self.schedule_builder is None:
+            return False
+        return self.schedule_builder._is_mandatory(worker_id, date)
+
+    def _can_swap_away(self, worker_id: str, date: datetime) -> bool:
+        """
+        True si una asignación puede cederse en un intercambio.
+
+        A diferencia de _can_modify, NO protege el objetivo mensual porque en
+        un intercambio pareado el total de turnos del mes no cambia.
+        Solo bloquea asignaciones verdaderamente inmovibles (locked o config mandatory).
+        """
+        if self._is_locked(worker_id, date):
+            return False
+        if self._is_mandatory(worker_id, date):
+            return False
+        return True
+
+    def _can_take_in_swap(
+        self,
+        worker_id: str,
+        date_gain: datetime,
+        post_gain: int,
+        date_lose: datetime | None,
+    ) -> bool:
+        """
+        True si el trabajador puede recibir el turno (date_gain, post_gain) como
+        parte de un intercambio en el que simultáneamente cede date_lose.
+
+        A diferencia de _can_take_shift / _calculate_worker_score, esta función
+        NO verifica límites de objetivo ni tolerancia (el total de turnos no cambia
+        en un intercambio pareado). Sólo valida:
+          1. Disponibilidad del trabajador en date_gain (días libres, periodos de trabajo).
+          2. Restricciones no_last_post / only_last_post.
+          3. Incompatibilidades con otros trabajadores asignados ese mismo día.
+          4. Restricción de gap mínimo (usando asignaciones simuladas: sin date_lose,
+             con date_gain aún no incluida para que la comprobación sea correcta).
+        """
+        sb = self.schedule_builder
+
+        # Without schedule_builder, allow all swaps
+        if sb is None:
             return True
-        return self.schedule_builder._can_modify_assignment(worker_id, date, "final_adjustment")
+
+        # 1. Basic availability
+        if sb._is_worker_unavailable(worker_id, date_gain):
+            return False
+
+        # 2. Post constraints
+        worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
+        if worker_config:
+            num_shifts = getattr(sb, "num_shifts", None)
+            if num_shifts is not None:
+                is_last_post = post_gain == num_shifts - 1
+                if is_last_post and worker_config.get("no_last_post", False):
+                    return False
+                if not is_last_post and worker_config.get("only_last_post", False):
+                    return False
+
+        # 3. Incompatibility: check against workers already on date_gain (excluding the
+        #    slot being freed, if any, to avoid false conflicts with the outgoing worker)
+        others_on_date = [
+            w
+            for idx, w in enumerate(self.schedule.get(date_gain, []))
+            if w is not None and w != worker_id and idx != post_gain
+        ]
+        if not sb._check_incompatibility_with_list(worker_id, others_on_date):
+            return False
+
+        # 4. Gap constraint — simulate the post-swap assignment set:
+        #    remove date_lose (the date this worker gives up), do NOT yet add date_gain
+        #    (the method checks date_gain against the remaining assignments).
+        simulated: dict[str, set] = {
+            wid: set(dates) for wid, dates in self.worker_assignments.items()
+        }
+        if date_lose is not None:
+            simulated.setdefault(worker_id, set()).discard(date_lose)
+        else:
+            simulated.setdefault(worker_id, set())
+
+        if not sb._check_gap_constraint_simulated(worker_id, date_gain, simulated):
+            return False
+
+        return True
 
     # ------------------------------------------------------------------
     # Internal: shift balance
@@ -339,25 +407,24 @@ class FinalAdjustmentEngine:
             return False
 
         for over_id, over_dev in over[:5]:
-            # Weekend dates of A that are not mandatory
+            # Weekend dates of A that are not locked/mandatory
             over_wknd_dates = [
                 d
                 for d in sorted(self.scheduler.worker_weekends.get(over_id, []))
-                if not self._is_locked(over_id, d) and self._can_modify(over_id, d)
+                if self._can_swap_away(over_id, d)
             ]
 
             for under_id, under_dev in under[:5]:
                 if over_id == under_id:
                     continue
 
-                # Weekday dates of B (non-weekend, non-bridge) that are not mandatory
+                # Weekday dates of B (non-weekend, non-bridge) that are not locked/mandatory
                 under_wkday_dates = [
                     d
                     for d in sorted(self.worker_assignments.get(under_id, set()))
                     if not self.scheduler.date_utils.is_weekend_day(d, self.holidays_set)
                     and not self.scheduler.date_utils.is_bridge_day(d, self.scheduler.bridge_periods)
-                    and not self._is_locked(under_id, d)
-                    and self._can_modify(under_id, d)
+                    and self._can_swap_away(under_id, d)
                 ]
 
                 if not over_wknd_dates or not under_wkday_dates:
@@ -369,9 +436,8 @@ class FinalAdjustmentEngine:
                     except (ValueError, KeyError):
                         continue
 
-                    if not self._can_take_shift(under_id, date_wknd, post_w):
-                        continue
-
+                    # B takes A's weekend slot; B simultaneously loses date_wkday
+                    # (checked below when we know which date_wkday we're using)
                     for date_wkday in under_wkday_dates:
                         if date_wkday == date_wknd:
                             continue
@@ -380,7 +446,10 @@ class FinalAdjustmentEngine:
                         except (ValueError, KeyError):
                             continue
 
-                        if not self._can_take_shift(over_id, date_wkday, post_d):
+                        # Swap-aware constraint check (no target/tolerance gate)
+                        if not self._can_take_in_swap(under_id, date_wknd, post_w, date_wkday):
+                            continue
+                        if not self._can_take_in_swap(over_id, date_wkday, post_d, date_wknd):
                             continue
 
                         # --- Attempt paired swap ---
@@ -461,26 +530,24 @@ class FinalAdjustmentEngine:
             return False
 
         for over_id, over_dev in over[:5]:
-            # Bridge dates of A
+            # Bridge dates of A that are not locked/mandatory
             over_bridge_dates = [
                 d
                 for d in sorted(self.worker_assignments.get(over_id, set()))
                 if self.scheduler.date_utils.is_bridge_day(d, self.scheduler.bridge_periods)
-                and not self._is_locked(over_id, d)
-                and self._can_modify(over_id, d)
+                and self._can_swap_away(over_id, d)
             ]
 
             for under_id, under_dev in under[:5]:
                 if over_id == under_id:
                     continue
 
-                # Non-bridge dates of B (prefer weekday non-weekend to minimise side-effects)
+                # Non-bridge dates of B that are not locked/mandatory
                 under_nonbridge_dates = [
                     d
                     for d in sorted(self.worker_assignments.get(under_id, set()))
                     if not self.scheduler.date_utils.is_bridge_day(d, self.scheduler.bridge_periods)
-                    and not self._is_locked(under_id, d)
-                    and self._can_modify(under_id, d)
+                    and self._can_swap_away(under_id, d)
                 ]
 
                 if not over_bridge_dates or not under_nonbridge_dates:
@@ -492,9 +559,6 @@ class FinalAdjustmentEngine:
                     except (ValueError, KeyError):
                         continue
 
-                    if not self._can_take_shift(under_id, date_bridge, post_b):
-                        continue
-
                     for date_nonbridge in under_nonbridge_dates:
                         if date_nonbridge == date_bridge:
                             continue
@@ -503,7 +567,10 @@ class FinalAdjustmentEngine:
                         except (ValueError, KeyError):
                             continue
 
-                        if not self._can_take_shift(over_id, date_nonbridge, post_n):
+                        # Swap-aware constraint check (no target/tolerance gate)
+                        if not self._can_take_in_swap(under_id, date_bridge, post_b, date_nonbridge):
+                            continue
+                        if not self._can_take_in_swap(over_id, date_nonbridge, post_n, date_bridge):
                             continue
 
                         # --- Attempt paired swap ---
