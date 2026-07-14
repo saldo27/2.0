@@ -67,7 +67,7 @@ class _ScheduleBuilderStub:
     """
     Standalone stub that implements only the ScheduleBuilder interface methods
     required by FinalAdjustmentEngine._can_take_in_swap.  It does NOT inherit
-    from ScheduleBuilder and does NOT use __new__ to bypass initialisation —
+    from ScheduleBuilder and does NOT use __new__ to bypass initialization —
     it provides the minimal interface needed for testing.
 
     Gap and availability logic is implemented directly so these tests remain

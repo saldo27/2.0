@@ -54,10 +54,7 @@ class FinalAdjustmentEngine:
 
         # Cache raw targets to avoid repeated O(n) scans inside hot loops
         self._raw_targets: dict[str, int] = {
-            w["id"]: (
-                w["_raw_target"] if w.get("_raw_target") is not None else w.get("target_shifts", 0)
-            )
-            for w in self.workers_data
+            w["id"]: self._get_worker_raw_target(w) for w in self.workers_data
         }
 
         # Counters for reporting
@@ -209,6 +206,20 @@ class FinalAdjustmentEngine:
         ratio = self._total_bridge_slots / self._total_all_slots
         return round(raw_target * ratio)
 
+    @staticmethod
+    def _get_worker_raw_target(worker: dict) -> int:
+        """
+        Devuelve el objetivo bruto de turnos para un trabajador.
+
+        Usa ``_raw_target`` cuando está presente y no es ``None``; en caso
+        contrario recurre a ``target_shifts``.  El valor 0 en ``_raw_target``
+        es válido (trabajador sin turnos) y no provoca la sustitución.
+        """
+        raw = worker.get("_raw_target")
+        if raw is not None:
+            return raw
+        return worker.get("target_shifts", 0)
+
     # ------------------------------------------------------------------
     # Internal: state save/restore (mirrors StrictBalanceOptimizer)
     # ------------------------------------------------------------------
@@ -288,6 +299,12 @@ class FinalAdjustmentEngine:
         """
         True si el trabajador puede recibir el turno (date_gain, post_gain) como
         parte de un intercambio en el que simultáneamente cede date_lose.
+
+        Args:
+            worker_id:  ID del trabajador que recibe el nuevo turno.
+            date_gain:  Fecha en la que el trabajador pasará a trabajar.
+            post_gain:  Puesto (posición de turno) asignado en date_gain.
+            date_lose:  Fecha que el trabajador cede simultáneamente (None si no cede ninguna).
 
         A diferencia de _can_take_shift / _calculate_worker_score, esta función
         NO verifica límites de objetivo ni tolerancia (el total de turnos no cambia
