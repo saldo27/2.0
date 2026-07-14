@@ -53,9 +53,7 @@ class FinalAdjustmentEngine:
         self._precompute_slot_totals()
 
         # Cache raw targets to avoid repeated O(n) scans inside hot loops
-        self._raw_targets: dict[str, int] = {
-            w["id"]: self._get_worker_raw_target(w) for w in self.workers_data
-        }
+        self._raw_targets: dict[str, int] = {w["id"]: self._get_worker_raw_target(w) for w in self.workers_data}
 
         # Counters for reporting
         self.stats: dict[str, int] = {
@@ -151,9 +149,7 @@ class FinalAdjustmentEngine:
             total_assigned = len(assigned_dates)
 
             weekend_assigned = sum(
-                1
-                for d in assigned_dates
-                if self.scheduler.date_utils.is_weekend_day(d, self.holidays_set)
+                1 for d in assigned_dates if self.scheduler.date_utils.is_weekend_day(d, self.holidays_set)
             )
             bridge_assigned = len(self.scheduler.worker_bridge_counts.get(wid, set()))
 
@@ -255,9 +251,7 @@ class FinalAdjustmentEngine:
         self.scheduler.worker_weekend_counts.update(state["weekend_counts"])
 
         self.scheduler.worker_bridge_counts.clear()
-        self.scheduler.worker_bridge_counts.update(
-            {k: set(v) for k, v in state["bridge_counts"].items()}
-        )
+        self.scheduler.worker_bridge_counts.update({k: set(v) for k, v in state["bridge_counts"].items()})
 
     # ------------------------------------------------------------------
     # Internal: constraint validation helpers
@@ -350,14 +344,10 @@ class FinalAdjustmentEngine:
         #    remove date_lose (the date this worker gives up), do NOT yet add date_gain
         #    (_check_gap_constraint_simulated checks date_gain against the remaining dates).
         current_dates = self.worker_assignments.get(worker_id, set())
-        simulated_worker_dates = (
-            current_dates - {date_lose} if date_lose is not None else current_dates
-        )
+        simulated_worker_dates = current_dates - {date_lose} if date_lose is not None else current_dates
         # _check_gap_constraint_simulated only reads simulated[worker_id]; a single-entry
         # dict is sufficient and avoids copying the entire worker_assignments mapping.
-        if not sb._check_gap_constraint_simulated(
-            worker_id, date_gain, {worker_id: simulated_worker_dates}
-        ):
+        if not sb._check_gap_constraint_simulated(worker_id, date_gain, {worker_id: simulated_worker_dates}):
             return False
 
         return True
@@ -428,9 +418,7 @@ class FinalAdjustmentEngine:
         for over_id, over_dev in over[:5]:
             # Weekend dates of A that are not locked/mandatory
             over_wknd_dates = [
-                d
-                for d in sorted(self.scheduler.worker_weekends.get(over_id, []))
-                if self._can_swap_away(over_id, d)
+                d for d in sorted(self.scheduler.worker_weekends.get(over_id, [])) if self._can_swap_away(over_id, d)
             ]
 
             for under_id, under_dev in under[:5]:

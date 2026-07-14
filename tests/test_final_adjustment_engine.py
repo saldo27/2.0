@@ -12,6 +12,7 @@ from saldo27.utilities import get_effective_min_gap
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_scheduler(workers_data, start=datetime(2026, 3, 1), end=datetime(2026, 3, 31)):
     return Scheduler(
         {
@@ -89,9 +90,7 @@ class _ScheduleBuilderStub:
     def _is_worker_unavailable(self, worker_id: str, date: datetime) -> bool:
         if self._allow_all:
             return False
-        worker = next(
-            (w for w in self._scheduler.workers_data if w["id"] == worker_id), None
-        )
+        worker = next((w for w in self._scheduler.workers_data if w["id"] == worker_id), None)
         if not worker:
             return True
         days_off_str = worker.get("days_off", "") or ""
@@ -104,12 +103,8 @@ class _ScheduleBuilderStub:
                 return True
         return False
 
-    def _check_gap_constraint_simulated(
-        self, worker_id: str, date: datetime, simulated_assignments: dict
-    ) -> bool:
-        worker = next(
-            (w for w in self._scheduler.workers_data if w["id"] == worker_id), None
-        )
+    def _check_gap_constraint_simulated(self, worker_id: str, date: datetime, simulated_assignments: dict) -> bool:
+        worker = next((w for w in self._scheduler.workers_data if w["id"] == worker_id), None)
         min_days = get_effective_min_gap(worker, self._scheduler.gap_between_shifts)
         current = simulated_assignments.get(worker_id, set())
         prior_raw = getattr(self._scheduler, "prior_assignments", {}).get(worker_id, set())
@@ -134,6 +129,7 @@ def _make_stub_builder(scheduler):
 # ---------------------------------------------------------------------------
 # _can_swap_away
 # ---------------------------------------------------------------------------
+
 
 def test_can_swap_away_regular_shift_allowed():
     """A normal, non-mandatory shift can always be swapped away."""
@@ -186,6 +182,7 @@ def test_can_swap_away_with_config_mandatory_blocked():
 # ---------------------------------------------------------------------------
 # _can_take_in_swap
 # ---------------------------------------------------------------------------
+
 
 def test_can_take_in_swap_no_builder_always_true():
     """Without a schedule_builder every swap is allowed."""
@@ -273,6 +270,7 @@ def test_can_take_in_swap_does_not_check_target_tolerance():
 # _raw_targets cache – fallback logic
 # ---------------------------------------------------------------------------
 
+
 def test_raw_targets_fallback_when_raw_target_is_none():
     """
     When _raw_target is not present (or None) on a worker dict, the engine must
@@ -309,6 +307,6 @@ def test_raw_targets_fallback_when_raw_target_is_none():
 
     engine = _build_engine(scheduler)
 
-    assert engine._raw_targets["X"] == 5   # fell back to target_shifts
-    assert engine._raw_targets["Y"] == 7   # fell back to target_shifts (None treated as missing)
-    assert engine._raw_targets["Z"] == 0   # raw_target=0 preserved (not a fallback)
+    assert engine._raw_targets["X"] == 5  # fell back to target_shifts
+    assert engine._raw_targets["Y"] == 7  # fell back to target_shifts (None treated as missing)
+    assert engine._raw_targets["Z"] == 0  # raw_target=0 preserved (not a fallback)

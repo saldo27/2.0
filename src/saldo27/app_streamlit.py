@@ -2298,9 +2298,7 @@ with tab2:
                             _after_metrics = _fa_results["after"]
                             _fa_stats = _fa_results["stats"]
                             _total_swaps = (
-                                _fa_stats["shift_swaps"]
-                                + _fa_stats["weekend_swaps"]
-                                + _fa_stats["bridge_swaps"]
+                                _fa_stats["shift_swaps"] + _fa_stats["weekend_swaps"] + _fa_stats["bridge_swaps"]
                             )
 
                             if _total_swaps > 0:
