@@ -54,7 +54,9 @@ class FinalAdjustmentEngine:
 
         # Cache raw targets to avoid repeated O(n) scans inside hot loops
         self._raw_targets: dict[str, int] = {
-            w["id"]: (w.get("_raw_target") or w.get("target_shifts", 0))
+            w["id"]: (
+                w["_raw_target"] if w.get("_raw_target") is not None else w.get("target_shifts", 0)
+            )
             for w in self.workers_data
         }
 
@@ -330,13 +332,11 @@ class FinalAdjustmentEngine:
         # 4. Gap constraint — simulate the post-swap assignment set:
         #    remove date_lose (the date this worker gives up), do NOT yet add date_gain
         #    (the method checks date_gain against the remaining assignments).
-        simulated: dict[str, set] = {
-            wid: set(dates) for wid, dates in self.worker_assignments.items()
-        }
+        worker_dates = set(self.worker_assignments.get(worker_id, set()))
         if date_lose is not None:
-            simulated.setdefault(worker_id, set()).discard(date_lose)
-        else:
-            simulated.setdefault(worker_id, set())
+            worker_dates.discard(date_lose)
+        simulated: dict[str, set] = dict(self.worker_assignments)
+        simulated[worker_id] = worker_dates
 
         if not sb._check_gap_constraint_simulated(worker_id, date_gain, simulated):
             return False
@@ -375,7 +375,7 @@ class FinalAdjustmentEngine:
 
         for worker in self.workers_data:
             wid = worker["id"]
-            raw_target = worker.get("_raw_target") or worker.get("target_shifts", 0)
+            raw_target = self._raw_targets.get(wid, 0)
             if raw_target == 0:
                 continue
             wknd_target = self._weekend_target_for(raw_target)
@@ -499,7 +499,7 @@ class FinalAdjustmentEngine:
 
         for worker in self.workers_data:
             wid = worker["id"]
-            raw_target = worker.get("_raw_target") or worker.get("target_shifts", 0)
+            raw_target = self._raw_targets.get(wid, 0)
             if raw_target == 0 or self._bridge_target_for(raw_target) == 0:
                 continue
             bridge_target = self._bridge_target_for(raw_target)
