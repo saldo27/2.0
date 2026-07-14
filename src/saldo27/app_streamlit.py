@@ -904,6 +904,116 @@ def get_worker_statistics():
     return pd.DataFrame(stats)
 
 
+def build_summary_pdf_stats_data(scheduler: Scheduler) -> dict[str, Any]:
+    """Construye el payload de estadísticas usado por el PDF global."""
+    holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
+
+    stats_data: dict[str, Any] = {
+        "period_start": scheduler.start_date,
+        "period_end": scheduler.end_date,
+        "workers": {},
+        "worker_shifts": {},
+    }
+
+    for worker in scheduler.workers_data:
+        w_id = worker["id"]
+        assignments = [d for d, w in scheduler.schedule.items() if w_id in w]
+
+        post_counts: dict[int, int] = {}
+        weekday_counts: dict[int, int] = {}
+        shift_list: list[dict[str, Any]] = []
+
+        for assigned_date in assignments:
+            try:
+                p_idx = scheduler.schedule[assigned_date].index(w_id)
+                post_counts[p_idx] = post_counts.get(p_idx, 0) + 1
+            except (ValueError, KeyError):
+                pass
+
+            wd = assigned_date.weekday()
+            weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
+
+            is_holiday = assigned_date in holidays_set
+            is_pre_holiday = (assigned_date + timedelta(days=1)) in holidays_set
+            is_weekend_day = scheduler.date_utils.is_weekend_day(assigned_date, holidays_set)
+
+            shift_list.append(
+                {
+                    "date": assigned_date,
+                    "day": assigned_date.strftime("%A"),
+                    "post": scheduler.schedule[assigned_date].index(w_id) + 1,
+                    "is_weekend": is_weekend_day or is_holiday or is_pre_holiday,
+                    "is_holiday": is_holiday,
+                    "is_pre_holiday": is_pre_holiday,
+                }
+            )
+
+        weekends_count = sum(1 for d in assignments if scheduler.date_utils.is_weekend_day(d, holidays_set))
+        holidays_count = sum(1 for d in assignments if (d in holidays_set or (d + timedelta(days=1)) in holidays_set))
+
+        stats_data["workers"][w_id] = {
+            "total": len(assignments),
+            "weekends": weekends_count,
+            "holidays": holidays_count,
+            "last_post": post_counts.get(scheduler.num_shifts - 1, 0),
+            "weekday_counts": weekday_counts,
+            "post_counts": post_counts,
+        }
+        stats_data["worker_shifts"][w_id] = shift_list
+
+    return stats_data
+
+
+def refresh_generated_report_pdfs(scheduler: Scheduler, pdf_exporter_cls: type) -> tuple[list[str], list[str]]:
+    """
+    Regenera los PDFs ya existentes vinculados al calendario/estadísticas.
+
+    Returns:
+        tuple[list[str], list[str]]: (archivos regenerados, errores de regeneración).
+    """
+    config = {
+        "schedule": scheduler.schedule,
+        "workers_data": scheduler.workers_data,
+        "num_shifts": scheduler.num_shifts,
+        "holidays": scheduler.holidays,
+    }
+    exporter = pdf_exporter_cls(config)
+
+    period_str = f"{scheduler.start_date.strftime('%Y%m%d')}_{scheduler.end_date.strftime('%Y%m%d')}"
+    refreshed_files: list[str] = []
+    errors: list[str] = []
+
+    summary_default = Path(f"summary_global_{period_str}.pdf")
+    summary_full_period = Path("summary_global_full_period.pdf")
+    if summary_default.exists() or summary_full_period.exists():
+        try:
+            refreshed = exporter.export_summary_pdf(build_summary_pdf_stats_data(scheduler))
+            if refreshed:
+                refreshed_files.append(refreshed)
+        except Exception as exc:
+            errors.append(f"Resumen Ejecutivo: {exc}")
+
+    calendar_default = Path(f"schedule_all_months_{period_str}.pdf")
+    if calendar_default.exists():
+        try:
+            refreshed = exporter.export_all_months_calendar(filename=calendar_default.as_posix())
+            if refreshed:
+                refreshed_files.append(refreshed)
+        except Exception as exc:
+            errors.append(f"Calendario Visual Completo: {exc}")
+
+    worker_stats = Path("worker_statistics.pdf")
+    if worker_stats.exists():
+        try:
+            refreshed = exporter.export_worker_statistics(filename=worker_stats.as_posix())
+            if refreshed:
+                refreshed_files.append(refreshed)
+        except Exception as exc:
+            errors.append(f"Estadísticas y Desglose Detallado: {exc}")
+
+    return refreshed_files, errors
+
+
 def check_violations():
     """Verificar violaciones de restricciones usando el motor central"""
     if st.session_state.scheduler is None:
@@ -2118,76 +2228,7 @@ with tab2:
                             filename = None
 
                             if report_type == "Resumen Ejecutivo (Global)":
-                                # 1. Preparar datos de estadísticas (reconstrucción para summary)
-                                from datetime import timedelta
-
-                                holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
-
-                                stats_data = {
-                                    "period_start": scheduler.start_date,
-                                    "period_end": scheduler.end_date,
-                                    "workers": {},
-                                    "worker_shifts": {},
-                                }
-                                for worker in scheduler.workers_data:
-                                    w_id = worker["id"]
-                                    assignments = [d for d, w in scheduler.schedule.items() if w_id in w]
-
-                                    # Counts
-                                    post_counts = {}
-                                    weekday_counts = {}
-                                    shift_list = []
-
-                                    for date in assignments:
-                                        # Posts
-                                        try:
-                                            p_idx = scheduler.schedule[date].index(w_id)
-                                            post_counts[p_idx] = post_counts.get(p_idx, 0) + 1
-                                        except (ValueError, KeyError):
-                                            pass
-                                        # Weekdays
-                                        wd = date.weekday()
-                                        weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
-
-                                        # Determine day type
-                                        is_holiday = date in holidays_set
-                                        is_pre_holiday = (date + timedelta(days=1)) in holidays_set
-                                        is_weekend_day = scheduler.date_utils.is_weekend_day(date, holidays_set)
-
-                                        # Shift list
-                                        shift_list.append(
-                                            {
-                                                "date": date,
-                                                "day": date.strftime("%A"),
-                                                "post": scheduler.schedule[date].index(w_id) + 1,
-                                                "is_weekend": is_weekend_day or is_holiday or is_pre_holiday,
-                                                "is_holiday": is_holiday,
-                                                "is_pre_holiday": is_pre_holiday,
-                                            }
-                                        )
-
-                                    # Weekend = Fri/Sat/Sun + holidays + pre-holidays
-                                    weekends_count = sum(
-                                        1 for d in assignments if scheduler.date_utils.is_weekend_day(d, holidays_set)
-                                    )
-                                    # Holidays = holidays + pre-holidays
-                                    holidays_count = sum(
-                                        1
-                                        for d in assignments
-                                        if (d in holidays_set or (d + timedelta(days=1)) in holidays_set)
-                                    )
-
-                                    stats_data["workers"][w_id] = {
-                                        "total": len(assignments),
-                                        "weekends": weekends_count,
-                                        "holidays": holidays_count,
-                                        "last_post": post_counts.get(scheduler.num_shifts - 1, 0),
-                                        "weekday_counts": weekday_counts,
-                                        "post_counts": post_counts,
-                                    }
-                                    stats_data["worker_shifts"][w_id] = shift_list
-
-                                filename = exporter.export_summary_pdf(stats_data)
+                                filename = exporter.export_summary_pdf(build_summary_pdf_stats_data(scheduler))
 
                             elif report_type == "Calendario Visual Completo":
                                 # Genera todos los meses en horizontal
@@ -2231,6 +2272,95 @@ with tab2:
                         )
             else:
                 st.info("ℹ️ No se encontraron archivos PDF generados")
+
+            # ---- Ajuste Final ------------------------------------------------
+            st.markdown("---")
+            st.subheader("⚖️ Ajuste Final")
+            st.caption(
+                "Ciclo de reequilibrio post-generación: optimiza la distribución de turnos, "
+                "fines de semana y puentes respetando todas las restricciones."
+            )
+
+            if st.button("⚖️ Ejecutar Ajuste Final", type="secondary", key="btn_final_adjustment"):
+                _sched_fa = st.session_state.scheduler
+                _refreshed_pdfs: list[str] = []
+                _pdf_refresh_errors: list[str] = []
+                if _sched_fa is None or _sched_fa.schedule_builder is None:
+                    st.warning("⚠️ El calendario debe estar completamente generado antes de ejecutar el ajuste final.")
+                else:
+                    with st.spinner("Ejecutando ajuste final… esto puede tardar unos segundos."):
+                        try:
+                            from saldo27.final_adjustment_engine import FinalAdjustmentEngine
+
+                            engine = FinalAdjustmentEngine(_sched_fa)
+                            _before_metrics = engine.compute_metrics()
+                            _fa_results = engine.run(max_iterations=300)
+                            _after_metrics = _fa_results["after"]
+                            _fa_stats = _fa_results["stats"]
+                            _total_swaps = (
+                                _fa_stats["shift_swaps"] + _fa_stats["weekend_swaps"] + _fa_stats["bridge_swaps"]
+                            )
+
+                            if _total_swaps > 0:
+                                try:
+                                    from saldo27.pdf_exporter import PDFExporter
+
+                                    _refreshed_pdfs, _pdf_refresh_errors = refresh_generated_report_pdfs(
+                                        _sched_fa, PDFExporter
+                                    )
+                                except Exception as _pdf_exc:
+                                    _pdf_refresh_errors.append(str(_pdf_exc))
+
+                        except Exception as _fa_exc:
+                            st.error(f"Error en el ajuste final: {_fa_exc}")
+                            logging.error("FinalAdjustmentEngine error", exc_info=True)
+                            _fa_results = None
+                        finally:
+                            # Sync session_state.schedule with scheduler schedule even if adjustment fails midway
+                            st.session_state.schedule = _sched_fa.schedule
+
+                    if _fa_results is not None:
+                        if _total_swaps > 0:
+                            st.success(
+                                f"✅ Ajuste completado: {_fa_stats['shift_swaps']} swap(s) de turno, "
+                                f"{_fa_stats['weekend_swaps']} swap(s) de fin-de-semana, "
+                                f"{_fa_stats['bridge_swaps']} swap(s) de puente."
+                            )
+                            if _refreshed_pdfs:
+                                st.info(f"🔄 PDFs actualizados: {', '.join(_refreshed_pdfs)}")
+                            if _pdf_refresh_errors:
+                                for _pdf_err in _pdf_refresh_errors:
+                                    st.warning(f"⚠️ No se pudo actualizar un PDF: {_pdf_err}")
+                        else:
+                            st.info("ℹ️ El calendario ya estaba bien equilibrado. No se realizaron cambios.")
+
+                        # Show before/after comparison table
+                        _rows = []
+                        for _wid, _bef in _before_metrics.items():
+                            _aft = _after_metrics.get(_wid, _bef)
+                            _rows.append(
+                                {
+                                    "Médico": _bef["name"],
+                                    "Turnos Obj.": _bef["shift_target"],
+                                    "Turnos (Antes)": _bef["shift_assigned"],
+                                    "Turnos (Después)": _aft["shift_assigned"],
+                                    "Desv. Turnos": f"{_aft['shift_deviation']:+d}",
+                                    "Wknd Obj.": _bef["weekend_target"],
+                                    "Wknd (Antes)": _bef["weekend_assigned"],
+                                    "Wknd (Después)": _aft["weekend_assigned"],
+                                    "Desv. Wknd": f"{_aft['weekend_deviation']:+d}",
+                                    "Puente Obj.": _bef["bridge_target"],
+                                    "Puente (Antes)": _bef["bridge_assigned"],
+                                    "Puente (Después)": _aft["bridge_assigned"],
+                                    "Desv. Puente": f"{_aft['bridge_deviation']:+d}",
+                                }
+                            )
+                        if _rows:
+                            with st.expander("📊 Detalle por médico (antes → después del ajuste)", expanded=False):
+                                st.dataframe(pd.DataFrame(_rows), hide_index=True)
+
+                        if _total_swaps > 0:
+                            st.rerun()
 
 # ==================== TAB 3: ESTADÍSTICAS ====================
 with tab3:
