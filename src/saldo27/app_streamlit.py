@@ -2286,21 +2286,25 @@ with tab2:
                                 {
                                     "Médico": _bef["name"],
                                     "Turnos Obj.": _bef["shift_target"],
-                                    "Turnos Antes": _bef["shift_assigned"],
-                                    "Turnos Desv.": f"{_aft['shift_deviation']:+d}",
+                                    "Turnos (Antes)": _bef["shift_assigned"],
+                                    "Turnos (Después)": _aft["shift_assigned"],
+                                    "Desv. Turnos": f"{_aft['shift_deviation']:+d}",
                                     "Wknd Obj.": _bef["weekend_target"],
-                                    "Wknd Antes": _bef["weekend_assigned"],
-                                    "Wknd Desv.": f"{_aft['weekend_deviation']:+d}",
+                                    "Wknd (Antes)": _bef["weekend_assigned"],
+                                    "Wknd (Después)": _aft["weekend_assigned"],
+                                    "Desv. Wknd": f"{_aft['weekend_deviation']:+d}",
                                     "Puente Obj.": _bef["bridge_target"],
-                                    "Puente Antes": _bef["bridge_assigned"],
-                                    "Puente Desv.": f"{_aft['bridge_deviation']:+d}",
+                                    "Puente (Antes)": _bef["bridge_assigned"],
+                                    "Puente (Después)": _aft["bridge_assigned"],
+                                    "Desv. Puente": f"{_aft['bridge_deviation']:+d}",
                                 }
                             )
                         if _rows:
-                            with st.expander("📊 Detalle por médico (después del ajuste)", expanded=False):
+                            with st.expander("📊 Detalle por médico (antes → después del ajuste)", expanded=False):
                                 st.dataframe(pd.DataFrame(_rows), hide_index=True)
 
-                        st.rerun()
+                        if total_swaps > 0:
+                            st.rerun()
 
 # ==================== TAB 3: ESTADÍSTICAS ====================
 with tab3:

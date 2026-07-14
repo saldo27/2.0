@@ -52,6 +52,12 @@ class FinalAdjustmentEngine:
         self._total_bridge_slots: int = 0
         self._precompute_slot_totals()
 
+        # Cache raw targets to avoid repeated O(n) scans inside hot loops
+        self._raw_targets: dict[str, int] = {
+            w["id"]: (w.get("_raw_target") or w.get("target_shifts", 0))
+            for w in self.workers_data
+        }
+
         # Counters for reporting
         self.stats: dict[str, int] = {
             "shift_swaps": 0,
@@ -80,7 +86,7 @@ class FinalAdjustmentEngine:
 
         before = self.compute_metrics()
 
-        iters_per_phase = max(max_iterations // 3, 50)
+        iters_per_phase = max(max_iterations // 3, 1)
 
         # --- Phase 1: Shift balance ----------------------------------------
         logging.info("Phase FA-1: Shift balance")
@@ -140,7 +146,7 @@ class FinalAdjustmentEngine:
         metrics: dict[str, dict[str, Any]] = {}
         for worker in self.workers_data:
             wid = worker["id"]
-            raw_target = worker.get("_raw_target") or worker.get("target_shifts", 0)
+            raw_target = self._raw_targets.get(wid, 0)
 
             assigned_dates = self.worker_assignments.get(wid, set())
             total_assigned = len(assigned_dates)
@@ -394,16 +400,10 @@ class FinalAdjustmentEngine:
                         self.scheduler._update_tracking_data(over_id, date_wkday, post_d, removing=False)
 
                         # Evaluate: did weekend deviations improve?
-                        raw_target_over = next(
-                            (w.get("_raw_target") or w.get("target_shifts", 0) for w in self.workers_data if w["id"] == over_id), 0
-                        )
-                        raw_target_under = next(
-                            (w.get("_raw_target") or w.get("target_shifts", 0) for w in self.workers_data if w["id"] == under_id), 0
-                        )
                         new_over_wknd = self.scheduler.worker_weekend_counts.get(over_id, 0)
                         new_under_wknd = self.scheduler.worker_weekend_counts.get(under_id, 0)
-                        new_over_dev = new_over_wknd - self._weekend_target_for(raw_target_over)
-                        new_under_dev = new_under_wknd - self._weekend_target_for(raw_target_under)
+                        new_over_dev = new_over_wknd - self._weekend_target_for(self._raw_targets.get(over_id, 0))
+                        new_under_dev = new_under_wknd - self._weekend_target_for(self._raw_targets.get(under_id, 0))
 
                         improved = abs(new_over_dev) < abs(over_dev) and abs(new_under_dev) < abs(under_dev)
                         if not improved:
@@ -523,16 +523,10 @@ class FinalAdjustmentEngine:
                         self.scheduler._update_tracking_data(over_id, date_nonbridge, post_n, removing=False)
 
                         # Evaluate: did bridge deviations improve?
-                        raw_target_over = next(
-                            (w.get("_raw_target") or w.get("target_shifts", 0) for w in self.workers_data if w["id"] == over_id), 0
-                        )
-                        raw_target_under = next(
-                            (w.get("_raw_target") or w.get("target_shifts", 0) for w in self.workers_data if w["id"] == under_id), 0
-                        )
                         new_over_bridge = len(self.scheduler.worker_bridge_counts.get(over_id, set()))
                         new_under_bridge = len(self.scheduler.worker_bridge_counts.get(under_id, set()))
-                        new_over_dev = new_over_bridge - self._bridge_target_for(raw_target_over)
-                        new_under_dev = new_under_bridge - self._bridge_target_for(raw_target_under)
+                        new_over_dev = new_over_bridge - self._bridge_target_for(self._raw_targets.get(over_id, 0))
+                        new_under_dev = new_under_bridge - self._bridge_target_for(self._raw_targets.get(under_id, 0))
 
                         improved = abs(new_over_dev) < abs(over_dev) and abs(new_under_dev) < abs(under_dev)
                         if not improved:
