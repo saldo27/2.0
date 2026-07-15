@@ -326,7 +326,7 @@ def _build_minimal_schedule(scheduler, workers, dates_per_worker):
     from collections import defaultdict
 
     # Gather all (date, worker) pairs
-    day_assignments: dict = defaultdict(list)
+    day_assignments: dict[datetime, list[str]] = defaultdict(list)
     for wid, dates in dates_per_worker.items():
         for d in dates:
             day_assignments[d].append(wid)
