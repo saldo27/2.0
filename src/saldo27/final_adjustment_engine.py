@@ -643,7 +643,7 @@ class FinalAdjustmentEngine:
         try:
             from ortools.sat.python import cp_model
         except ImportError:
-            logging.warning("FinalAdjustmentEngine: ortools no disponible, se omite la Fase 4 CP-SAT.")
+            logging.info("FinalAdjustmentEngine: ortools no disponible, se omite la Fase 4 CP-SAT.")
             return 0
 
         state_before = self._save_state()
@@ -923,9 +923,11 @@ class ORToolsPhase:
         # -------------------------------------------------------------------
         # 6. Solve
         # -------------------------------------------------------------------
+        import os
+
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit_seconds
-        solver.parameters.num_workers = 4
+        solver.parameters.num_workers = max(1, os.cpu_count() or 4)
         solver.parameters.log_search_progress = False
 
         status = solver.solve(model)
