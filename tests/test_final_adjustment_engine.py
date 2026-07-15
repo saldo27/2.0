@@ -317,31 +317,6 @@ def test_raw_targets_fallback_when_raw_target_is_none():
 # ---------------------------------------------------------------------------
 
 
-def _build_minimal_schedule(scheduler, workers, dates_per_worker):
-    """
-    Populate scheduler.schedule and worker_assignments from a dict
-    ``{worker_id: [date, ...]}``.  Each date gets a two-slot row; the
-    workers are distributed across slots in the order they appear.
-    """
-    from collections import defaultdict
-
-    # Gather all (date, worker) pairs
-    day_assignments: dict[datetime, list[str]] = defaultdict(list)
-    for wid, dates in dates_per_worker.items():
-        for d in dates:
-            day_assignments[d].append(wid)
-
-    for date, assigned in day_assignments.items():
-        row = [None] * scheduler.num_shifts
-        for i, wid in enumerate(assigned[: scheduler.num_shifts]):
-            row[i] = wid
-        scheduler.schedule[date] = row
-
-    for wid, dates in dates_per_worker.items():
-        scheduler.worker_assignments[wid] = set(dates)
-        scheduler.worker_shift_counts[wid] = len(dates)
-
-
 def test_ortools_phase_skipped_without_ortools(monkeypatch):
     """
     When ortools is not importable, _run_ortools_phase returns 0 and does
