@@ -719,6 +719,9 @@ class ORToolsPhase:
     W_WEEKEND = 100
     W_BRIDGE = 10
 
+    # Número de workers del solver cuando os.cpu_count() no está disponible
+    DEFAULT_SOLVER_WORKERS = 4
+
     def __init__(self, engine: FinalAdjustmentEngine) -> None:
         self.engine = engine
         self.scheduler = engine.scheduler
@@ -845,7 +848,9 @@ class ORToolsPhase:
                     # Break once slots are beyond both the gap window and the 7/14-day window
                     if delta > 14 and delta >= min_gap:
                         break
-                    if 0 < delta < min_gap or (delta in (7, 14) and date_a.weekday() == date_b.weekday()):
+                    gap_violated = 0 < delta < min_gap
+                    pattern_violated = delta in (7, 14) and date_a.weekday() == date_b.weekday()
+                    if gap_violated or pattern_violated:
                         model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
 
             # Enforce gap against prior-period assignments
@@ -927,7 +932,7 @@ class ORToolsPhase:
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit_seconds
-        solver.parameters.num_workers = max(1, os.cpu_count() or 4)
+        solver.parameters.num_workers = max(1, os.cpu_count() or self.DEFAULT_SOLVER_WORKERS)
         solver.parameters.log_search_progress = False
 
         status = solver.solve(model)
