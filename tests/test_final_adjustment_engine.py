@@ -352,7 +352,7 @@ def test_ortools_phase_skipped_without_ortools(monkeypatch):
     original_import = builtins.__import__
 
     def _no_ortools(name, *args, **kwargs):
-        if name == "ortools.sat.python" or name.startswith("ortools"):
+        if name.startswith("ortools"):
             raise ImportError("ortools not available (mocked)")
         return original_import(name, *args, **kwargs)
 
