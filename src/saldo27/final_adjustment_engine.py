@@ -10,6 +10,9 @@ trabajadores en tres dimensiones:
    trabajador sobrecargado por un turno de día-laborable del trabajador
    subcargado, de forma que el balance global de turnos no se vea afectado.
 3. Puentes (bridges): igual que weekends pero aplicado a días de puente.
+4. OR-Tools CP-SAT: refinamiento global post-greedy que optimiza turnos,
+   weekends y puentes de forma conjunta respetando todas las restricciones
+   duras (gap, incompatibilidades, disponibilidad, mandatory).
 
 Estrategia de intercambio "pareado" (paired swap) para weekends/bridges
 -----------------------------------------------------------------------
@@ -60,6 +63,7 @@ class FinalAdjustmentEngine:
             "shift_swaps": 0,
             "weekend_swaps": 0,
             "bridge_swaps": 0,
+            "ortools_reassignments": 0,
         }
 
     # ------------------------------------------------------------------
@@ -103,13 +107,18 @@ class FinalAdjustmentEngine:
                 break
             self.stats["bridge_swaps"] += 1
 
+        # --- Phase 4: OR-Tools CP-SAT refinement --------------------------
+        logging.info("Phase FA-4: OR-Tools CP-SAT refinement")
+        self.stats["ortools_reassignments"] = self._run_ortools_phase()
+
         after = self.compute_metrics()
 
         logging.info("=" * 70)
         logging.info("FINAL ADJUSTMENT ENGINE - Results")
-        logging.info(f"  Shift swaps:   {self.stats['shift_swaps']}")
-        logging.info(f"  Weekend swaps: {self.stats['weekend_swaps']}")
-        logging.info(f"  Bridge swaps:  {self.stats['bridge_swaps']}")
+        logging.info(f"  Shift swaps:          {self.stats['shift_swaps']}")
+        logging.info(f"  Weekend swaps:        {self.stats['weekend_swaps']}")
+        logging.info(f"  Bridge swaps:         {self.stats['bridge_swaps']}")
+        logging.info(f"  OR-Tools changes:     {self.stats['ortools_reassignments']}")
         logging.info("=" * 70)
 
         return {
@@ -615,3 +624,334 @@ class FinalAdjustmentEngine:
                         return True
 
         return False
+
+    # ------------------------------------------------------------------
+    # Internal: OR-Tools CP-SAT phase
+    # ------------------------------------------------------------------
+
+    def _run_ortools_phase(self, time_limit_seconds: int = 30) -> int:
+        """
+        Ejecuta la Fase 4 de refinamiento CP-SAT con OR-Tools.
+
+        Si OR-Tools no está disponible se omite sin error.  Si el solver
+        no mejora las métricas actuales se descarta la solución y se
+        restaura el estado previo.
+
+        Returns:
+            Número de slots reasignados por el solver (0 si no aplica).
+        """
+        try:
+            from ortools.sat.python import cp_model
+        except ImportError:
+            logging.info("FinalAdjustmentEngine: ortools no disponible, se omite la Fase 4 CP-SAT.")
+            return 0
+
+        state_before = self._save_state()
+        metrics_before = self.compute_metrics()
+
+        try:
+            phase = ORToolsPhase(self)
+            result = phase.solve(time_limit_seconds=time_limit_seconds)
+        except Exception as exc:
+            logging.error(f"FinalAdjustmentEngine OR-Tools error: {exc}", exc_info=True)
+            self._restore_state(state_before)
+            return 0
+
+        if result is None:
+            # No feasible/improved solution found
+            return 0
+
+        # Apply the solution: iterate over slots that changed
+        changes = 0
+        for (date, post), (old_worker, new_worker) in result.items():
+            if old_worker == new_worker:
+                continue
+            self.schedule[date][post] = new_worker
+            if old_worker is not None:
+                self.worker_assignments.setdefault(old_worker, set()).discard(date)
+                self.scheduler._update_tracking_data(old_worker, date, post, removing=True)
+            if new_worker is not None:
+                self.worker_assignments.setdefault(new_worker, set()).add(date)
+                self.scheduler._update_tracking_data(new_worker, date, post, removing=False)
+            changes += 1
+
+        # Verify improvement: total weighted deviation must not increase
+        metrics_after = self.compute_metrics()
+        score_before = _deviation_score(metrics_before)
+        score_after = _deviation_score(metrics_after)
+
+        if score_after > score_before:
+            logging.info(
+                f"  OR-Tools solution did not improve metrics ({score_after} > {score_before}), reverting."
+            )
+            self._restore_state(state_before)
+            return 0
+
+        if changes:
+            logging.info(
+                f"  ✅ OR-Tools CP-SAT: {changes} reasignación(es), score {score_before} → {score_after}"
+            )
+        return changes
+
+
+def _deviation_score(metrics: dict[str, dict[str, Any]]) -> int:
+    """Weighted total deviation used to compare before/after OR-Tools."""
+    total = 0
+    for m in metrics.values():
+        total += 1000 * abs(m.get("shift_deviation", 0))
+        total += 100 * abs(m.get("weekend_deviation", 0))
+        total += 10 * abs(m.get("bridge_deviation", 0))
+    return total
+
+
+class ORToolsPhase:
+    """
+    Modelado CP-SAT con Google OR-Tools para refinar el schedule.
+
+    El modelo toma los slots *ya ocupados* como dominio fijo: no crea ni
+    elimina slots, sólo decide qué worker cubre cada uno.  Se parte de la
+    solución greedy como warm-start y se busca minimizar la desviación
+    ponderada (turnos > weekends > puentes).
+    """
+
+    # Pesos del objetivo multi-dimensión
+    W_SHIFT = 1000
+    W_WEEKEND = 100
+    W_BRIDGE = 10
+
+    # Número de workers del solver cuando os.cpu_count() no está disponible
+    DEFAULT_SOLVER_WORKERS = 4
+
+    def __init__(self, engine: FinalAdjustmentEngine) -> None:
+        self.engine = engine
+        self.scheduler = engine.scheduler
+        self.workers_data = engine.workers_data
+        self.schedule = engine.schedule
+        self.worker_assignments = engine.worker_assignments
+        self.holidays_set = engine.holidays_set
+
+    def solve(self, time_limit_seconds: int = 30) -> dict | None:
+        """
+        Construye y resuelve el modelo CP-SAT.
+
+        Returns:
+            Dict ``{(date, post): (old_worker, new_worker)}`` con los cambios
+            propuestos, o ``None`` si no se encontró solución factible o no se
+            produjo mejora.
+        """
+        from datetime import timedelta
+
+        from ortools.sat.python import cp_model
+
+        from saldo27.utilities import get_effective_min_gap
+
+        model = cp_model.CpModel()
+
+        # -------------------------------------------------------------------
+        # 1. Collect occupied slots: [(date, post, current_worker)]
+        # -------------------------------------------------------------------
+        slots: list[tuple] = []
+        for date, slot_list in sorted(self.schedule.items()):
+            for post, worker in enumerate(slot_list):
+                if worker is not None:
+                    slots.append((date, post, worker))
+
+        if not slots:
+            return None
+
+        worker_ids = [w["id"] for w in self.workers_data]
+        worker_data_by_id = {w["id"]: w for w in self.workers_data}
+        n_workers = len(worker_ids)
+        n_slots = len(slots)
+
+        # -------------------------------------------------------------------
+        # 2. Decision variables: x[w_idx, s_idx] ∈ {0, 1}
+        # -------------------------------------------------------------------
+        x: dict[tuple[int, int], Any] = {}
+        for wi in range(n_workers):
+            for si in range(n_slots):
+                x[wi, si] = model.new_bool_var(f"x_{wi}_{si}")
+
+        # -------------------------------------------------------------------
+        # 3. Hard constraints
+        # -------------------------------------------------------------------
+
+        # 3a. Each slot has exactly one worker
+        for si in range(n_slots):
+            model.add_exactly_one(x[wi, si] for wi in range(n_workers))
+
+        # 3b. Each worker assigned at most once per date
+        date_to_slots: dict = {}
+        for si, (date, post, _) in enumerate(slots):
+            date_to_slots.setdefault(date, []).append(si)
+
+        for wi in range(n_workers):
+            for date, slot_indices in date_to_slots.items():
+                if len(slot_indices) > 1:
+                    model.add(sum(x[wi, si] for si in slot_indices) <= 1)
+
+        # 3c. Mandatory / locked assignments are fixed
+        for wi, wid in enumerate(worker_ids):
+            for si, (date, post, current_worker) in enumerate(slots):
+                if self.engine._is_locked(wid, date) or self.engine._is_mandatory(wid, date):
+                    model.add(x[wi, si] == (1 if current_worker == wid else 0))
+
+        # 3d. Worker unavailability (days_off / work_periods)
+        sb = self.engine.schedule_builder
+        if sb is not None:
+            for wi, wid in enumerate(worker_ids):
+                for si, (date, post, _) in enumerate(slots):
+                    if sb._is_worker_unavailable(wid, date):
+                        model.add(x[wi, si] == 0)
+
+        # 3e. Post constraints (no_last_post / only_last_post)
+        num_shifts = self.scheduler.num_shifts
+        for wi, wid in enumerate(worker_ids):
+            wd = worker_data_by_id[wid]
+            for si, (date, post, _) in enumerate(slots):
+                is_last = post == num_shifts - 1
+                if is_last and wd.get("no_last_post", False):
+                    model.add(x[wi, si] == 0)
+                if not is_last and wd.get("only_last_post", False):
+                    model.add(x[wi, si] == 0)
+
+        # 3f. Incompatibilities: incompatible pair cannot share the same date
+        incompat_pairs: set[tuple[str, str]] = set()
+        for wd in self.workers_data:
+            wid = wd["id"]
+            for other in wd.get("incompatible_with", []):
+                pair = (min(wid, other), max(wid, other))
+                incompat_pairs.add(pair)
+
+        worker_idx = {wid: wi for wi, wid in enumerate(worker_ids)}
+        for a_id, b_id in incompat_pairs:
+            if a_id not in worker_idx or b_id not in worker_idx:
+                continue
+            a_wi = worker_idx[a_id]
+            b_wi = worker_idx[b_id]
+            for date, slot_indices in date_to_slots.items():
+                a_vars = [x[a_wi, si] for si in slot_indices]
+                b_vars = [x[b_wi, si] for si in slot_indices]
+                model.add(sum(a_vars) + sum(b_vars) <= 1)
+
+        # 3g. Gap and 7/14-day pattern constraints
+        gap = self.scheduler.gap_between_shifts
+        for wi, wid in enumerate(worker_ids):
+            wd = worker_data_by_id[wid]
+            min_gap = get_effective_min_gap(wd, gap)
+            # slots is already sorted by date (step 1 iterates sorted(self.schedule.items()))
+            for idx_a in range(n_slots):
+                date_a = slots[idx_a][0]
+                for idx_b in range(idx_a + 1, n_slots):
+                    date_b = slots[idx_b][0]
+                    delta = (date_b - date_a).days  # positive because sorted
+                    # Break once slots are beyond both the gap window and the 7/14-day window
+                    if delta > 14 and delta >= min_gap:
+                        break
+                    gap_violated = 0 < delta < min_gap
+                    pattern_violated = delta in (7, 14) and date_a.weekday() == date_b.weekday()
+                    if gap_violated or pattern_violated:
+                        model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
+
+            # Enforce gap against prior-period assignments
+            cutoff = self.scheduler.start_date - timedelta(days=90)
+            prior_dates = sorted(
+                d
+                for d in getattr(self.scheduler, "prior_assignments", {}).get(wid, set())
+                if cutoff <= d < self.scheduler.start_date
+            )
+            for prior_date in prior_dates:
+                for si in range(n_slots):
+                    date_s = slots[si][0]
+                    delta = abs((date_s - prior_date).days)
+                    if delta == 0:
+                        continue
+                    if delta < min_gap or (delta in (7, 14) and date_s.weekday() == prior_date.weekday()):
+                        model.add(x[wi, si] == 0)
+
+        # 3h. Max shifts per worker
+        max_shifts = getattr(self.scheduler, "max_shifts_per_worker", None)
+        if max_shifts:
+            for wi in range(n_workers):
+                model.add(sum(x[wi, si] for si in range(n_slots)) <= max_shifts)
+
+        # -------------------------------------------------------------------
+        # 4. Objective: minimize weighted deviations
+        # -------------------------------------------------------------------
+        raw_targets = self.engine._raw_targets
+
+        slot_is_weekend = [
+            self.scheduler.date_utils.is_weekend_day(slots[si][0], self.holidays_set)
+            for si in range(n_slots)
+        ]
+        slot_is_bridge = [
+            self.scheduler.date_utils.is_bridge_day(slots[si][0], self.scheduler.bridge_periods)
+            for si in range(n_slots)
+        ]
+
+        obj_terms = []
+        for wi, wid in enumerate(worker_ids):
+            raw_tgt = raw_targets.get(wid, 0)
+
+            # Shift deviation
+            actual_shifts = sum(x[wi, si] for si in range(n_slots))
+            dplus_s = model.new_int_var(0, n_slots, f"dps_{wi}")
+            dminus_s = model.new_int_var(0, n_slots, f"dms_{wi}")
+            model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
+            obj_terms.append(self.W_SHIFT * (dplus_s + dminus_s))
+
+            # Weekend deviation
+            wknd_tgt = self.engine._weekend_target_for(raw_tgt)
+            actual_wknd = sum(x[wi, si] for si in range(n_slots) if slot_is_weekend[si])
+            dplus_w = model.new_int_var(0, n_slots, f"dpw_{wi}")
+            dminus_w = model.new_int_var(0, n_slots, f"dmw_{wi}")
+            model.add(actual_wknd - wknd_tgt == dplus_w - dminus_w)
+            obj_terms.append(self.W_WEEKEND * (dplus_w + dminus_w))
+
+            # Bridge deviation
+            bridge_tgt = self.engine._bridge_target_for(raw_tgt)
+            actual_bridge = sum(x[wi, si] for si in range(n_slots) if slot_is_bridge[si])
+            dplus_b = model.new_int_var(0, n_slots, f"dpb_{wi}")
+            dminus_b = model.new_int_var(0, n_slots, f"dmb_{wi}")
+            model.add(actual_bridge - bridge_tgt == dplus_b - dminus_b)
+            obj_terms.append(self.W_BRIDGE * (dplus_b + dminus_b))
+
+        model.minimize(sum(obj_terms))
+
+        # -------------------------------------------------------------------
+        # 5. Warm-start hint from current schedule
+        # -------------------------------------------------------------------
+        for wi, wid in enumerate(worker_ids):
+            for si, (date, post, current_worker) in enumerate(slots):
+                model.add_hint(x[wi, si], 1 if current_worker == wid else 0)
+
+        # -------------------------------------------------------------------
+        # 6. Solve
+        # -------------------------------------------------------------------
+        import os
+
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = time_limit_seconds
+        solver.parameters.num_workers = max(1, os.cpu_count() or self.DEFAULT_SOLVER_WORKERS)
+        solver.parameters.log_search_progress = False
+
+        status = solver.solve(model)
+
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            logging.info("  OR-Tools CP-SAT: no feasible solution found within time limit.")
+            return None
+
+        # -------------------------------------------------------------------
+        # 7. Extract changes: {(date, post): (old_worker, new_worker)}
+        # -------------------------------------------------------------------
+        changes: dict[tuple, tuple] = {}
+        for si, (date, post, old_worker) in enumerate(slots):
+            new_worker = None
+            for wi, wid in enumerate(worker_ids):
+                if solver.value(x[wi, si]) == 1:
+                    new_worker = wid
+                    break
+            if new_worker != old_worker:
+                changes[(date, post)] = (old_worker, new_worker)
+
+        return changes if changes else None

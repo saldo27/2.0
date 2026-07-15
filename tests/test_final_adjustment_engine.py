@@ -310,3 +310,146 @@ def test_raw_targets_fallback_when_raw_target_is_none():
     assert engine._raw_targets["X"] == 5  # fell back to target_shifts
     assert engine._raw_targets["Y"] == 7  # fell back to target_shifts (None treated as missing)
     assert engine._raw_targets["Z"] == 0  # raw_target=0 preserved (not a fallback)
+
+
+# ---------------------------------------------------------------------------
+# OR-Tools CP-SAT Phase (Phase 4) tests
+# ---------------------------------------------------------------------------
+
+
+def test_ortools_phase_skipped_without_ortools(monkeypatch):
+    """
+    When ortools is not importable, _run_ortools_phase returns 0 and does
+    not raise.
+    """
+    import builtins
+
+    original_import = builtins.__import__
+
+    def _no_ortools(name, *args, **kwargs):
+        if name.startswith("ortools"):
+            raise ImportError("ortools not available (mocked)")
+        return original_import(name, *args, **kwargs)
+
+    scheduler = _make_scheduler(_simple_workers())
+    engine = _build_engine(scheduler)
+
+    monkeypatch.setattr(builtins, "__import__", _no_ortools)
+    result = engine._run_ortools_phase(time_limit_seconds=5)
+    assert result == 0
+
+
+def test_ortools_phase_respects_mandatory():
+    """
+    Mandatory (locked) assignments must remain in place after the OR-Tools
+    phase completes.
+    """
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+
+    mandatory_date = datetime(2026, 3, 10)
+    other_date = datetime(2026, 3, 20)
+
+    scheduler.schedule[mandatory_date] = ["A", "B"]
+    scheduler.schedule[other_date] = ["A", "B"]
+    scheduler.worker_assignments["A"] = {mandatory_date, other_date}
+    scheduler.worker_assignments["B"] = {mandatory_date, other_date}
+    scheduler.worker_shift_counts["A"] = 2
+    scheduler.worker_shift_counts["B"] = 2
+
+    class _StubBuilder:
+        _locked_mandatory: frozenset = frozenset({("A", mandatory_date)})
+        num_shifts: int = 2
+
+        def _is_mandatory(self, wid, date):
+            return False
+
+        def _is_worker_unavailable(self, wid, date):
+            return False
+
+    engine = _build_engine(scheduler)
+    engine.schedule_builder = _StubBuilder()
+
+    engine._run_ortools_phase(time_limit_seconds=10)
+
+    # Mandatory slot must be unchanged
+    assert scheduler.schedule[mandatory_date][0] == "A"
+
+
+def test_ortools_phase_respects_gap_constraint():
+    """
+    The OR-Tools solution must not introduce gap violations that were absent
+    in the initial schedule.
+
+    Setup: A and B each work on 5 well-spaced days (7-day gaps) so the
+    initial schedule is gap-valid.  After OR-Tools, every pair of dates
+    for the same worker must still satisfy the minimum gap.
+    """
+    from saldo27.utilities import get_effective_min_gap
+
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers, end=datetime(2026, 3, 31))
+
+    # 7-day spacing → always >= min_gap (which is max(1, 4-1)=3 for auto workers)
+    # Each day has one slot per worker; A takes slot 0, B takes slot 1.
+    dates_a = [datetime(2026, 3, d) for d in [1, 8, 15, 22, 29]]
+    dates_b = [datetime(2026, 3, d) for d in [4, 11, 18, 25]]
+
+    for d in dates_a:
+        scheduler.schedule[d] = ["A", None]
+    for d in dates_b:
+        scheduler.schedule[d] = ["B", None]
+
+    scheduler.worker_assignments["A"] = set(dates_a)
+    scheduler.worker_assignments["B"] = set(dates_b)
+    scheduler.worker_shift_counts["A"] = len(dates_a)
+    scheduler.worker_shift_counts["B"] = len(dates_b)
+
+    engine = _build_engine(scheduler)
+    engine._run_ortools_phase(time_limit_seconds=15)
+
+    # Verify no gap violation in resulting assignments
+    for wid in ("A", "B"):
+        wd = next(w for w in workers if w["id"] == wid)
+        min_gap = get_effective_min_gap(wd, scheduler.gap_between_shifts)
+        assigned = sorted(scheduler.worker_assignments[wid])
+        for i in range(len(assigned)):
+            for j in range(i + 1, len(assigned)):
+                delta = (assigned[j] - assigned[i]).days
+                assert delta >= min_gap or delta == 0, (
+                    f"Worker {wid}: gap violation {delta} < {min_gap} "
+                    f"between {assigned[i]} and {assigned[j]}"
+                )
+
+
+def test_ortools_phase_improves_or_neutral():
+    """
+    After the OR-Tools phase the total weighted deviation score must not
+    increase compared to before it ran.
+    """
+    from saldo27.final_adjustment_engine import _deviation_score
+
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+
+    # Assign all shifts to A → heavy imbalance
+    dates = [datetime(2026, 3, d) for d in range(1, 17, 2)]
+    for d in dates:
+        scheduler.schedule[d] = ["A", None]
+    scheduler.worker_assignments["A"] = set(dates)
+    scheduler.worker_assignments["B"] = set()
+    scheduler.worker_shift_counts["A"] = len(dates)
+    scheduler.worker_shift_counts["B"] = 0
+
+    engine = _build_engine(scheduler)
+    metrics_before = engine.compute_metrics()
+    score_before = _deviation_score(metrics_before)
+
+    engine._run_ortools_phase(time_limit_seconds=15)
+
+    metrics_after = engine.compute_metrics()
+    score_after = _deviation_score(metrics_after)
+
+    assert score_after <= score_before, (
+        f"OR-Tools phase worsened the schedule: score {score_before} → {score_after}"
+    )
