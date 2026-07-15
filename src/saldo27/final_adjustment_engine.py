@@ -833,7 +833,6 @@ class ORToolsPhase:
 
         # 3g. Gap and 7/14-day pattern constraints
         gap = self.scheduler.gap_between_shifts
-        worker_slot_list = list(range(n_slots))
         for wi, wid in enumerate(worker_ids):
             wd = worker_data_by_id[wid]
             min_gap = get_effective_min_gap(wd, gap)
@@ -843,8 +842,9 @@ class ORToolsPhase:
                 for idx_b in range(idx_a + 1, n_slots):
                     date_b = slots[idx_b][0]
                     delta = (date_b - date_a).days  # positive because sorted
-                    if delta >= min_gap and delta not in (7, 14):
-                        break  # further slots only farther apart
+                    # Break once slots are beyond both the gap window and the 7/14-day window
+                    if delta > 14 and delta >= min_gap:
+                        break
                     if 0 < delta < min_gap or (delta in (7, 14) and date_a.weekday() == date_b.weekday()):
                         model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
 
@@ -856,7 +856,7 @@ class ORToolsPhase:
                 if cutoff <= d < self.scheduler.start_date
             )
             for prior_date in prior_dates:
-                for si in worker_slot_list:
+                for si in range(n_slots):
                     date_s = slots[si][0]
                     delta = abs((date_s - prior_date).days)
                     if delta == 0:
