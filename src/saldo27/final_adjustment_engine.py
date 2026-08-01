@@ -747,8 +747,8 @@ class ORToolsPhase:
 
         from ortools.sat.python import cp_model
 
+        from saldo27.constraint_checker import _GAP2_WEEKEND_PROHIBITED_PAIRS
         from saldo27.utilities import get_effective_min_gap
-
         model = cp_model.CpModel()
 
         # -------------------------------------------------------------------
