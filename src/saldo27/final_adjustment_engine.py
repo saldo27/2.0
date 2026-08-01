@@ -663,19 +663,28 @@ class FinalAdjustmentEngine:
             # No feasible/improved solution found
             return 0
 
-        # Apply the solution: iterate over slots that changed
-        changes = 0
+        # Apply the solution grouped by date to avoid transient same-day duplicates
+        # (worker_assignments is date-based, while the schedule has multiple posts per date).
+        changes_by_date: dict = {}
         for (date, post), (old_worker, new_worker) in result.items():
             if old_worker == new_worker:
                 continue
-            self.schedule[date][post] = new_worker
-            if old_worker is not None:
-                self.worker_assignments.setdefault(old_worker, set()).discard(date)
-                self.scheduler._update_tracking_data(old_worker, date, post, removing=True)
-            if new_worker is not None:
-                self.worker_assignments.setdefault(new_worker, set()).add(date)
-                self.scheduler._update_tracking_data(new_worker, date, post, removing=False)
-            changes += 1
+            changes_by_date.setdefault(date, []).append((post, old_worker, new_worker))
+
+        changes = 0
+        for date, entries in changes_by_date.items():
+            # 1) Clear affected posts and remove old workers
+            for post, old_worker, _ in entries:
+                self.schedule[date][post] = None
+                if old_worker is not None:
+                    self.scheduler._update_tracking_data(old_worker, date, post, removing=True)
+
+            # 2) Assign new workers
+            for post, _, new_worker in entries:
+                self.schedule[date][post] = new_worker
+                if new_worker is not None:
+                    self.scheduler._update_tracking_data(new_worker, date, post, removing=False)
+                changes += 1
 
         # Verify improvement: total weighted deviation must not increase
         metrics_after = self.compute_metrics()
