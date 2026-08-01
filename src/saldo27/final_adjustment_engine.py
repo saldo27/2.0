@@ -641,7 +641,9 @@ class FinalAdjustmentEngine:
             Número de slots reasignados por el solver (0 si no aplica).
         """
         try:
-            from ortools.sat.python import cp_model
+            import importlib
+
+            importlib.import_module("ortools.sat.python.cp_model")
         except ImportError:
             logging.info("FinalAdjustmentEngine: ortools no disponible, se omite la Fase 4 CP-SAT.")
             return 0
