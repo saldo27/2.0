@@ -629,7 +629,7 @@ class FinalAdjustmentEngine:
     # Internal: OR-Tools CP-SAT phase
     # ------------------------------------------------------------------
 
-    def _run_ortools_phase(self, time_limit_seconds: int = 30) -> int:
+    def _run_ortools_phase(self, time_limit_seconds: int = 60) -> int:
         """
         Ejecuta la Fase 4 de refinamiento CP-SAT con OR-Tools.
 
@@ -723,7 +723,7 @@ class ORToolsPhase:
         self.worker_assignments = engine.worker_assignments
         self.holidays_set = engine.holidays_set
 
-    def solve(self, time_limit_seconds: int = 30) -> dict | None:
+    def solve(self, time_limit_seconds: int = 60) -> dict | None:
         """
         Construye y resuelve el modelo CP-SAT.
 
