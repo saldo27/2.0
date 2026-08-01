@@ -446,6 +446,56 @@ def test_ortools_phase_respects_gap_constraint():
                 )
 
 
+def test_ortools_phase_terminates_with_preexisting_714_violation():
+    """
+    CP-SAT must not treat pre-existing 7/14-day violations as infeasible
+    and must terminate well within the time limit.
+
+    When the greedy schedule intentionally places the same worker on the same
+    weekday in consecutive weeks (a 7-day same-weekday violation tolerated by
+    the schedule builder via allow_714_violation), the CP-SAT warm-start hint
+    would be infeasible if the model enforces the 7/14-day constraint for that
+    pair.  The solver would then exhaust the time limit searching for an
+    alternative, causing the "infinite loop" symptom.
+
+    After the fix, CP-SAT skips that specific constraint, so the current
+    schedule remains a valid feasible starting point and the phase completes
+    almost instantly.
+    """
+    import time
+
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers, end=datetime(2026, 3, 31))
+
+    # Worker A on March 2 (Monday) AND March 9 (Monday, 7 days later) —
+    # an intentional 7/14-day same-weekday violation accepted by the greedy phase.
+    dates_a = [datetime(2026, 3, 2), datetime(2026, 3, 9), datetime(2026, 3, 23)]
+    dates_b = [datetime(2026, 3, 5), datetime(2026, 3, 16)]
+
+    for d in dates_a:
+        scheduler.schedule[d] = ["A", None]
+    for d in dates_b:
+        scheduler.schedule[d] = ["B", None]
+
+    scheduler.worker_assignments["A"] = set(dates_a)
+    scheduler.worker_assignments["B"] = set(dates_b)
+    scheduler.worker_shift_counts["A"] = len(dates_a)
+    scheduler.worker_shift_counts["B"] = len(dates_b)
+
+    engine = _build_engine(scheduler)
+
+    # Must finish in a few seconds, not sit at the time limit.
+    start = time.monotonic()
+    engine._run_ortools_phase(time_limit_seconds=20)
+    elapsed = time.monotonic() - start
+
+    # Allow generous headroom (10 s) but the phase must NOT run the full 20-s
+    # time limit, which would be the symptom of the regression.
+    assert elapsed < 10, (
+        f"OR-Tools phase took {elapsed:.1f}s — likely hit the time limit due to infeasible warm-start"
+    )
+
+
 def test_ortools_phase_improves_or_neutral():
     """
     After the OR-Tools phase the total weighted deviation score must not

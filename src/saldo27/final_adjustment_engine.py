@@ -629,7 +629,7 @@ class FinalAdjustmentEngine:
     # Internal: OR-Tools CP-SAT phase
     # ------------------------------------------------------------------
 
-    def _run_ortools_phase(self, time_limit_seconds: int = 60) -> int:
+    def _run_ortools_phase(self, time_limit_seconds: int = 30) -> int:
         """
         Ejecuta la Fase 4 de refinamiento CP-SAT con OR-Tools.
 
@@ -842,6 +842,14 @@ class ORToolsPhase:
                     if delta > 14 and delta >= min_gap:
                         break
                     if 0 < delta < min_gap or (delta in (7, 14) and date_a.weekday() == date_b.weekday()):
+                        # Skip if the current schedule already has this worker on both slots.
+                        # The greedy phase may have intentionally allowed such placements
+                        # (e.g. via allow_714_violation).  Forcing CP-SAT to resolve them
+                        # would make the warm-start infeasible and cause the solver to spend
+                        # the full time limit searching for an alternative — the main cause
+                        # of the perceived "infinite loop".
+                        if slots[idx_a][2] == wid and slots[idx_b][2] == wid:
+                            continue
                         model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
 
             # Enforce gap against prior-period assignments
@@ -858,6 +866,11 @@ class ORToolsPhase:
                     if delta == 0:
                         continue
                     if delta < min_gap or (delta in (7, 14) and date_s.weekday() == prior_date.weekday()):
+                        # If the current schedule already placed this worker here, the
+                        # greedy phase accepted the assignment.  Do not force CP-SAT to
+                        # remove them — that would again make the warm-start infeasible.
+                        if slots[si][2] == wid:
+                            continue
                         model.add(x[wi, si] == 0)
 
         # 3h. Max shifts per worker
@@ -922,7 +935,9 @@ class ORToolsPhase:
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = time_limit_seconds
-        solver.parameters.num_workers = max(1, os.cpu_count() or 4)
+        # Cap parallel workers to avoid spawning too many threads on high-core machines,
+        # which can overshoot the time limit and consume disproportionate CPU.
+        solver.parameters.num_workers = min(4, max(1, os.cpu_count() or 1))
         solver.parameters.log_search_progress = False
 
         status = solver.solve(model)
