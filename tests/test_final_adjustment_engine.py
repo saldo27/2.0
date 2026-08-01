@@ -491,9 +491,7 @@ def test_ortools_phase_terminates_with_preexisting_714_violation():
 
     # Allow generous headroom (10 s) but the phase must NOT run the full 20-s
     # time limit, which would be the symptom of the regression.
-    assert elapsed < 10, (
-        f"OR-Tools phase took {elapsed:.1f}s — likely hit the time limit due to infeasible warm-start"
-    )
+    assert elapsed < 10, f"OR-Tools phase took {elapsed:.1f}s — likely hit the time limit due to infeasible warm-start"
 
 
 def test_ortools_phase_improves_or_neutral():
