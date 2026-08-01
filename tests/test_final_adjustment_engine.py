@@ -442,8 +442,7 @@ def test_ortools_phase_respects_gap_constraint():
             for j in range(i + 1, len(assigned)):
                 delta = (assigned[j] - assigned[i]).days
                 assert delta >= min_gap or delta == 0, (
-                    f"Worker {wid}: gap violation {delta} < {min_gap} "
-                    f"between {assigned[i]} and {assigned[j]}"
+                    f"Worker {wid}: gap violation {delta} < {min_gap} between {assigned[i]} and {assigned[j]}"
                 )
 
 
@@ -475,6 +474,4 @@ def test_ortools_phase_improves_or_neutral():
     metrics_after = engine.compute_metrics()
     score_after = _deviation_score(metrics_after)
 
-    assert score_after <= score_before, (
-        f"OR-Tools phase worsened the schedule: score {score_before} → {score_after}"
-    )
+    assert score_after <= score_before, f"OR-Tools phase worsened the schedule: score {score_before} → {score_after}"

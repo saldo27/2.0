@@ -681,16 +681,12 @@ class FinalAdjustmentEngine:
         score_after = _deviation_score(metrics_after)
 
         if score_after > score_before:
-            logging.info(
-                f"  OR-Tools solution did not improve metrics ({score_after} > {score_before}), reverting."
-            )
+            logging.info(f"  OR-Tools solution did not improve metrics ({score_after} > {score_before}), reverting.")
             self._restore_state(state_before)
             return 0
 
         if changes:
-            logging.info(
-                f"  ✅ OR-Tools CP-SAT: {changes} reasignación(es), score {score_before} → {score_after}"
-            )
+            logging.info(f"  ✅ OR-Tools CP-SAT: {changes} reasignación(es), score {score_before} → {score_after}")
         return changes
 
 
@@ -876,8 +872,7 @@ class ORToolsPhase:
         raw_targets = self.engine._raw_targets
 
         slot_is_weekend = [
-            self.scheduler.date_utils.is_weekend_day(slots[si][0], self.holidays_set)
-            for si in range(n_slots)
+            self.scheduler.date_utils.is_weekend_day(slots[si][0], self.holidays_set) for si in range(n_slots)
         ]
         slot_is_bridge = [
             self.scheduler.date_utils.is_bridge_day(slots[si][0], self.scheduler.bridge_periods)
