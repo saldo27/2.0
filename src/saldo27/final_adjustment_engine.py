@@ -750,225 +750,259 @@ class ORToolsPhase:
         from saldo27.constraint_checker import _GAP2_WEEKEND_PROHIBITED_PAIRS
         from saldo27.utilities import get_effective_min_gap
 
-        model = cp_model.CpModel()
+        def _build_model(
+            *, include_hints: bool
+        ) -> tuple[cp_model.CpModel, dict[tuple[int, int], Any], list[tuple], list[str]]:
+            model = cp_model.CpModel()
 
-        # -------------------------------------------------------------------
-        # 1. Collect occupied slots: [(date, post, current_worker)]
-        # -------------------------------------------------------------------
-        slots: list[tuple] = []
-        for date, slot_list in sorted(self.schedule.items()):
-            for post, worker in enumerate(slot_list):
-                if worker is not None:
-                    slots.append((date, post, worker))
+            # -------------------------------------------------------------------
+            # 1. Collect occupied slots: [(date, post, current_worker)]
+            # -------------------------------------------------------------------
+            slots: list[tuple] = []
+            for date, slot_list in sorted(self.schedule.items()):
+                for post, worker in enumerate(slot_list):
+                    if worker is not None:
+                        slots.append((date, post, worker))
 
-        if not slots:
-            return None
+            worker_ids = [w["id"] for w in self.workers_data]
+            worker_data_by_id = {w["id"]: w for w in self.workers_data}
+            n_workers = len(worker_ids)
+            n_slots = len(slots)
 
-        worker_ids = [w["id"] for w in self.workers_data]
-        worker_data_by_id = {w["id"]: w for w in self.workers_data}
-        n_workers = len(worker_ids)
-        n_slots = len(slots)
-
-        # -------------------------------------------------------------------
-        # 2. Decision variables: x[w_idx, s_idx] ∈ {0, 1}
-        # -------------------------------------------------------------------
-        x: dict[tuple[int, int], Any] = {}
-        for wi in range(n_workers):
-            for si in range(n_slots):
-                x[wi, si] = model.new_bool_var(f"x_{wi}_{si}")
-
-        # -------------------------------------------------------------------
-        # 3. Hard constraints
-        # -------------------------------------------------------------------
-
-        # 3a. Each slot has exactly one worker
-        for si in range(n_slots):
-            model.add_exactly_one(x[wi, si] for wi in range(n_workers))
-
-        # 3b. Each worker assigned at most once per date
-        date_to_slots: dict = {}
-        for si, (date, post, _) in enumerate(slots):
-            date_to_slots.setdefault(date, []).append(si)
-
-        for wi in range(n_workers):
-            for date, slot_indices in date_to_slots.items():
-                if len(slot_indices) > 1:
-                    model.add(sum(x[wi, si] for si in slot_indices) <= 1)
-
-        # 3c. Mandatory / locked assignments are fixed
-        for wi, wid in enumerate(worker_ids):
-            for si, (date, post, current_worker) in enumerate(slots):
-                if self.engine._is_locked(wid, date) or self.engine._is_mandatory(wid, date):
-                    model.add(x[wi, si] == (1 if current_worker == wid else 0))
-
-        # 3d. Worker unavailability (days_off / work_periods)
-        sb = self.engine.schedule_builder
-        if sb is not None:
-            for wi, wid in enumerate(worker_ids):
-                for si, (date, post, _) in enumerate(slots):
-                    if sb._is_worker_unavailable(wid, date):
-                        model.add(x[wi, si] == 0)
-
-        # 3e. Post constraints (no_last_post / only_last_post)
-        num_shifts = self.scheduler.num_shifts
-        for wi, wid in enumerate(worker_ids):
-            wd = worker_data_by_id[wid]
-            for si, (date, post, _) in enumerate(slots):
-                is_last = post == num_shifts - 1
-                if is_last and wd.get("no_last_post", False):
-                    model.add(x[wi, si] == 0)
-                if not is_last and wd.get("only_last_post", False):
-                    model.add(x[wi, si] == 0)
-
-        # 3f. Incompatibilities: incompatible pair cannot share the same date
-        incompat_pairs: set[tuple[str, str]] = set()
-        for wd in self.workers_data:
-            wid = wd["id"]
-            for other in wd.get("incompatible_with", []):
-                pair = (min(wid, other), max(wid, other))
-                incompat_pairs.add(pair)
-
-        worker_idx = {wid: wi for wi, wid in enumerate(worker_ids)}
-        for a_id, b_id in incompat_pairs:
-            if a_id not in worker_idx or b_id not in worker_idx:
-                continue
-            a_wi = worker_idx[a_id]
-            b_wi = worker_idx[b_id]
-            for date, slot_indices in date_to_slots.items():
-                a_vars = [x[a_wi, si] for si in slot_indices]
-                b_vars = [x[b_wi, si] for si in slot_indices]
-                model.add(sum(a_vars) + sum(b_vars) <= 1)
-
-        # 3g. Gap and 7/14-day pattern constraints
-        gap = self.scheduler.gap_between_shifts
-        for wi, wid in enumerate(worker_ids):
-            wd = worker_data_by_id[wid]
-            min_gap = get_effective_min_gap(wd, gap)
-            # slots is already sorted by date (step 1 iterates sorted(self.schedule.items()))
-            for idx_a in range(n_slots):
-                date_a = slots[idx_a][0]
-                for idx_b in range(idx_a + 1, n_slots):
-                    date_b = slots[idx_b][0]
-                    delta = (date_b - date_a).days  # positive because sorted
-                    # Break once slots are beyond both the gap window and the 7/14-day window
-                    if delta > 14 and delta >= min_gap:
-                        break
-                    if 0 < delta < min_gap or (delta in (7, 14) and date_a.weekday() == date_b.weekday()):
-                        # Skip if the current schedule already has this worker on both slots.
-                        # The greedy phase may have intentionally allowed such placements
-                        # (e.g. via allow_714_violation).  Forcing CP-SAT to resolve them
-                        # would make the warm-start infeasible and cause the solver to spend
-                        # the full time limit searching for an alternative — the main cause
-                        # of the perceived "infinite loop".
-                        if slots[idx_a][2] == wid and slots[idx_b][2] == wid:
-                            continue
-                        model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
-
-            # Enforce gap against prior-period assignments
-            cutoff = self.scheduler.start_date - timedelta(days=90)
-            prior_dates = sorted(
-                d
-                for d in getattr(self.scheduler, "prior_assignments", {}).get(wid, set())
-                if cutoff <= d < self.scheduler.start_date
-            )
-            for prior_date in prior_dates:
-                for si in range(n_slots):
-                    date_s = slots[si][0]
-                    delta = abs((date_s - prior_date).days)
-                    if delta == 0:
-                        continue
-                    if delta < min_gap or (delta in (7, 14) and date_s.weekday() == prior_date.weekday()):
-                        # If the current schedule already placed this worker here, the
-                        # greedy phase accepted the assignment.  Do not force CP-SAT to
-                        # remove them — that would again make the warm-start infeasible.
-                        if slots[si][2] == wid:
-                            continue
-                        model.add(x[wi, si] == 0)
-
-        # 3h. Max shifts per worker
-        max_shifts = getattr(self.scheduler, "max_shifts_per_worker", None)
-        if max_shifts:
+            # -------------------------------------------------------------------
+            # 2. Decision variables: x[w_idx, s_idx] ∈ {0, 1}
+            # -------------------------------------------------------------------
+            x: dict[tuple[int, int], Any] = {}
             for wi in range(n_workers):
-                model.add(sum(x[wi, si] for si in range(n_slots)) <= max_shifts)
+                for si in range(n_slots):
+                    x[wi, si] = model.new_bool_var(f"x_{wi}_{si}")
 
-        # -------------------------------------------------------------------
-        # 4. Objective: minimize weighted deviations
-        # -------------------------------------------------------------------
-        raw_targets = self.engine._raw_targets
+            # -------------------------------------------------------------------
+            # 3. Hard constraints
+            # -------------------------------------------------------------------
 
-        slot_is_weekend = [
-            self.scheduler.date_utils.is_weekend_day(slots[si][0], self.holidays_set) for si in range(n_slots)
-        ]
-        slot_is_bridge = [
-            self.scheduler.date_utils.is_bridge_day(slots[si][0], self.scheduler.bridge_periods)
-            for si in range(n_slots)
-        ]
+            # 3a. Each slot has exactly one worker
+            for si in range(n_slots):
+                model.add_exactly_one(x[wi, si] for wi in range(n_workers))
 
-        obj_terms = []
-        for wi, wid in enumerate(worker_ids):
-            raw_tgt = raw_targets.get(wid, 0)
+            # 3b. Each worker assigned at most once per date
+            date_to_slots: dict = {}
+            for si, (date, post, _) in enumerate(slots):
+                date_to_slots.setdefault(date, []).append(si)
 
-            # Shift deviation
-            actual_shifts = sum(x[wi, si] for si in range(n_slots))
-            dplus_s = model.new_int_var(0, n_slots, f"dps_{wi}")
-            dminus_s = model.new_int_var(0, n_slots, f"dms_{wi}")
-            model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
-            obj_terms.append(self.W_SHIFT * (dplus_s + dminus_s))
+            for wi in range(n_workers):
+                for date, slot_indices in date_to_slots.items():
+                    if len(slot_indices) > 1:
+                        model.add(sum(x[wi, si] for si in slot_indices) <= 1)
 
-            # Weekend deviation
-            wknd_tgt = self.engine._weekend_target_for(raw_tgt)
-            actual_wknd = sum(x[wi, si] for si in range(n_slots) if slot_is_weekend[si])
-            dplus_w = model.new_int_var(0, n_slots, f"dpw_{wi}")
-            dminus_w = model.new_int_var(0, n_slots, f"dmw_{wi}")
-            model.add(actual_wknd - wknd_tgt == dplus_w - dminus_w)
-            obj_terms.append(self.W_WEEKEND * (dplus_w + dminus_w))
+            # 3c. Mandatory / locked assignments are fixed
+            for wi, wid in enumerate(worker_ids):
+                for si, (date, post, current_worker) in enumerate(slots):
+                    if self.engine._is_locked(wid, date) or self.engine._is_mandatory(wid, date):
+                        model.add(x[wi, si] == (1 if current_worker == wid else 0))
 
-            # Bridge deviation
-            bridge_tgt = self.engine._bridge_target_for(raw_tgt)
-            actual_bridge = sum(x[wi, si] for si in range(n_slots) if slot_is_bridge[si])
-            dplus_b = model.new_int_var(0, n_slots, f"dpb_{wi}")
-            dminus_b = model.new_int_var(0, n_slots, f"dmb_{wi}")
-            model.add(actual_bridge - bridge_tgt == dplus_b - dminus_b)
-            obj_terms.append(self.W_BRIDGE * (dplus_b + dminus_b))
+            # 3d. Worker unavailability (days_off / work_periods)
+            sb = self.engine.schedule_builder
+            if sb is not None:
+                for wi, wid in enumerate(worker_ids):
+                    for si, (date, post, _) in enumerate(slots):
+                        if sb._is_worker_unavailable(wid, date):
+                            model.add(x[wi, si] == 0)
 
-        model.minimize(sum(obj_terms))
+            # 3e. Post constraints (no_last_post / only_last_post)
+            num_shifts = self.scheduler.num_shifts
+            for wi, wid in enumerate(worker_ids):
+                wd = worker_data_by_id[wid]
+                for si, (date, post, _) in enumerate(slots):
+                    is_last = post == num_shifts - 1
+                    if is_last and wd.get("no_last_post", False):
+                        model.add(x[wi, si] == 0)
+                    if not is_last and wd.get("only_last_post", False):
+                        model.add(x[wi, si] == 0)
 
-        # -------------------------------------------------------------------
-        # 5. Warm-start hint from current schedule
-        # -------------------------------------------------------------------
-        for wi, wid in enumerate(worker_ids):
-            for si, (date, post, current_worker) in enumerate(slots):
-                model.add_hint(x[wi, si], 1 if current_worker == wid else 0)
+            # 3f. Incompatibilities: incompatible pair cannot share the same date
+            incompat_pairs: set[tuple[str, str]] = set()
+            for wd in self.workers_data:
+                wid = wd["id"]
+                for other in wd.get("incompatible_with", []):
+                    pair = (min(wid, other), max(wid, other))
+                    incompat_pairs.add(pair)
 
-        # -------------------------------------------------------------------
-        # 6. Solve
-        # -------------------------------------------------------------------
+            worker_idx = {wid: wi for wi, wid in enumerate(worker_ids)}
+            for a_id, b_id in incompat_pairs:
+                if a_id not in worker_idx or b_id not in worker_idx:
+                    continue
+                a_wi = worker_idx[a_id]
+                b_wi = worker_idx[b_id]
+                for date, slot_indices in date_to_slots.items():
+                    a_vars = [x[a_wi, si] for si in slot_indices]
+                    b_vars = [x[b_wi, si] for si in slot_indices]
+                    model.add(sum(a_vars) + sum(b_vars) <= 1)
+
+            # 3g. Gap and 7/14-day pattern constraints
+            gap = self.scheduler.gap_between_shifts
+            for wi, wid in enumerate(worker_ids):
+                wd = worker_data_by_id[wid]
+                min_gap = get_effective_min_gap(wd, gap)
+                # slots is already sorted by date (step 1 iterates sorted(self.schedule.items()))
+                for idx_a in range(n_slots):
+                    date_a = slots[idx_a][0]
+                    for idx_b in range(idx_a + 1, n_slots):
+                        date_b = slots[idx_b][0]
+                        delta = (date_b - date_a).days  # positive because sorted
+                        # Break once slots are beyond both the gap window and the 7/14-day window
+                        if delta > 14 and delta >= min_gap:
+                            break
+                        if 0 < delta < min_gap or (delta in (7, 14) and date_a.weekday() == date_b.weekday()):
+                            # Skip if the current schedule already has this worker on both slots.
+                            # The greedy phase may have intentionally allowed such placements
+                            # (e.g. via allow_714_violation).  Forcing CP-SAT to resolve them
+                            # would make the warm-start infeasible and cause the solver to spend
+                            # the full time limit searching for an alternative — the main cause
+                            # of the perceived "infinite loop".
+                            if slots[idx_a][2] == wid and slots[idx_b][2] == wid:
+                                continue
+                            model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
+
+                # Enforce gap against prior-period assignments
+                cutoff = self.scheduler.start_date - timedelta(days=90)
+                prior_dates = sorted(
+                    d
+                    for d in getattr(self.scheduler, "prior_assignments", {}).get(wid, set())
+                    if cutoff <= d < self.scheduler.start_date
+                )
+                for prior_date in prior_dates:
+                    for si in range(n_slots):
+                        date_s = slots[si][0]
+                        delta = abs((date_s - prior_date).days)
+                        if delta == 0:
+                            continue
+                        if delta < min_gap or (delta in (7, 14) and date_s.weekday() == prior_date.weekday()):
+                            # If the current schedule already placed this worker here, the
+                            # greedy phase accepted the assignment.  Do not force CP-SAT to
+                            # remove them — that would again make the warm-start infeasible.
+                            if slots[si][2] == wid:
+                                continue
+                            model.add(x[wi, si] == 0)
+
+            # 3h. Max shifts per worker
+            max_shifts = getattr(self.scheduler, "max_shifts_per_worker", None)
+            if max_shifts:
+                for wi in range(n_workers):
+                    model.add(sum(x[wi, si] for si in range(n_slots)) <= max_shifts)
+
+            # -------------------------------------------------------------------
+            # 4. Objective: minimize weighted deviations
+            # -------------------------------------------------------------------
+            raw_targets = self.engine._raw_targets
+
+            slot_is_weekend = [
+                self.scheduler.date_utils.is_weekend_day(slots[si][0], self.holidays_set) for si in range(n_slots)
+            ]
+            slot_is_bridge = [
+                self.scheduler.date_utils.is_bridge_day(slots[si][0], self.scheduler.bridge_periods)
+                for si in range(n_slots)
+            ]
+
+            obj_terms = []
+            for wi, wid in enumerate(worker_ids):
+                raw_tgt = raw_targets.get(wid, 0)
+
+                # Shift deviation
+                actual_shifts = sum(x[wi, si] for si in range(n_slots))
+                dplus_s = model.new_int_var(0, n_slots, f"dps_{wi}")
+                dminus_s = model.new_int_var(0, n_slots, f"dms_{wi}")
+                model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
+                obj_terms.append(self.W_SHIFT * (dplus_s + dminus_s))
+
+                # Weekend deviation
+                wknd_tgt = self.engine._weekend_target_for(raw_tgt)
+                actual_wknd = sum(x[wi, si] for si in range(n_slots) if slot_is_weekend[si])
+                dplus_w = model.new_int_var(0, n_slots, f"dpw_{wi}")
+                dminus_w = model.new_int_var(0, n_slots, f"dmw_{wi}")
+                model.add(actual_wknd - wknd_tgt == dplus_w - dminus_w)
+                obj_terms.append(self.W_WEEKEND * (dplus_w + dminus_w))
+
+                # Bridge deviation
+                bridge_tgt = self.engine._bridge_target_for(raw_tgt)
+                actual_bridge = sum(x[wi, si] for si in range(n_slots) if slot_is_bridge[si])
+                dplus_b = model.new_int_var(0, n_slots, f"dpb_{wi}")
+                dminus_b = model.new_int_var(0, n_slots, f"dmb_{wi}")
+                model.add(actual_bridge - bridge_tgt == dplus_b - dminus_b)
+                obj_terms.append(self.W_BRIDGE * (dplus_b + dminus_b))
+
+            model.minimize(sum(obj_terms))
+
+            # -------------------------------------------------------------------
+            # 5. Warm-start hint from current schedule
+            # -------------------------------------------------------------------
+            if include_hints:
+                for wi, wid in enumerate(worker_ids):
+                    for si, (date, post, current_worker) in enumerate(slots):
+                        model.add_hint(x[wi, si], 1 if current_worker == wid else 0)
+
+            return model, x, slots, worker_ids
+
+        def _extract_changes(
+            solver: cp_model.CpSolver, x: dict[tuple[int, int], Any], slots: list[tuple], worker_ids: list[str]
+        ) -> dict | None:
+            changes: dict[tuple, tuple] = {}
+            for si, (date, post, old_worker) in enumerate(slots):
+                new_worker = None
+                for wi, wid in enumerate(worker_ids):
+                    if solver.value(x[wi, si]) == 1:
+                        new_worker = wid
+                        break
+                if new_worker != old_worker:
+                    changes[(date, post)] = (old_worker, new_worker)
+            return changes if changes else None
+
         import os
 
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = time_limit_seconds
-        # Cap parallel workers to avoid spawning too many threads on high-core machines,
-        # which can overshoot the time limit and consume disproportionate CPU.
-        solver.parameters.num_workers = min(4, max(1, os.cpu_count() or 1))
-        solver.parameters.log_search_progress = False
+        attempts = [
+            {
+                "label": "warm-start",
+                "include_hints": True,
+                "time_limit": time_limit_seconds,
+                "num_workers": min(4, max(1, os.cpu_count() or 1)),
+                "repair_hint": True,
+            },
+            {
+                "label": "retry-without-hints",
+                "include_hints": False,
+                "time_limit": max(time_limit_seconds * 2, 90),
+                "num_workers": 1,
+                "repair_hint": False,
+            },
+        ]
 
-        status = solver.solve(model)
+        last_status = cp_model.UNKNOWN
+        for idx, attempt in enumerate(attempts):
+            model, x, slots, worker_ids = _build_model(include_hints=attempt["include_hints"])
+            if not slots:
+                return None
 
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            solver = cp_model.CpSolver()
+            solver.parameters.max_time_in_seconds = attempt["time_limit"]
+            solver.parameters.num_workers = attempt["num_workers"]
+            solver.parameters.log_search_progress = False
+            if attempt["repair_hint"]:
+                solver.parameters.repair_hint = True
+                solver.parameters.hint_conflict_limit = 50_000
+
+            status = solver.solve(model)
+            last_status = status
+            if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                return _extract_changes(solver, x, slots, worker_ids)
+
+            if idx == 0 and status == cp_model.UNKNOWN:
+                logging.info("  OR-Tools CP-SAT: retrying without warm-start hints.")
+
+        if last_status == cp_model.INFEASIBLE:
+            logging.info("  OR-Tools CP-SAT: model infeasible under hard constraints.")
+        elif last_status == cp_model.MODEL_INVALID:
+            logging.error("  OR-Tools CP-SAT: model inválido.")
+        else:
             logging.info("  OR-Tools CP-SAT: no feasible solution found within time limit.")
-            return None
 
-        # -------------------------------------------------------------------
-        # 7. Extract changes: {(date, post): (old_worker, new_worker)}
-        # -------------------------------------------------------------------
-        changes: dict[tuple, tuple] = {}
-        for si, (date, post, old_worker) in enumerate(slots):
-            new_worker = None
-            for wi, wid in enumerate(worker_ids):
-                if solver.value(x[wi, si]) == 1:
-                    new_worker = wid
-                    break
-            if new_worker != old_worker:
-                changes[(date, post)] = (old_worker, new_worker)
-
-        return changes if changes else None
+        return None
