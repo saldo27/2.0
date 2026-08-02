@@ -2298,7 +2298,10 @@ with tab2:
                             _after_metrics = _fa_results["after"]
                             _fa_stats = _fa_results["stats"]
                             _total_swaps = (
-                                _fa_stats["shift_swaps"] + _fa_stats["weekend_swaps"] + _fa_stats["bridge_swaps"]
+                                _fa_stats["shift_swaps"]
+                                + _fa_stats["weekend_swaps"]
+                                + _fa_stats["bridge_swaps"]
+                                + _fa_stats.get("ortools_reassignments", 0)
                             )
 
                             if _total_swaps > 0:
@@ -2321,10 +2324,13 @@ with tab2:
 
                     if _fa_results is not None:
                         if _total_swaps > 0:
+                            _ortools_n = _fa_stats.get("ortools_reassignments", 0)
+                            _ortools_msg = f", {_ortools_n} reasignación(es) OR-Tools" if _ortools_n else ""
                             st.success(
                                 f"✅ Ajuste completado: {_fa_stats['shift_swaps']} swap(s) de turno, "
                                 f"{_fa_stats['weekend_swaps']} swap(s) de fin-de-semana, "
-                                f"{_fa_stats['bridge_swaps']} swap(s) de puente."
+                                f"{_fa_stats['bridge_swaps']} swap(s) de puente"
+                                f"{_ortools_msg}."
                             )
                             if _refreshed_pdfs:
                                 st.info(f"🔄 PDFs actualizados: {', '.join(_refreshed_pdfs)}")

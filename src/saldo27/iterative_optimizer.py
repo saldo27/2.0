@@ -43,7 +43,7 @@ class IterativeOptimizer:
 
         TOLERANCE SYSTEM:
         - This optimizer works with the ACTIVE tolerance phase from schedule_builder
-        - Phase 1 (Initial): ±8% strict target
+        - Phase 1 (Initial): ±10% target
         - Phase 2 (Emergency): ±12% absolute maximum (NEVER exceeded)
         - Default tolerance=0.12 represents the absolute maximum boundary
 
@@ -65,12 +65,12 @@ class IterativeOptimizer:
         # Constraint parameters - will be updated from scheduler config
         self.gap_between_shifts = 3  # Default minimum gap between shifts
 
-        # Initialize balance validator for strict balance checking
-        self.balance_validator = BalanceValidator(tolerance_percentage=tolerance * 100)
+        # Phase 1 target remains fixed at ±10%; tolerance is the Phase 2 absolute limit
+        self.balance_validator = BalanceValidator(tolerance_percentage=10.0)
 
         logging.info(f"IterativeOptimizer initialized: max_iterations={max_iterations}, tolerance={tolerance:.1%}")
         logging.info(f"Default gap_between_shifts={self.gap_between_shifts} (will be updated from config)")
-        logging.info(f"Balance validator initialized with {tolerance * 100}% tolerance")
+        logging.info("Balance validator initialized with 10.0% Phase 1 tolerance")
 
     @time_function
     def optimize_schedule(
