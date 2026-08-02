@@ -525,46 +525,55 @@ def test_ortools_phase_improves_or_neutral():
     assert score_after <= score_before, f"OR-Tools phase worsened the schedule: score {score_before} → {score_after}"
 
 
-def test_compute_metrics_counts_slots_not_dates():
+def test_compute_metrics_counts_per_worker():
     """
-    compute_metrics must count assigned slots (not unique dates) so that
-    deviation scoring is consistent with the CP-SAT objective.
+    compute_metrics must correctly count shifts, weekend shifts, and deviations
+    for each worker. A worker cannot be assigned to more than one slot per day,
+    so each day contributes exactly one shift per worker.
     """
     workers = _simple_workers()
     scheduler = _make_scheduler(workers)
 
     weekend_date = datetime(2026, 3, 7)  # Saturday
-    scheduler.schedule[weekend_date] = ["A", "A"]
-    scheduler.worker_assignments["A"] = {weekend_date}
+    weekday_date = datetime(2026, 3, 9)  # Monday
+    scheduler.schedule[weekend_date] = ["A", "B"]
+    scheduler.schedule[weekday_date] = ["A", "B"]
+    scheduler.worker_assignments["A"] = {weekend_date, weekday_date}
+    scheduler.worker_assignments["B"] = {weekend_date, weekday_date}
     scheduler.worker_shift_counts["A"] = 2
-    scheduler.worker_assignments["B"] = set()
-    scheduler.worker_shift_counts["B"] = 0
+    scheduler.worker_shift_counts["B"] = 2
 
     engine = _build_engine(scheduler)
     metrics = engine.compute_metrics()
 
     assert metrics["A"]["shift_assigned"] == 2
-    assert metrics["A"]["weekend_assigned"] == 2
+    assert metrics["A"]["weekend_assigned"] == 1
+    assert metrics["B"]["shift_assigned"] == 2
+    assert metrics["B"]["weekend_assigned"] == 1
 
 
-def test_calculate_statistics_counts_weekend_and_posts_per_slot():
+def test_calculate_statistics_counts_weekend_and_posts_correctly():
     """
-    Central statistics must count weekend shifts and post distribution per slot,
-    including repeated assignments on the same date.
+    Central statistics must correctly count weekend shifts and post distribution.
+    A worker is assigned to at most one slot per day, so total_shifts equals the
+    number of unique days worked and post_distribution sums to that same total.
     """
     workers = _simple_workers()
     scheduler = _make_scheduler(workers)
 
     weekend_date = datetime(2026, 3, 7)  # Saturday
-    scheduler.schedule[weekend_date] = ["A", "A"]
-    scheduler.worker_assignments["A"] = {weekend_date}
+    weekday_date = datetime(2026, 3, 9)  # Monday
+    scheduler.schedule[weekend_date] = ["A", "B"]
+    scheduler.schedule[weekday_date] = ["B", "A"]
+    scheduler.worker_assignments["A"] = {weekend_date, weekday_date}
+    scheduler.worker_assignments["B"] = {weekend_date, weekday_date}
     scheduler.worker_shift_counts["A"] = 2
-    scheduler.worker_assignments["B"] = set()
-    scheduler.worker_shift_counts["B"] = 0
+    scheduler.worker_shift_counts["B"] = 2
 
     stats = scheduler.stats.calculate_statistics()
     a_stats = stats["workers"]["A"]
 
+    # A is in post 0 on the weekend and post 1 on the weekday
     assert a_stats["total_shifts"] == 2
-    assert a_stats["weekend_shifts"] == 2
+    assert a_stats["weekend_shifts"] == 1
     assert a_stats["post_distribution"] == {0: 1, 1: 1}

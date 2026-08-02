@@ -401,7 +401,8 @@ class StatisticsCalculator:
             # CRITICAL: Use actual assignments from schedule, not worker_assignments
             # This ensures accurate count even if tracking is out of sync
             assignments = actual_assignments.get(worker_id, set())
-            # Use slot count (not set length) so double-post on same day counts twice
+            # Each worker appears in at most one slot per date (constraint enforced),
+            # so slot count equals the number of unique days worked.
             total_shifts_count = actual_slot_count.get(worker_id, 0)
 
             # Get target shifts — use raw target (includes mandatory days) so that
@@ -415,7 +416,8 @@ class StatisticsCalculator:
             weekend_shifts = weekend_slot_count.get(worker_id, 0)
             weekday_shifts = total_shifts_count - weekend_shifts
 
-            # Calculate post distribution from slot scan (counts duplicates correctly)
+            # Calculate post distribution from slot scan (same-day duplicates are
+            # prevented by the scheduler constraint, so each slot maps to one unique day)
             post_distribution = post_distribution_by_worker.get(worker_id, {})
 
             # Store worker stats

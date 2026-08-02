@@ -149,8 +149,9 @@ class FinalAdjustmentEngine:
                 ...
             }
         """
-        # Count from schedule slots (single source of truth) to avoid
-        # undercounting when a worker appears more than once on the same date.
+        # Count from schedule slots (single source of truth).
+        # Each worker can appear in at most one slot per date (constraint enforced
+        # throughout the scheduler), so slot-based counting equals day-based counting.
         total_by_worker: dict[str, int] = {}
         weekend_by_worker: dict[str, int] = {}
         bridge_by_worker: dict[str, int] = {}
