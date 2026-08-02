@@ -381,11 +381,17 @@ class StatisticsCalculator:
         # Use a set of dates for date-based queries AND a slot counter for total shifts
         actual_assignments = defaultdict(set)
         actual_slot_count = defaultdict(int)
+        weekend_slot_count = defaultdict(int)
+        post_distribution_by_worker = defaultdict(lambda: defaultdict(int))
         for date, shifts in schedule.items():
+            is_weekend = self.scheduler.date_utils.is_weekend_day(date, holidays_set)
             for post_idx, worker_id in enumerate(shifts):
                 if worker_id is not None:
                     actual_assignments[worker_id].add(date)
                     actual_slot_count[worker_id] += 1
+                    if is_weekend:
+                        weekend_slot_count[worker_id] += 1
+                    post_distribution_by_worker[worker_id][post_idx] += 1
 
         # Calculate stats for each worker efficiently
         for worker in self.scheduler.workers_data:
@@ -406,22 +412,11 @@ class StatisticsCalculator:
 
             # Calculate weekend and holiday shifts efficiently
             # Include pre-holidays (day before holiday) for consistency with scheduling
-            weekend_shifts = sum(
-                1 for date in assignments if self.scheduler.date_utils.is_weekend_day(date, holidays_set)
-            )
+            weekend_shifts = weekend_slot_count.get(worker_id, 0)
             weekday_shifts = total_shifts_count - weekend_shifts
 
-            # Calculate post distribution efficiently
-            post_distribution = defaultdict(int)
-            for date in assignments:
-                shifts_for_date = schedule.get(date, [])
-                try:
-                    if worker_id in shifts_for_date:
-                        post = shifts_for_date.index(worker_id)
-                        post_distribution[post] += 1
-                except ValueError:
-                    # Skip if worker_id isn't in the list
-                    pass
+            # Calculate post distribution from slot scan (counts duplicates correctly)
+            post_distribution = post_distribution_by_worker.get(worker_id, {})
 
             # Store worker stats
             stats["workers"][worker_id] = {

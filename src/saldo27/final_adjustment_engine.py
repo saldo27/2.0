@@ -149,18 +149,32 @@ class FinalAdjustmentEngine:
                 ...
             }
         """
+        # Count from schedule slots (single source of truth) to avoid
+        # undercounting when a worker appears more than once on the same date.
+        total_by_worker: dict[str, int] = {}
+        weekend_by_worker: dict[str, int] = {}
+        bridge_by_worker: dict[str, int] = {}
+
+        for date, shifts in self.schedule.items():
+            is_weekend = self.scheduler.date_utils.is_weekend_day(date, self.holidays_set)
+            is_bridge = self.scheduler.date_utils.is_bridge_day(date, self.scheduler.bridge_periods)
+            for worker_id in shifts:
+                if worker_id is None:
+                    continue
+                total_by_worker[worker_id] = total_by_worker.get(worker_id, 0) + 1
+                if is_weekend:
+                    weekend_by_worker[worker_id] = weekend_by_worker.get(worker_id, 0) + 1
+                if is_bridge:
+                    bridge_by_worker[worker_id] = bridge_by_worker.get(worker_id, 0) + 1
+
         metrics: dict[str, dict[str, Any]] = {}
         for worker in self.workers_data:
             wid = worker["id"]
             raw_target = self._raw_targets.get(wid, 0)
 
-            assigned_dates = self.worker_assignments.get(wid, set())
-            total_assigned = len(assigned_dates)
-
-            weekend_assigned = sum(
-                1 for d in assigned_dates if self.scheduler.date_utils.is_weekend_day(d, self.holidays_set)
-            )
-            bridge_assigned = len(self.scheduler.worker_bridge_counts.get(wid, set()))
+            total_assigned = total_by_worker.get(wid, 0)
+            weekend_assigned = weekend_by_worker.get(wid, 0)
+            bridge_assigned = bridge_by_worker.get(wid, 0)
 
             weekend_target = self._weekend_target_for(raw_target)
             bridge_target = self._bridge_target_for(raw_target)
