@@ -4,6 +4,7 @@ Versión DEMO con limitación por número de usos
 """
 
 import hashlib
+import hmac
 import json
 import os
 import threading
@@ -65,28 +66,32 @@ class LicenseManager:
 
     def _validate_license_key(self, key):
         """Validar clave de licencia"""
-        # Clave maestra
-        MASTER_KEY = "GUARDIAS-PRO-2025-FULL"
-        if key == MASTER_KEY:
+        # Clave maestra — comparación en tiempo constante para evitar timing attacks
+        _MASTER_KEY_HASH = "56e3f1467046d7e7d3bb086f2e9387eaacd40a98f170a7d68a3b2d6ff49adfca"
+        if hmac.compare_digest(
+            hashlib.sha256(key.encode()).hexdigest(),
+            _MASTER_KEY_HASH,
+        ):
             return True
 
-        # Verificar formato GP-XXXX-XXXX-XXXX
-        if key.startswith("GP-") and len(key) == 19:
+        # Verificar formato GP-XXXX-XXXX-XXXX-YYYYYYYY (26 caracteres)
+        if key.startswith("GP-") and len(key) == 26:
             return self._verify_checksum(key)
 
         return False
 
     def _verify_checksum(self, key):
-        """Verificar checksum de la clave"""
+        """Verificar checksum de la clave (SHA-256, primeros 8 hex)"""
         try:
             parts = key.split("-")
-            if len(parts) != 4:
+            if len(parts) != 5:
                 return False
 
-            # Calcular hash
-            base = "-".join(parts[:3])
-            expected = hashlib.md5(base.encode()).hexdigest()[:4].upper()
-            return parts[3] == expected
+            # parts: ['GP', 'XXXX', 'XXXX', 'XXXX', 'YYYYYYYY']
+            # La base incluye los cuatro primeros segmentos; el quinto es el checksum
+            base = "-".join(parts[:4])
+            expected = hashlib.sha256(base.encode()).hexdigest()[:8].upper()
+            return hmac.compare_digest(parts[4], expected)
         except (IndexError, AttributeError):
             return False  # Invalid license key format
 
