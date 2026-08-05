@@ -638,3 +638,50 @@ class PredictiveOptimizer:
         except Exception as e:
             logging.error(f"Error getting optimization summary: {e}")
             return {"status": "error", "message": str(e)}
+
+    # ------------------------------------------------------------------
+    # Scheduler-facing convenience façade
+    # ------------------------------------------------------------------
+
+    def run_predictive_optimization_dict(self) -> dict[str, Any]:
+        """Run predictive optimization and return Scheduler-compatible dict."""
+        try:
+            forecast_data: dict[str, Any] | None = None
+            if self.predictive_analytics and self.predictive_analytics.latest_forecasts:
+                forecast_data = self.predictive_analytics.latest_forecasts
+            result = self.predict_and_optimize(forecast_data or {})
+            return {
+                "success": True,
+                "optimization_results": result,
+                "message": "Predictive optimization completed successfully",
+            }
+        except Exception as e:
+            logging.error(f"Error in predictive optimization: {e}")
+            return {
+                "success": False,
+                "message": f"Predictive optimization failed: {e!s}",
+                "error": "OPTIMIZATION_FAILED",
+            }
+
+    def apply_predictive_adjustments_dict(self, optimization_result: dict[str, Any]) -> dict[str, Any]:
+        """Apply parameter adjustments from optimization_result; returns Scheduler-compatible dict."""
+        try:
+            parameter_adjustments = optimization_result.get("parameter_adjustments", {})
+            if not parameter_adjustments:
+                return {
+                    "success": False,
+                    "message": "No parameter adjustments found in optimization result",
+                    "error": "NO_ADJUSTMENTS",
+                }
+            result = self.apply_recommended_adjustments(parameter_adjustments)
+            success = result.get("status") == "success"
+            return {
+                "success": success,
+                "application_results": result.get("results"),
+                "message": "Parameter adjustments applied successfully"
+                if success
+                else f"Application failed: {result.get('message', 'Unknown error')}",
+            }
+        except Exception as e:
+            logging.error(f"Error applying predictive adjustments: {e}")
+            return {"success": False, "message": f"Adjustment application failed: {e!s}", "error": "ADJUSTMENT_FAILED"}

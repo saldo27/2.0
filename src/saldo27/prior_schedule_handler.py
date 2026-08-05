@@ -201,3 +201,168 @@ def summarize_prior_schedule(prior_data: dict[str, Any]) -> dict[str, dict]:
             "last_date": prior_data["prior_last_date"].get(wid),
         }
     return summary
+
+
+def apply_prior_period_balance(
+    workers_data: list[dict],
+    prior_shift_counts: dict[str, int],
+    prior_target_shifts: dict[str, float],
+    base_target_shifts: dict[str, float],
+) -> None:
+    """
+    Adjust each worker's ``target_shifts`` for the new period so that
+    over/under-delivery in the prior period is compensated.
+
+    Logic:
+      delta = prior_actual_shifts - prior_target_shifts
+      new_target = base_target - delta
+
+    Workers who worked MORE than their prior target get a smaller new-period
+    target (and vice-versa).  The adjustment is always relative to
+    ``base_target_shifts`` so that repeated calls (e.g. user loads a
+    different prior file) are idempotent.
+
+    Mutates ``workers_data`` in-place.
+    """
+    if not prior_shift_counts or not prior_target_shifts:
+        return
+
+    for worker in workers_data:
+        wid = worker["id"]
+        prior_actual = prior_shift_counts.get(wid)
+        prior_target = prior_target_shifts.get(wid)
+        if prior_actual is None or prior_target is None or prior_target == 0:
+            continue
+
+        delta = prior_actual - prior_target  # positive: worked extra; negative: worked less
+        if delta == 0:
+            continue
+
+        base_target = base_target_shifts.get(wid) or float(worker.get("target_shifts", 1))
+        adjusted = max(1, round(base_target - delta))
+        worker["target_shifts"] = adjusted
+        logging.info(
+            f"[PriorBalance] {wid}: base_target={base_target} → adjusted={adjusted} "
+            f"(prior_actual={prior_actual}, prior_target={prior_target}, delta={delta:+.0f})"
+        )
+
+
+def validate_target_capacity(
+    workers_data: list[dict],
+    schedule: dict,
+    base_target_shifts: dict[str, float],
+) -> None:
+    """
+    Check that the sum of all adjusted ``target_shifts`` does not exceed the
+    total available slots.  If it does, proportionally scale down the
+    adjustments that *increased* targets (workers who were under-assigned
+    in the prior period) so the total fits within capacity.
+
+    Mutates ``workers_data`` in-place.
+    """
+    total_slots = sum(len(slots) for slots in schedule.values())
+    if total_slots <= 0:
+        return
+
+    target_sum = sum(w.get("target_shifts", 0) for w in workers_data)
+    logging.info(f"[TargetValidation] Sum of targets={target_sum}, available slots={total_slots}")
+
+    if target_sum <= total_slots:
+        return
+
+    overflow = target_sum - total_slots
+    logging.warning(
+        f"[TargetValidation] Adjusted targets exceed capacity by {overflow} "
+        f"({target_sum} targets vs {total_slots} slots). "
+        f"Scaling down inflated targets to fit."
+    )
+
+    # Identify workers whose targets were inflated by prior-balance (delta < 0)
+    inflated = []
+    for w in workers_data:
+        wid = w["id"]
+        base = base_target_shifts.get(wid, 0)
+        current = w.get("target_shifts", 0)
+        if current > base:
+            inflated.append((w, current - base))
+
+    if not inflated:
+        logging.warning(
+            "[TargetValidation] No inflated targets to reduce; deficit may be unavoidable with current constraints."
+        )
+        return
+
+    total_inflation = sum(inc for _, inc in inflated)
+    remaining_overflow = overflow
+
+    # Proportionally reduce inflated targets
+    for w, increment in inflated:
+        reduction = min(increment, round(increment / total_inflation * overflow))
+        reduction = min(reduction, remaining_overflow)
+        if reduction > 0:
+            old = w["target_shifts"]
+            w["target_shifts"] = max(1, old - reduction)
+            remaining_overflow -= reduction
+            logging.info(
+                f"[TargetValidation] {w['id']}: target {old} → {w['target_shifts']} "
+                f"(reduced by {reduction} to fit capacity)"
+            )
+
+    # If rounding left leftover, remove one more from the largest remaining inflation
+    if remaining_overflow > 0:
+        inflated.sort(key=lambda x: x[0].get("target_shifts", 0), reverse=True)
+        for w, _ in inflated:
+            if remaining_overflow <= 0:
+                break
+            if w["target_shifts"] > 1:
+                w["target_shifts"] -= 1
+                remaining_overflow -= 1
+                logging.info(
+                    f"[TargetValidation] {w['id']}: further reduced to {w['target_shifts']} (residual rounding)"
+                )
+
+    new_sum = sum(w.get("target_shifts", 0) for w in workers_data)
+    logging.info(f"[TargetValidation] After scaling: sum of targets={new_sum}, available slots={total_slots}")
+
+
+def get_effective_assignments(
+    worker_id: str,
+    worker_assignments: dict[str, set],
+    prior_assignments: dict[str, set],
+    start_date: "datetime",
+) -> set:
+    """
+    Return the merged set of prior-period dates AND current-period dates for a
+    worker.  Used by constraint checkers that need cross-period visibility (gap
+    constraint, consecutive-weekend constraint).
+
+    Only prior assignments within the lookback window (90 days before the new
+    period start) are included to avoid stale data from very old periods
+    disturbing constraints.
+    """
+    from datetime import timedelta
+
+    current = worker_assignments.get(worker_id, set())
+    prior = prior_assignments.get(worker_id, set())
+    if not prior:
+        return current
+    lookback_cutoff = start_date - timedelta(days=90)
+    relevant_prior = {d for d in prior if d >= lookback_cutoff}
+    return current | relevant_prior
+
+
+def get_prior_weekend_count(
+    worker_id: str,
+    prior_weekend_counts: dict[str, int],
+) -> int:
+    """Return the prior-period weekend count for a worker."""
+    return prior_weekend_counts.get(worker_id, 0)
+
+
+def get_effective_weekend_count(
+    worker_id: str,
+    prior_weekend_counts: dict[str, int],
+    worker_weekend_counts: dict[str, int],
+) -> int:
+    """Return prior-period weekend count + current-period weekend count."""
+    return prior_weekend_counts.get(worker_id, 0) + worker_weekend_counts.get(worker_id, 0)

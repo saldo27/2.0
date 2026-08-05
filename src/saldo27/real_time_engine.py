@@ -34,6 +34,17 @@ class RealTimeOperationResult:
         if self.suggestions is None:
             self.suggestions = []
 
+    def as_dict(self) -> dict[str, Any]:
+        """Convert to the plain-dict format expected by callers (e.g. Streamlit UI)."""
+        return {
+            "success": self.success,
+            "message": self.message,
+            "operation_id": self.operation_id,
+            "validation_results": [v.__dict__ for v in (self.validation_results or [])],
+            "conflicts": [c.__dict__ for c in (self.conflicts or [])],
+            "suggestions": self.suggestions or [],
+        }
+
 
 class RealTimeEngine:
     """Core real-time processing engine that coordinates all real-time features"""
@@ -592,3 +603,110 @@ class RealTimeEngine:
     def _on_validation_result(self, event):
         """Handle validation result events"""
         logging.info(f"Validation completed: {event.data['errors']} errors, {event.data['warnings']} warnings")
+
+    # ------------------------------------------------------------------
+    # Scheduler-facing convenience façade (returns plain dicts)
+    # These methods are called by Scheduler thin-wrappers so that the
+    # dict-conversion logic lives here, next to the data it converts.
+    # ------------------------------------------------------------------
+
+    def enable_features(self) -> bool:
+        """
+        Activate real-time features after schedule generation.
+        Publishes a REAL_TIME_ACTIVATED event and wires all sub-components.
+        Returns True on success.
+        """
+        try:
+            if hasattr(self, "event_bus"):
+                from saldo27.event_bus import EventType, ScheduleEvent
+
+                event = ScheduleEvent(
+                    event_type=EventType.REAL_TIME_ACTIVATED,
+                    data={
+                        "message": "Real-time features fully activated",
+                        "user_id": getattr(self.scheduler, "current_user", None),
+                    },
+                )
+                self.event_bus.publish(event)
+                logging.debug("Real-time activation event published")
+
+            logging.info("Real-time features successfully enabled and activated for smart swapping")
+            return True
+        except Exception as e:
+            logging.error(f"Error enabling real-time features: {e}", exc_info=True)
+            return False
+
+    def assign_worker_dict(
+        self,
+        worker_id: str,
+        shift_date: datetime,
+        post_index: int,
+        user_id: str | None = None,
+        validate: bool = True,
+    ) -> dict[str, Any]:
+        """assign_worker_real_time → plain dict (Scheduler façade)."""
+        result = self.assign_worker_real_time(worker_id, shift_date, post_index, user_id, validate)
+        return result.as_dict()
+
+    def unassign_worker_dict(
+        self,
+        shift_date: datetime,
+        post_index: int,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        """unassign_worker_real_time → plain dict (Scheduler façade)."""
+        result = self.unassign_worker_real_time(shift_date, post_index, user_id)
+        return {
+            "success": result.success,
+            "message": result.message,
+            "operation_id": result.operation_id,
+            "suggestions": result.suggestions or [],
+        }
+
+    def swap_workers_dict(
+        self,
+        shift_date1: datetime,
+        post_index1: int,
+        shift_date2: datetime,
+        post_index2: int,
+        user_id: str | None = None,
+        validate: bool = True,
+    ) -> dict[str, Any]:
+        """swap_workers_real_time → plain dict (Scheduler façade)."""
+        result = self.swap_workers_real_time(shift_date1, post_index1, shift_date2, post_index2, user_id, validate)
+        return {
+            "success": result.success,
+            "message": result.message,
+            "operation_id": result.operation_id,
+            "validation_results": [v.__dict__ for v in (result.validation_results or [])],
+            "conflicts": [c.__dict__ for c in (result.conflicts or [])],
+        }
+
+    def validate_schedule_dict(self, quick_check: bool = False) -> dict[str, Any]:
+        """validate_schedule_real_time → plain dict (Scheduler façade)."""
+        result = self.validate_schedule_real_time(quick_check)
+        return result.as_dict()
+
+    def undo_dict(self, user_id: str | None = None) -> dict[str, Any]:
+        """undo_last_change → plain dict (Scheduler façade)."""
+        result = self.undo_last_change(user_id)
+        return {"success": result.success, "message": result.message, "operation_id": result.operation_id}
+
+    def redo_dict(self, user_id: str | None = None) -> dict[str, Any]:
+        """redo_last_change → plain dict (Scheduler façade)."""
+        result = self.redo_last_change(user_id)
+        return {"success": result.success, "message": result.message, "operation_id": result.operation_id}
+
+    def change_history_dict(self, limit: int = 20, user_id: str | None = None) -> dict[str, Any]:
+        """get_change_history → plain dict (Scheduler façade)."""
+        try:
+            changes = self.change_tracker.get_change_history(limit=limit, user_id=user_id or "")
+            return {
+                "changes": [change.to_dict() for change in changes],
+                "total_count": len(changes),
+                "can_undo": self.change_tracker.can_undo(),
+                "can_redo": self.change_tracker.can_redo(),
+            }
+        except Exception as e:
+            logging.error(f"Error getting change history: {e}")
+            return {"error": f"History retrieval failed: {e!s}"}
