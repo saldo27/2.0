@@ -14,6 +14,7 @@ from typing import Any
 
 from saldo27.adaptive_iterations import AdaptiveIterationManager
 from saldo27.advanced_distribution_engine import AdvancedDistributionEngine
+from saldo27.balance_validator import BalanceValidator
 from saldo27.exceptions import ConstraintViolationError, SchedulerError
 from saldo27.iterative_optimizer import IterativeOptimizer
 from saldo27.operation_prioritizer import OperationPrioritizer
@@ -54,6 +55,12 @@ class SchedulerCore:
         # Iterative optimizer works with Phase 2 tolerance (±12% absolute limit)
         # Note: Initial distribution uses Phase 1 (±10% objective), optimizer handles both phases
         self.iterative_optimizer = IterativeOptimizer(max_iterations=80, tolerance=0.12)
+
+        # Shared BalanceValidator — single source of truth for all balance engines.
+        # IterativeOptimizer, AdvancedDistributionEngine (via config["balance_tolerance"]),
+        # and StrictBalanceOptimizer (via target_tolerance from config) all use this contract.
+        self._shared_balance_validator = BalanceValidator(tolerance_percentage=10.0)
+        self.iterative_optimizer.set_shared_balance_validator(self._shared_balance_validator)
 
         # Initialize adaptive iteration manager for intelligent optimization
         self.adaptive_manager = AdaptiveIterationManager(scheduler)
@@ -975,27 +982,29 @@ class SchedulerCore:
 
             if self.balance_optimizer:
                 try:
+                    # Read shared tolerance from config so all engines agree
+                    _bal_tol: int = self.config.get("balance_tolerance", SchedulerConfig.DEFAULT_BALANCE_TOLERANCE)
+
                     # Save score checkpoint before strict balance optimizer
                     score_before_strict = self.metrics.calculate_overall_schedule_score()
                     state_before_strict = self._snapshot_state(include_locked=False)
 
-                    # Aplicar optimización de balance estricto
-                    # Primero intentamos con tolerancia ±1
+                    # Aplicar optimización de balance estricto con la tolerancia compartida
                     balance_achieved = self.balance_optimizer.optimize_balance(
                         max_iterations=300,
-                        target_tolerance=1,  # ±1 turno máximo
+                        target_tolerance=_bal_tol,
                     )
 
-                    # Si no se logró, intentar con múltiples pasadas
+                    # Si no se logró, intentar con múltiples pasadas (tolerancia ±bal_tol+1)
                     if not balance_achieved:
                         logging.info("🔄 Running second balance pass with relaxed constraints...")
                         balance_achieved = self.balance_optimizer.optimize_balance(
                             max_iterations=250,
-                            target_tolerance=2,  # Aceptar ±2 temporalmente
+                            target_tolerance=_bal_tol + 1,
                         )
-                        # Luego intentar ajustar a ±1 de nuevo
+                        # Luego intentar ajustar a la tolerancia objetivo de nuevo
                         if balance_achieved:
-                            self.balance_optimizer.optimize_balance(max_iterations=200, target_tolerance=1)
+                            self.balance_optimizer.optimize_balance(max_iterations=200, target_tolerance=_bal_tol)
 
                     # Protect score: revert if strict optimizer significantly worsened it
                     score_after_strict = self.metrics.calculate_overall_schedule_score()
@@ -1006,9 +1015,9 @@ class SchedulerCore:
                         )
                         self._restore_state(state_before_strict)
                     elif balance_achieved:
-                        logging.info("✅ Perfect balance achieved: All workers within ±1 shift of target")
+                        logging.info(f"✅ Perfect balance achieved: All workers within ±{_bal_tol} shift of target")
                     else:
-                        logging.warning("⚠️ Some workers still outside ±1 tolerance")
+                        logging.warning(f"⚠️ Some workers still outside ±{_bal_tol} tolerance")
 
                 except Exception as e:
                     logging.error(f"Error during strict balance optimization: {e}", exc_info=True)
@@ -1123,40 +1132,16 @@ class SchedulerCore:
             else:
                 logging.warning(f"Max balance iterations ({max_final_balance_loops}) reached")
 
-            # FASE FINAL: Balance estricto de turnos con el optimizador avanzado
-            if self.balance_optimizer:
-                logging.info("\n" + "=" * 80)
-                logging.info("FINAL PHASE: Strict Balance Optimization (Post-Finalization)")
-                logging.info("=" * 80)
-                try:
-                    # Save score checkpoint before FINAL strict balance optimizer
-                    score_before_final_strict = self.metrics.calculate_overall_schedule_score()
-                    state_before_final_strict = self._snapshot_state(include_locked=False)
+            # NOTE: The StrictBalanceOptimizer was previously called a second time here
+            # ("FASE FINAL"). That duplicate call could undo work done by Phase 3.6 and
+            # create an interference loop with AdvancedDistributionEngine. Phase 3.6
+            # (inside _iterative_improvement_phase) is now the single authoritative
+            # balance pass; only the cheaper last-post rebalance runs here.
 
-                    # Ejecutar balance estricto final con más iteraciones
-                    final_balance = self.balance_optimizer.optimize_balance(max_iterations=250, target_tolerance=1)
-                    if final_balance:
-                        logging.info("✅ Final strict balance achieved")
-                    else:
-                        # Intentar con tolerancia más flexible
-                        logging.info("🔄 Retrying with tolerance ±2...")
-                        self.balance_optimizer.optimize_balance(max_iterations=180, target_tolerance=2)
-
-                    # Protect score: revert if FINAL strict optimizer significantly worsened it
-                    score_after_final_strict = self.metrics.calculate_overall_schedule_score()
-                    if score_after_final_strict < score_before_final_strict - 1.0:
-                        logging.warning(
-                            f"⚠️ FINAL strict optimizer WORSENED score "
-                            f"({score_before_final_strict:.2f} → {score_after_final_strict:.2f}). Reverting."
-                        )
-                        self._restore_state(state_before_final_strict)
-                except Exception as e:
-                    logging.error(f"Error in final balance optimization: {e}", exc_info=True)
-
-                # CRITICAL: Rebalance last posts after balance optimization
-                # Balance optimizer swaps can disrupt last post distribution
-                logging.info("Rebalancing last post distribution after balance optimization...")
-                self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=30)
+            # CRITICAL: Rebalance last posts after the final balance loops above.
+            # Workload/monthly swaps can disrupt last-post distribution.
+            logging.info("Rebalancing last post distribution after balance loops...")
+            self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=30)
 
             # NOTE: Monthly balance pass removed here — it now runs as the
             # ABSOLUTE LAST STEP after bridge rebalancing (see below).

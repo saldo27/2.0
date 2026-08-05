@@ -97,6 +97,10 @@ class SchedulerConfig:
     DEFAULT_NUM_SHIFTS = 4
     DEFAULT_OPTIMIZATION_LOOPS = 70
     DEFAULT_LAST_POST_ADJUSTMENT_ITERATIONS = 6
+    # Maximum absolute shift deviation per worker considered "balanced" (±1 shift).
+    # All balance engines read this value from config["balance_tolerance"] so that
+    # the tolerance is defined in exactly one place.
+    DEFAULT_BALANCE_TOLERANCE = 1
 
     # Performance optimization settings
     CACHE_ENABLED = True
@@ -122,6 +126,7 @@ class SchedulerConfig:
             "num_shifts": cls.DEFAULT_NUM_SHIFTS,
             "max_improvement_loops": cls.DEFAULT_OPTIMIZATION_LOOPS,
             "last_post_adjustment_max_iterations": cls.DEFAULT_LAST_POST_ADJUSTMENT_ITERATIONS,
+            "balance_tolerance": cls.DEFAULT_BALANCE_TOLERANCE,
             "cache_enabled": cls.CACHE_ENABLED,
             "lazy_evaluation": cls.LAZY_EVALUATION,
             "batch_size": cls.BATCH_SIZE,
