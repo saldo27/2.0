@@ -600,7 +600,7 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
 
             # Polling loop: mostrar progreso real y permitir cancelación
             while thread.is_alive():
-                if cancel_placeholder.button("⛔ Cancelar generación", key=f"cancel_{time.time()}"):
+                if cancel_placeholder.button("⛔ Cancelar generación", key="cancel_generation"):
                     scheduler._cancelled = True
                     st.session_state.generation_cancelled = True
                     status_text.warning("⏳ Cancelando... esperando a que el motor se detenga")
