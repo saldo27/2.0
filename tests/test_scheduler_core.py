@@ -211,7 +211,5 @@ def test_strict_balance_optimizer_not_called_in_finalization_phase():
         and node.func.attr == "optimize_balance"
     ]
     assert calls == [], (
-        "_finalization_phase still calls optimize_balance — "
-        "remove the duplicate StrictBalanceOptimizer invocation"
+        "_finalization_phase still calls optimize_balance — remove the duplicate StrictBalanceOptimizer invocation"
     )
-
