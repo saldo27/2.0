@@ -598,11 +598,17 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             thread = threading.Thread(target=_run_generation, daemon=True)
             thread.start()
 
+            # Render cancel button once before the polling loop to avoid duplicate-key errors.
+            # The button click sets session_state; the loop reads it on the next iteration.
+            if cancel_placeholder.button("⛔ Cancelar generación", key="cancel_generation"):
+                st.session_state._cancel_requested = True
+
             # Polling loop: mostrar progreso real y permitir cancelación
             while thread.is_alive():
-                if cancel_placeholder.button("⛔ Cancelar generación", key="cancel_generation"):
+                if st.session_state.get("_cancel_requested"):
                     scheduler._cancelled = True
                     st.session_state.generation_cancelled = True
+                    st.session_state._cancel_requested = False
                     status_text.warning("⏳ Cancelando... esperando a que el motor se detenga")
                 # Detect current phase from latest log messages
                 _recent = sidebar_handler.get_messages(last_n=30)
