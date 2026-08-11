@@ -651,3 +651,58 @@ class PredictiveAnalyticsEngine:
             summary["status"]["error"] = str(e)
 
         return summary
+
+    # ------------------------------------------------------------------
+    # Scheduler-facing convenience façade (returns Scheduler-compatible dicts)
+    # ------------------------------------------------------------------
+
+    def generate_demand_forecasts_dict(self, forecast_days: int = 30) -> dict[str, Any]:
+        """Generate demand forecasts and return Scheduler-compatible dict."""
+        try:
+            result = self.generate_demand_forecasts(forecast_days)
+            if self.config.get("auto_collect_data", True):
+                self.auto_collect_data_if_enabled()
+            return {
+                "success": True,
+                "forecasts": result.get("forecasts"),
+                "status": result.get("status"),
+                "message": f"Forecasts generated for {forecast_days} days",
+            }
+        except Exception as e:
+            logging.error(f"Error generating demand forecasts: {e}")
+            return {"success": False, "message": f"Forecast generation failed: {e!s}", "error": "FORECAST_FAILED"}
+
+    def get_predictive_insights_dict(self) -> dict[str, Any]:
+        """Return predictive insights as Scheduler-compatible dict."""
+        try:
+            result = self.get_predictive_insights()
+            return {
+                "success": True,
+                "insights": result.get("insights"),
+                "status": result.get("status"),
+                "message": "Predictive insights generated successfully",
+            }
+        except Exception as e:
+            logging.error(f"Error getting predictive insights: {e}")
+            return {"success": False, "message": f"Insights generation failed: {e!s}", "error": "INSIGHTS_FAILED"}
+
+    def collect_historical_data_dict(self) -> dict[str, Any]:
+        """Collect current schedule data for historical analysis; returns Scheduler-compatible dict."""
+        try:
+            result = self.collect_and_store_current_data()
+            return {
+                "success": result.get("status") == "success",
+                "message": result.get("message", "Data collection completed"),
+                "data_summary": result.get("data_summary"),
+            }
+        except Exception as e:
+            logging.error(f"Error collecting historical data: {e}")
+            return {"success": False, "message": f"Data collection failed: {e!s}", "error": "DATA_COLLECTION_FAILED"}
+
+    def get_optimization_suggestions_list(self) -> list[str]:
+        """Return optimization suggestions as a plain list."""
+        try:
+            return self.get_optimization_suggestions()
+        except Exception as e:
+            logging.error(f"Error getting optimization suggestions: {e}")
+            return [f"Error getting suggestions: {e!s}"]

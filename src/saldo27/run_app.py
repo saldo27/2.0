@@ -20,7 +20,8 @@ os.environ["STREAMLIT_GLOBAL_DEVELOPMENT_MODE"] = "false"
 
 # Solucionar sys.stdin
 if not sys.stdin or not hasattr(sys.stdin, "isatty") or not sys.stdin.isatty():
-    sys.stdin = open(os.devnull)
+    _devnull = open(os.devnull)  # intentionally kept open for process lifetime
+    sys.stdin = _devnull
 
 # ===== PARCHE MEJORADO:  Crear módulo dummy streamlit. hello =====
 import types

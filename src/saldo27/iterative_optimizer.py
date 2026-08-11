@@ -72,6 +72,22 @@ class IterativeOptimizer:
         logging.info(f"Default gap_between_shifts={self.gap_between_shifts} (will be updated from config)")
         logging.info("Balance validator initialized with 10.0% Phase 1 tolerance")
 
+    def set_shared_balance_validator(self, validator: BalanceValidator) -> None:
+        """Replace the internal BalanceValidator with a shared instance.
+
+        Called by ``SchedulerCore`` so that IterativeOptimizer and
+        StrictBalanceOptimizer use the same validator object and therefore
+        the same tolerance contract.
+
+        Args:
+            validator: Shared ``BalanceValidator`` instance from SchedulerCore.
+        """
+        self.balance_validator = validator
+        logging.info(
+            f"IterativeOptimizer: shared BalanceValidator installed "
+            f"(tolerance_percentage={validator.tolerance_percentage}%)"
+        )
+
     @time_function
     def optimize_schedule(
         self, scheduler_core, schedule: dict, workers_data: list[dict], schedule_config: dict

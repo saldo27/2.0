@@ -5,7 +5,6 @@ This module contains the main orchestration logic for the scheduler system,
 extracted from the original Scheduler class to improve maintainability and separation of concerns.
 """
 
-import copy
 import hashlib
 import logging
 import math
@@ -15,6 +14,7 @@ from typing import Any
 
 from saldo27.adaptive_iterations import AdaptiveIterationManager
 from saldo27.advanced_distribution_engine import AdvancedDistributionEngine
+from saldo27.balance_validator import BalanceValidator
 from saldo27.exceptions import ConstraintViolationError, SchedulerError
 from saldo27.iterative_optimizer import IterativeOptimizer
 from saldo27.operation_prioritizer import OperationPrioritizer
@@ -56,6 +56,12 @@ class SchedulerCore:
         # Note: Initial distribution uses Phase 1 (±10% objective), optimizer handles both phases
         self.iterative_optimizer = IterativeOptimizer(max_iterations=80, tolerance=0.12)
 
+        # Shared BalanceValidator — single source of truth for all balance engines.
+        # IterativeOptimizer, AdvancedDistributionEngine (via config["balance_tolerance"]),
+        # and StrictBalanceOptimizer (via target_tolerance from config) all use this contract.
+        self._shared_balance_validator = BalanceValidator(tolerance_percentage=10.0)
+        self.iterative_optimizer.set_shared_balance_validator(self._shared_balance_validator)
+
         # Initialize adaptive iteration manager for intelligent optimization
         self.adaptive_manager = AdaptiveIterationManager(scheduler)
 
@@ -91,12 +97,7 @@ class SchedulerCore:
                 raise ConstraintViolationError("Failed to assign mandatory shifts")
 
             # Save mandatory state (preserved across all attempts)
-            mandatory_backup = copy.deepcopy(self.scheduler.schedule)
-            mandatory_assignments = copy.deepcopy(self.scheduler.worker_assignments)
-            mandatory_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
-            mandatory_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
-            mandatory_posts = copy.deepcopy(self.scheduler.worker_posts)
-            mandatory_locked = copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory)
+            mandatory_snap = self._snapshot_state()
 
             # Phase 3: Multiple complete attempts
             logging.info("=" * 80)
@@ -124,14 +125,7 @@ class SchedulerCore:
                 logging.info(f"{'█' * 80}")
 
                 # Restore mandatory state for this attempt
-                self.scheduler.schedule = copy.deepcopy(mandatory_backup)
-                self.scheduler.worker_assignments = copy.deepcopy(mandatory_assignments)
-                self.scheduler.worker_shift_counts = copy.deepcopy(mandatory_counts)
-                self.scheduler.worker_weekend_counts = copy.deepcopy(mandatory_weekend_counts)
-                self.scheduler.worker_posts = copy.deepcopy(mandatory_posts)
-                # CRITICAL: Sync ALL schedule_builder references to the new deep-copied objects
-                self._sync_builder_references()
-                self.scheduler.schedule_builder._locked_mandatory = copy.deepcopy(mandatory_locked)
+                self._restore_state(mandatory_snap)
 
                 # Phase 3.1: Multiple initial distribution attempts
                 if not self._multiple_initial_distribution_attempts(complete_attempt_num):
@@ -158,6 +152,7 @@ class SchedulerCore:
                 logging.info(f"   Weekend Imbalance: {weekend_imbalance:.2f}")
 
                 # Save this complete attempt
+                _attempt_snap = self._snapshot_state()
                 complete_attempts.append(
                     {
                         "attempt": complete_attempt_num,
@@ -166,12 +161,12 @@ class SchedulerCore:
                         "score": score,
                         "workload_imbalance": workload_imbalance,
                         "weekend_imbalance": weekend_imbalance,
-                        "schedule": copy.deepcopy(self.scheduler.schedule),
-                        "assignments": copy.deepcopy(self.scheduler.worker_assignments),
-                        "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
-                        "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
-                        "posts": copy.deepcopy(self.scheduler.worker_posts),
-                        "locked_mandatory": copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory),
+                        "schedule": _attempt_snap["schedule"],
+                        "assignments": _attempt_snap["assignments"],
+                        "counts": _attempt_snap["counts"],
+                        "weekend_counts": _attempt_snap["weekend_counts"],
+                        "posts": _attempt_snap["posts"],
+                        "locked_mandatory": _attempt_snap["locked_mandatory"],
                     }
                 )
 
@@ -254,6 +249,52 @@ class SchedulerCore:
         if hasattr(self.scheduler, "stats") and self.scheduler.stats is not None:
             self.scheduler.stats.schedule = self.scheduler.schedule
             self.scheduler.stats.worker_assignments = self.scheduler.worker_assignments
+
+    def _snapshot_state(self, *, include_locked: bool = True) -> dict[str, Any]:
+        """Return a lightweight snapshot of the current scheduler state.
+
+        Uses type-aware copies instead of ``copy.deepcopy`` to avoid the
+        overhead of the generic deepcopy machinery:
+
+        * ``schedule``          – ``dict[str, list[str|None]]``  → per-list copy
+        * ``worker_assignments``– ``dict[str, set[str]]``        → per-set copy
+        * ``worker_shift_counts``     – ``dict[str, int]``       → flat dict copy
+        * ``worker_weekend_counts``   – ``dict[str, int]``       → flat dict copy
+        * ``worker_posts``      – ``dict[str, set]``             → per-set copy
+        * ``_locked_mandatory`` – ``set[tuple[str, datetime]]``  → set copy
+          (only when *include_locked* is True)
+        """
+        s = self.scheduler
+        snap: dict[str, Any] = {
+            "schedule": {k: v[:] for k, v in s.schedule.items()},
+            "assignments": {k: v.copy() for k, v in s.worker_assignments.items()},
+            "counts": s.worker_shift_counts.copy(),
+            "weekend_counts": s.worker_weekend_counts.copy(),
+            "posts": {k: v.copy() for k, v in s.worker_posts.items()},
+        }
+        if include_locked:
+            snap["locked_mandatory"] = s.schedule_builder._locked_mandatory.copy()
+        return snap
+
+    def _restore_state(self, snap: dict[str, Any], *, sync_builder: bool = True) -> None:
+        """Restore scheduler state from a snapshot produced by ``_snapshot_state``.
+
+        Args:
+            snap: Snapshot dict as returned by ``_snapshot_state``.
+            sync_builder: When True (default) call ``_sync_builder_references``
+                after restoring so that ``schedule_builder`` and dependent
+                objects point at the newly restored dicts.
+        """
+        s = self.scheduler
+        s.schedule = snap["schedule"]
+        s.worker_assignments = snap["assignments"]
+        s.worker_shift_counts = snap["counts"]
+        s.worker_weekend_counts = snap["weekend_counts"]
+        s.worker_posts = snap["posts"]
+        if sync_builder:
+            self._sync_builder_references()
+        if "locked_mandatory" in snap:
+            s.schedule_builder._locked_mandatory = snap["locked_mandatory"]
 
     def _sanitize_restored_attempt_state(self) -> dict[str, int]:
         """
@@ -461,13 +502,7 @@ class SchedulerCore:
             logging.info(f"Number of initial distribution attempts: {num_attempts}")
 
             # Save current mandatory state (this must be preserved)
-            mandatory_backup = copy.deepcopy(self.scheduler.schedule)
-            mandatory_assignments = copy.deepcopy(self.scheduler.worker_assignments)
-            mandatory_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
-            mandatory_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
-            mandatory_posts = copy.deepcopy(self.scheduler.worker_posts)
-            # CRITICAL: Save locked mandatory shifts to prevent them from being modified
-            mandatory_locked = copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory)
+            mandatory_snap = self._snapshot_state()
 
             best_attempt = None
             best_score = -1
@@ -483,12 +518,7 @@ class SchedulerCore:
             no_improve_count = 0  # Track consecutive attempts with no score improvement
 
             # Initialize best-state variables (will be set when first successful attempt beats best_score)
-            best_schedule = copy.deepcopy(self.scheduler.schedule)
-            best_assignments = copy.deepcopy(self.scheduler.worker_assignments)
-            best_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
-            best_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
-            best_posts = copy.deepcopy(self.scheduler.worker_posts)
-            best_locked_mandatory = copy.deepcopy(mandatory_locked)
+            best_snap = self._snapshot_state()
 
             # Start adaptive iteration manager timer
             self.adaptive_manager.start_time = datetime.now()
@@ -504,11 +534,7 @@ class SchedulerCore:
                 logging.info(f"{'─' * 80}")
 
                 # Restore mandatory state
-                self.scheduler.schedule = copy.deepcopy(mandatory_backup)
-                self.scheduler.worker_assignments = copy.deepcopy(mandatory_assignments)
-                self.scheduler.worker_shift_counts = copy.deepcopy(mandatory_counts)
-                self.scheduler.worker_weekend_counts = copy.deepcopy(mandatory_weekend_counts)
-                self.scheduler.worker_posts = copy.deepcopy(mandatory_posts)
+                self._restore_state(mandatory_snap)
 
                 # Re-apply prior-period seed so ordering stays biased correctly
                 if _prior_seeded_counts:
@@ -516,9 +542,7 @@ class SchedulerCore:
 
                 # CRITICAL: Sync ALL schedule_builder references to the new deep-copied objects
                 if hasattr(self.scheduler, "schedule_builder"):
-                    self._sync_builder_references()
-                    # CRITICAL: Restore locked mandatory shifts
-                    self.scheduler.schedule_builder._locked_mandatory = copy.deepcopy(mandatory_locked)
+                    # _restore_state already called _sync_builder_references; just rebuild caches
                     # CRITICAL: Rebuild caches to reflect new state (prevents cache staling between attempts)
                     self.scheduler.schedule_builder._build_optimization_caches()
                     attempt_state_stats = self._sanitize_restored_attempt_state()
@@ -532,7 +556,7 @@ class SchedulerCore:
                         ),
                     }
 
-                logging.info(f"Restored {len(mandatory_locked)} locked mandatory shifts")
+                logging.info(f"Restored {len(mandatory_snap['locked_mandatory'])} locked mandatory shifts")
                 logging.info("Rebuilt schedule builder caches for fresh attempt")
                 if attempt_state_stats["stray_prefilled_slots"] > 0:
                     logging.warning(
@@ -604,13 +628,7 @@ class SchedulerCore:
                     best_attempt = attempt_num
                     no_improve_count = 0  # Reset early-stop counter on improvement
                     # Save this as the best attempt
-                    best_schedule = copy.deepcopy(self.scheduler.schedule)
-                    best_assignments = copy.deepcopy(self.scheduler.worker_assignments)
-                    best_counts = copy.deepcopy(self.scheduler.worker_shift_counts)
-                    best_weekend_counts = copy.deepcopy(self.scheduler.worker_weekend_counts)
-                    best_posts = copy.deepcopy(self.scheduler.worker_posts)
-                    # CRITICAL: Save locked mandatory from best attempt
-                    best_locked_mandatory = copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory)
+                    best_snap = self._snapshot_state()
 
                     logging.info(f"✨ New best attempt! Score: {score:.2f}")
                 else:
@@ -657,16 +675,9 @@ class SchedulerCore:
             # Apply the best attempt
             logging.info(f"\n🏆 Applying best attempt #{best_attempt} with score {best_score:.2f}")
 
-            self.scheduler.schedule = best_schedule
-            self.scheduler.worker_assignments = best_assignments
-            self.scheduler.worker_shift_counts = best_counts
-            self.scheduler.worker_weekend_counts = best_weekend_counts
-            self.scheduler.worker_posts = best_posts
-            # CRITICAL: Sync ALL schedule_builder references + restore locked mandatory
-            self._sync_builder_references()
-            self.scheduler.schedule_builder._locked_mandatory = best_locked_mandatory
+            self._restore_state(best_snap)
 
-            logging.info(f"Restored {len(best_locked_mandatory)} locked mandatory shifts from best attempt")
+            logging.info(f"Restored {len(best_snap['locked_mandatory'])} locked mandatory shifts from best attempt")
 
             # Synchronize tracking data
             self.scheduler.schedule_builder._synchronize_tracking_data()
@@ -789,14 +800,7 @@ class SchedulerCore:
 
                         # Per-operation checkpoint: save state before non-trivial operations
                         if operation_name != "synchronize_tracking_data":
-                            op_checkpoint = {
-                                "schedule": copy.deepcopy(self.scheduler.schedule),
-                                "assignments": copy.deepcopy(self.scheduler.worker_assignments),
-                                "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
-                                "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
-                                "posts": copy.deepcopy(self.scheduler.worker_posts),
-                                "locked_mandatory": copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory),
-                            }
+                            op_checkpoint = self._snapshot_state()
                         else:
                             op_checkpoint = None
 
@@ -839,13 +843,7 @@ class SchedulerCore:
                                 }
                                 continue
                             # Revert: SA rejected or drop too large
-                            self.scheduler.schedule = op_checkpoint["schedule"]
-                            self.scheduler.worker_assignments = op_checkpoint["assignments"]
-                            self.scheduler.worker_shift_counts = op_checkpoint["counts"]
-                            self.scheduler.worker_weekend_counts = op_checkpoint["weekend_counts"]
-                            self.scheduler.worker_posts = op_checkpoint["posts"]
-                            self.scheduler.schedule_builder._locked_mandatory = op_checkpoint["locked_mandatory"]
-                            self._sync_builder_references()
+                            self._restore_state(op_checkpoint)
                             logging.info(f"↩️  {operation_name}: revertido ({before_score:.2f} → {after_score:.2f})")
                             operation_results[operation_name] = {
                                 "improved": False,
@@ -913,14 +911,7 @@ class SchedulerCore:
                 # Checkpoint: save state if this is the best score so far
                 if cycle_end_score > best_loop_score + 0.001:
                     best_loop_score = cycle_end_score
-                    best_loop_state = {
-                        "schedule": copy.deepcopy(self.scheduler.schedule),
-                        "assignments": copy.deepcopy(self.scheduler.worker_assignments),
-                        "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
-                        "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
-                        "posts": copy.deepcopy(self.scheduler.worker_posts),
-                        "locked_mandatory": copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory),
-                    }
+                    best_loop_state = self._snapshot_state()
                     logging.info(f"💾 Checkpoint guardado: score {best_loop_score:.2f}")
 
                 if cycle_delta > 0.01 and not cycle_improvement_made:
@@ -958,13 +949,7 @@ class SchedulerCore:
                     f"🔄 Restaurando mejor checkpoint: {final_score:.2f} → {best_loop_score:.2f} "
                     f"(+{best_loop_score - final_score:.2f})"
                 )
-                self.scheduler.schedule = best_loop_state["schedule"]
-                self.scheduler.worker_assignments = best_loop_state["assignments"]
-                self.scheduler.worker_shift_counts = best_loop_state["counts"]
-                self.scheduler.worker_weekend_counts = best_loop_state["weekend_counts"]
-                self.scheduler.worker_posts = best_loop_state["posts"]
-                self.scheduler.schedule_builder._locked_mandatory = best_loop_state["locked_mandatory"]
-                self._sync_builder_references()
+                self._restore_state(best_loop_state)
 
             # Phase 3.5: Advanced distribution engine as final push
             logging.info("\n" + "=" * 80)
@@ -997,33 +982,29 @@ class SchedulerCore:
 
             if self.balance_optimizer:
                 try:
+                    # Read shared tolerance from config so all engines agree
+                    _bal_tol: int = self.config.get("balance_tolerance", SchedulerConfig.DEFAULT_BALANCE_TOLERANCE)
+
                     # Save score checkpoint before strict balance optimizer
                     score_before_strict = self.metrics.calculate_overall_schedule_score()
-                    state_before_strict = {
-                        "schedule": copy.deepcopy(self.scheduler.schedule),
-                        "assignments": copy.deepcopy(self.scheduler.worker_assignments),
-                        "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
-                        "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
-                        "posts": copy.deepcopy(self.scheduler.worker_posts),
-                    }
+                    state_before_strict = self._snapshot_state(include_locked=False)
 
-                    # Aplicar optimización de balance estricto
-                    # Primero intentamos con tolerancia ±1
+                    # Aplicar optimización de balance estricto con la tolerancia compartida
                     balance_achieved = self.balance_optimizer.optimize_balance(
                         max_iterations=300,
-                        target_tolerance=1,  # ±1 turno máximo
+                        target_tolerance=_bal_tol,
                     )
 
-                    # Si no se logró, intentar con múltiples pasadas
+                    # Si no se logró, intentar con múltiples pasadas (tolerancia ±bal_tol+1)
                     if not balance_achieved:
                         logging.info("🔄 Running second balance pass with relaxed constraints...")
                         balance_achieved = self.balance_optimizer.optimize_balance(
                             max_iterations=250,
-                            target_tolerance=2,  # Aceptar ±2 temporalmente
+                            target_tolerance=_bal_tol + 1,
                         )
-                        # Luego intentar ajustar a ±1 de nuevo
+                        # Luego intentar ajustar a la tolerancia objetivo de nuevo
                         if balance_achieved:
-                            self.balance_optimizer.optimize_balance(max_iterations=200, target_tolerance=1)
+                            self.balance_optimizer.optimize_balance(max_iterations=200, target_tolerance=_bal_tol)
 
                     # Protect score: revert if strict optimizer significantly worsened it
                     score_after_strict = self.metrics.calculate_overall_schedule_score()
@@ -1032,16 +1013,11 @@ class SchedulerCore:
                             f"⚠️ Phase 3.6 strict optimizer WORSENED score "
                             f"({score_before_strict:.2f} → {score_after_strict:.2f}). Reverting."
                         )
-                        self.scheduler.schedule = state_before_strict["schedule"]
-                        self.scheduler.worker_assignments = state_before_strict["assignments"]
-                        self.scheduler.worker_shift_counts = state_before_strict["counts"]
-                        self.scheduler.worker_weekend_counts = state_before_strict["weekend_counts"]
-                        self.scheduler.worker_posts = state_before_strict["posts"]
-                        self._sync_builder_references()
+                        self._restore_state(state_before_strict)
                     elif balance_achieved:
-                        logging.info("✅ Perfect balance achieved: All workers within ±1 shift of target")
+                        logging.info(f"✅ Perfect balance achieved: All workers within ±{_bal_tol} shift of target")
                     else:
-                        logging.warning("⚠️ Some workers still outside ±1 tolerance")
+                        logging.warning(f"⚠️ Some workers still outside ±{_bal_tol} tolerance")
 
                 except Exception as e:
                     logging.error(f"Error during strict balance optimization: {e}", exc_info=True)
@@ -1091,14 +1067,7 @@ class SchedulerCore:
             # CRITICAL: Save pre-finalization state to compare later
             # This addresses the issue where Phase 2 was degrading results
             # ================================================================
-            pre_finalization_state = {
-                "schedule": copy.deepcopy(self.scheduler.schedule),
-                "assignments": copy.deepcopy(self.scheduler.worker_assignments),
-                "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
-                "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
-                "posts": copy.deepcopy(self.scheduler.worker_posts),
-                "locked_mandatory": copy.deepcopy(self.scheduler.schedule_builder._locked_mandatory),
-            }
+            pre_finalization_state = self._snapshot_state()
 
             # Calculate pre-finalization metrics
             pre_score = self.metrics.calculate_overall_schedule_score()
@@ -1163,51 +1132,16 @@ class SchedulerCore:
             else:
                 logging.warning(f"Max balance iterations ({max_final_balance_loops}) reached")
 
-            # FASE FINAL: Balance estricto de turnos con el optimizador avanzado
-            if self.balance_optimizer:
-                logging.info("\n" + "=" * 80)
-                logging.info("FINAL PHASE: Strict Balance Optimization (Post-Finalization)")
-                logging.info("=" * 80)
-                try:
-                    # Save score checkpoint before FINAL strict balance optimizer
-                    score_before_final_strict = self.metrics.calculate_overall_schedule_score()
-                    state_before_final_strict = {
-                        "schedule": copy.deepcopy(self.scheduler.schedule),
-                        "assignments": copy.deepcopy(self.scheduler.worker_assignments),
-                        "counts": copy.deepcopy(self.scheduler.worker_shift_counts),
-                        "weekend_counts": copy.deepcopy(self.scheduler.worker_weekend_counts),
-                        "posts": copy.deepcopy(self.scheduler.worker_posts),
-                    }
+            # NOTE: The StrictBalanceOptimizer was previously called a second time here
+            # ("FASE FINAL"). That duplicate call could undo work done by Phase 3.6 and
+            # create an interference loop with AdvancedDistributionEngine. Phase 3.6
+            # (inside _iterative_improvement_phase) is now the single authoritative
+            # balance pass; only the cheaper last-post rebalance runs here.
 
-                    # Ejecutar balance estricto final con más iteraciones
-                    final_balance = self.balance_optimizer.optimize_balance(max_iterations=250, target_tolerance=1)
-                    if final_balance:
-                        logging.info("✅ Final strict balance achieved")
-                    else:
-                        # Intentar con tolerancia más flexible
-                        logging.info("🔄 Retrying with tolerance ±2...")
-                        self.balance_optimizer.optimize_balance(max_iterations=180, target_tolerance=2)
-
-                    # Protect score: revert if FINAL strict optimizer significantly worsened it
-                    score_after_final_strict = self.metrics.calculate_overall_schedule_score()
-                    if score_after_final_strict < score_before_final_strict - 1.0:
-                        logging.warning(
-                            f"⚠️ FINAL strict optimizer WORSENED score "
-                            f"({score_before_final_strict:.2f} → {score_after_final_strict:.2f}). Reverting."
-                        )
-                        self.scheduler.schedule = state_before_final_strict["schedule"]
-                        self.scheduler.worker_assignments = state_before_final_strict["assignments"]
-                        self.scheduler.worker_shift_counts = state_before_final_strict["counts"]
-                        self.scheduler.worker_weekend_counts = state_before_final_strict["weekend_counts"]
-                        self.scheduler.worker_posts = state_before_final_strict["posts"]
-                        self._sync_builder_references()
-                except Exception as e:
-                    logging.error(f"Error in final balance optimization: {e}", exc_info=True)
-
-                # CRITICAL: Rebalance last posts after balance optimization
-                # Balance optimizer swaps can disrupt last post distribution
-                logging.info("Rebalancing last post distribution after balance optimization...")
-                self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=30)
+            # CRITICAL: Rebalance last posts after the final balance loops above.
+            # Workload/monthly swaps can disrupt last-post distribution.
+            logging.info("Rebalancing last post distribution after balance loops...")
+            self.scheduler.schedule_builder._adjust_last_post_distribution(balance_tolerance=1.0, max_iterations=30)
 
             # NOTE: Monthly balance pass removed here — it now runs as the
             # ABSOLUTE LAST STEP after bridge rebalancing (see below).
@@ -1243,14 +1177,7 @@ class SchedulerCore:
                 logging.warning("   RESTORING pre-finalization state...")
 
                 # Restore pre-finalization state
-                self.scheduler.schedule = pre_finalization_state["schedule"]
-                self.scheduler.worker_assignments = pre_finalization_state["assignments"]
-                self.scheduler.worker_shift_counts = pre_finalization_state["counts"]
-                self.scheduler.worker_weekend_counts = pre_finalization_state["weekend_counts"]
-                self.scheduler.worker_posts = pre_finalization_state["posts"]
-                self.scheduler.schedule_builder._locked_mandatory = pre_finalization_state["locked_mandatory"]
-                # Sync ALL schedule_builder AND constraint_checker references
-                self._sync_builder_references()
+                self._restore_state(pre_finalization_state)
 
                 logging.info("✅ Pre-finalization state restored successfully")
             else:
@@ -1691,8 +1618,8 @@ class SchedulerCore:
                 logging.info("✅ No weekend violations — skipping targeted pass")
                 return False
 
-            # Save a deep-copy checkpoint for rollback
-            checkpoint_schedule = copy.deepcopy(self.scheduler.schedule)
+            # Save a schedule-only checkpoint for rollback (tracking data is restored via _synchronize_tracking_data)
+            checkpoint_schedule = {k: v[:] for k, v in self.scheduler.schedule.items()}
 
             any_improvement = False
             max_iterations = 8
@@ -1735,11 +1662,11 @@ class SchedulerCore:
 
                 logging.info(f"🏖️ Iteration {iteration + 1}/{max_iterations}: {len(violations_list)} weekend violations")
 
-                schedule_before = copy.deepcopy(self.scheduler.schedule)
+                schedule_before = {k: v[:] for k, v in self.scheduler.schedule.items()}
 
                 # --- Strategy 5: weekend↔weekday rotation ---
                 modified_schedule = self.iterative_optimizer._apply_weekend_weekday_rotation(
-                    copy.deepcopy(self.scheduler.schedule),
+                    {k: v[:] for k, v in self.scheduler.schedule.items()},
                     validation_report,
                     self.workers_data,
                     self.config,
@@ -1774,7 +1701,7 @@ class SchedulerCore:
                 # --- Strategy 6: 3-way chain rotation ---
                 if mid_violations:
                     modified_schedule = self.iterative_optimizer._apply_chain_weekend_rotation(
-                        copy.deepcopy(self.scheduler.schedule),
+                        {k: v[:] for k, v in self.scheduler.schedule.items()},
                         mid_report,
                         self.workers_data,
                         self.config,
@@ -2007,7 +1934,7 @@ class SchedulerCore:
         can_check = opt._can_worker_take_shift
         is_mandatory = opt._is_mandatory_shift
 
-        optimized = copy.deepcopy(schedule)
+        optimized = {k: v[:] for k, v in schedule.items()}
 
         # Classify dates
         weekend_dates: set = set()

@@ -349,6 +349,10 @@ class AdvancedDistributionEngine:
             # Bonus por balance global
             balance_bonus = self._calculate_global_balance_bonus(worker_id)
 
+            # Hard block returned by balance bonus — skip this worker entirely
+            if balance_bonus == float("-inf"):
+                continue
+
             total_score = base_score + pattern_bonus + gap_bonus + balance_bonus
 
             candidates.append((worker, total_score))
@@ -406,7 +410,13 @@ class AdvancedDistributionEngine:
             return closest_gap * 100
 
     def _calculate_global_balance_bonus(self, worker_id: str) -> float:
-        """Bonus basado en el balance global del trabajador vs otros"""
+        """Bonus basado en el balance global del trabajador vs otros.
+
+        Retorna ``float("-inf")`` cuando el trabajador ya supera
+        ``target + balance_tolerance``, impidiendo que se le asigne
+        un turno más y preservando el balance que el StrictBalanceOptimizer
+        dejó en Phase 3.6.
+        """
         all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
         worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
 
@@ -422,6 +432,15 @@ class AdvancedDistributionEngine:
 
         deficit = target - non_mandatory_assigned
 
+        # Read shared tolerance from config (default: 1 shift)
+        tolerance: int = self.config.get("balance_tolerance", 1)
+
+        # Hard block: worker already exceeds target by more than the shared tolerance.
+        # This prevents AdvancedDistributionEngine from undoing work done by
+        # StrictBalanceOptimizer in Phase 3.6.
+        if deficit < -tolerance:
+            return float("-inf")
+
         # Bonus muy alto para trabajadores con déficit significativo
         if deficit >= 3:
             return 5000 + (deficit * 1000)
@@ -432,7 +451,7 @@ class AdvancedDistributionEngine:
         elif deficit == 0:
             return -500  # Pequeña penalización si ya alcanzó el target
         else:
-            return -2000  # Penalización mayor si está por encima
+            return -2000  # Penalización mayor si está por encima (pero dentro de tolerance)
 
     def _perform_intelligent_backtrack(self, date: datetime, post: int) -> bool:
         """

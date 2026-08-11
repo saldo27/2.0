@@ -3,7 +3,7 @@ import json
 import logging
 import math
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 from saldo27.constraint_checker import ConstraintChecker
 from saldo27.data_manager import DataManager
@@ -253,7 +253,12 @@ class Scheduler:
         -------
         dict with keys "error" (str or None) and "summary" (per-worker stats).
         """
-        from saldo27.prior_schedule_handler import load_prior_schedule, summarize_prior_schedule
+        from saldo27.prior_schedule_handler import (
+            apply_prior_period_balance,
+            load_prior_schedule,
+            summarize_prior_schedule,
+            validate_target_capacity,
+        )
 
         holidays_set = set(self.holidays)
         prior_data = load_prior_schedule(
@@ -272,10 +277,15 @@ class Scheduler:
         self.prior_last_date = prior_data["prior_last_date"]
 
         # Adjust new-period targets to compensate for prior-period over/under-delivery
-        self._apply_prior_period_balance()
+        apply_prior_period_balance(
+            self.workers_data,
+            self.prior_shift_counts,
+            self.prior_target_shifts,
+            self._base_target_shifts,
+        )
 
         # Validate that adjusted targets don't exceed available capacity
-        self._validate_target_capacity()
+        validate_target_capacity(self.workers_data, self.schedule, self._base_target_shifts)
 
         logging.info(
             f"Prior schedule loaded: {len(self.prior_assignments)} workers, "
@@ -298,142 +308,23 @@ class Scheduler:
                 worker["target_shifts"] = base
         logging.info("Prior schedule data cleared; target_shifts restored to base values.")
 
-    def _apply_prior_period_balance(self) -> None:
-        """
-        Adjust each worker's target_shifts for the new period so that
-        over/under-delivery in the prior period is compensated.
-
-        Logic:
-          delta = prior_actual_shifts - prior_target_shifts
-          new_target = base_target - delta
-
-        Workers who worked MORE than their prior target get a smaller new-period
-        target (and vice-versa).  The adjustment is always relative to the
-        original base target stored in self._base_target_shifts so that repeated
-        calls (e.g., user loads a different prior file) are idempotent.
-        """
-        if not self.prior_shift_counts or not self.prior_target_shifts:
-            return
-
-        for worker in self.workers_data:
-            wid = worker["id"]
-            prior_actual = self.prior_shift_counts.get(wid)
-            prior_target = self.prior_target_shifts.get(wid)
-            if prior_actual is None or prior_target is None or prior_target == 0:
-                continue
-
-            delta = prior_actual - prior_target  # positive: worked extra; negative: worked less
-            if delta == 0:
-                continue
-
-            base_target = self._base_target_shifts.get(wid) or float(worker.get("target_shifts", 1))
-            adjusted = max(1, round(base_target - delta))
-            worker["target_shifts"] = adjusted
-            logging.info(
-                f"[PriorBalance] {wid}: base_target={base_target} → adjusted={adjusted} "
-                f"(prior_actual={prior_actual}, prior_target={prior_target}, delta={delta:+.0f})"
-            )
-
-    def _validate_target_capacity(self) -> None:
-        """
-        Check that the sum of all adjusted target_shifts does not exceed the
-        total available slots.  If it does, proportionally scale down the
-        adjustments that *increased* targets (workers who were under-assigned
-        in the prior period) so the total fits within capacity.
-        """
-        total_slots = sum(len(slots) for slots in self.schedule.values())
-        if total_slots <= 0:
-            return
-
-        target_sum = sum(w.get("target_shifts", 0) for w in self.workers_data)
-        logging.info(f"[TargetValidation] Sum of targets={target_sum}, available slots={total_slots}")
-
-        if target_sum <= total_slots:
-            return
-
-        overflow = target_sum - total_slots
-        logging.warning(
-            f"[TargetValidation] Adjusted targets exceed capacity by {overflow} "
-            f"({target_sum} targets vs {total_slots} slots). "
-            f"Scaling down inflated targets to fit."
-        )
-
-        # Identify workers whose targets were inflated by prior-balance (delta < 0)
-        inflated = []
-        for w in self.workers_data:
-            wid = w["id"]
-            base = self._base_target_shifts.get(wid, 0)
-            current = w.get("target_shifts", 0)
-            if current > base:
-                inflated.append((w, current - base))
-
-        if not inflated:
-            logging.warning(
-                "[TargetValidation] No inflated targets to reduce; deficit may be unavoidable with current constraints."
-            )
-            return
-
-        total_inflation = sum(inc for _, inc in inflated)
-        remaining_overflow = overflow
-
-        # Proportionally reduce inflated targets
-        for w, increment in inflated:
-            reduction = min(increment, round(increment / total_inflation * overflow))
-            reduction = min(reduction, remaining_overflow)
-            if reduction > 0:
-                old = w["target_shifts"]
-                w["target_shifts"] = max(1, old - reduction)
-                remaining_overflow -= reduction
-                logging.info(
-                    f"[TargetValidation] {w['id']}: target {old} → {w['target_shifts']} "
-                    f"(reduced by {reduction} to fit capacity)"
-                )
-
-        # If rounding left leftover, remove one more from the largest remaining inflation
-        if remaining_overflow > 0:
-            inflated.sort(key=lambda x: x[0].get("target_shifts", 0), reverse=True)
-            for w, _ in inflated:
-                if remaining_overflow <= 0:
-                    break
-                if w["target_shifts"] > 1:
-                    w["target_shifts"] -= 1
-                    remaining_overflow -= 1
-                    logging.info(
-                        f"[TargetValidation] {w['id']}: further reduced to {w['target_shifts']} (residual rounding)"
-                    )
-
-        new_sum = sum(w.get("target_shifts", 0) for w in self.workers_data)
-        logging.info(f"[TargetValidation] After scaling: sum of targets={new_sum}, available slots={total_slots}")
-
     def _get_effective_assignments(self, worker_id: str) -> set:
-        """
-        Return the merged set of prior-period dates AND current-period dates
-        for a worker.  Used by constraint checkers that need cross-period
-        visibility (gap constraint, consecutive-weekend constraint).
-        Only prior assignments within the lookback window (90 days before
-        the new period start) are included to avoid stale data from very
-        old periods disturbing constraints.
-        """
-        current = self.worker_assignments.get(worker_id, set())
-        prior = self.prior_assignments.get(worker_id, set())
-        if not prior:
-            return current
-        # Only include prior dates within 90 days of new period start to keep
-        # the constraint window relevant.
-        lookback_cutoff = self.start_date - timedelta(days=90)
-        relevant_prior = {d for d in prior if d >= lookback_cutoff}
-        return current | relevant_prior
+        """Return merged prior + current period dates for cross-period constraint checks."""
+        from saldo27.prior_schedule_handler import get_effective_assignments
+
+        return get_effective_assignments(worker_id, self.worker_assignments, self.prior_assignments, self.start_date)
 
     def _get_effective_weekend_count(self, worker_id: str) -> int:
-        """
-        Return prior-period weekend count + current-period weekend count.
-        Used by the proportional weekend distribution constraint.
-        """
-        return self.prior_weekend_counts.get(worker_id, 0) + self.worker_weekend_counts.get(worker_id, 0)
+        """Return prior-period weekend count + current-period weekend count."""
+        from saldo27.prior_schedule_handler import get_effective_weekend_count
+
+        return get_effective_weekend_count(worker_id, self.prior_weekend_counts, self.worker_weekend_counts)
 
     def _get_prior_weekend_count(self, worker_id: str) -> int:
         """Return just the prior-period weekend count."""
-        return self.prior_weekend_counts.get(worker_id, 0)
+        from saldo27.prior_schedule_handler import get_prior_weekend_count
+
+        return get_prior_weekend_count(worker_id, self.prior_weekend_counts)
 
     def _get_cache_key(self, method_name: str, *args) -> str:
         """Generate a cache key for method results"""
@@ -1102,356 +993,29 @@ class Scheduler:
     # ========================================
     # 3. TARGET AND CALCULATION METHODS
     # ========================================
-    def _calculate_target_shifts(self):
-        """
-        Recalculate each worker's target_shifts by:
-          1) For workers with auto_calculate_shifts=False (manual):
-             - Use target_shifts as "guardias/mes" and multiply by number of months in period
-             - Calculated FIRST so their slots are reserved before auto distribution
+    def _calculate_target_shifts(self) -> bool:
+        """Delegate target calculation to TargetCalculator."""
+        from saldo27.target_calculator import TargetCalculator
 
-          2) For workers with auto_calculate_shifts=True:
-             - Count slots they can work (based on work_periods & days_off)
-             - Weight those slots by their work_percentage
-             - Allocate REMAINING slots (total - manual) proportionally (largest‐remainder rounding)
-        """
-        try:
-            logging.info("Calculating target shifts based on availability and percentage")
-
-            # Separate workers by auto_calculate flag
-            auto_calc_workers = [w for w in self.workers_data if w.get("auto_calculate_shifts", True)]
-            manual_workers = [w for w in self.workers_data if not w.get("auto_calculate_shifts", True)]
-
-            # 1) MANUAL CALCULATION FIRST — reserve their slots before auto distribution
-            manual_slots_reserved = 0
-            if manual_workers:
-                manual_slots_reserved = self._calculate_manual_targets(manual_workers)
-
-            # 2) AUTOMATIC CALCULATION for auto_calc_workers (using remaining slots)
-            if auto_calc_workers:
-                # Total open slots in the schedule (variable shifts considered)
-                total_slots = sum(len(slots) for slots in self.schedule.values())
-                if total_slots <= 0:
-                    logging.warning("No slots in schedule; skipping allocation")
-                else:
-                    # Reserve slots for manual workers
-                    slots_for_auto = total_slots - manual_slots_reserved
-                    if slots_for_auto < 0:
-                        logging.error(
-                            f"Manual targets ({manual_slots_reserved}) exceed total slots ({total_slots})! "
-                            f"Clamping to 0 for auto workers."
-                        )
-                        slots_for_auto = 0
-                    elif manual_slots_reserved > 0:
-                        logging.info(
-                            f"Reserving {manual_slots_reserved} slots for manual workers. "
-                            f"Auto workers share {slots_for_auto}/{total_slots} slots."
-                        )
-
-                    # Compute available_slots per worker
-                    available_slots = {}
-                    for w in auto_calc_workers:
-                        wid = w["id"]
-                        wp = w.get("work_periods", "").strip()
-                        dp = w.get("days_off", "").strip()
-                        work_ranges = (
-                            self.date_utils.parse_date_ranges(wp) if wp else [(self.start_date, self.end_date)]
-                        )
-                        off_ranges = self.date_utils.parse_date_ranges(dp) if dp else []
-                        count = 0
-                        for date, slots in self.schedule.items():
-                            in_work = any(s <= date <= e for s, e in work_ranges)
-                            in_off = any(s <= date <= e for s, e in off_ranges)
-                            if in_work and not in_off:
-                                count += len(slots)
-                        available_slots[wid] = count
-                        logging.debug(f"Worker {wid}: available_slots={count}")
-
-                    # Build weight = available_slots * (work_percentage/100)
-                    weights = []
-                    for w in auto_calc_workers:
-                        wid = w["id"]
-                        pct = 1.0
-                        try:
-                            pct = float(str(w.get("work_percentage", 100)).strip()) / 100.0
-                        except (TypeError, ValueError):
-                            logging.warning(f"Worker {wid} invalid work_percentage; defaulting to 100%")
-                        pct = max(0.0, pct)
-                        weights.append(available_slots.get(wid, 0) * pct)
-
-                    total_weight = sum(weights) or 1.0
-
-                    # Compute exact fractional targets using slots available for auto workers
-                    exact_targets = [wgt / total_weight * slots_for_auto for wgt in weights]
-
-                    # Largest-remainder rounding
-                    floors = [int(x) for x in exact_targets]
-                    remainder = int(slots_for_auto - sum(floors))
-                    fracs = sorted(
-                        enumerate(exact_targets), key=lambda ix: exact_targets[ix[0]] - floors[ix[0]], reverse=True
-                    )
-                    targets = floors[:]
-                    for idx, _ in fracs[:remainder]:
-                        targets[idx] += 1
-
-                    # Assign targets for auto_calc workers
-                    for i, w in enumerate(auto_calc_workers):
-                        raw_target = targets[i]
-                        mand_count = 0
-                        mand_str = w.get("mandatory_days", "").strip()
-                        if mand_str:
-                            try:
-                                mand_dates = self.date_utils.parse_dates(mand_str)
-                                mand_count = sum(1 for d in mand_dates if self.start_date <= d <= self.end_date)
-                            except Exception as e:
-                                logging.error(f"Failed to parse mandatory_days for {w['id']}: {e}")
-                        adjusted = max(0, raw_target - mand_count)
-                        w["target_shifts"] = adjusted
-                        w["_raw_target"] = raw_target
-                        w["_mandatory_count"] = mand_count
-
-                        if mand_count > 0:
-                            logging.info(
-                                f"Worker {w['id']} (AUTO): RAW target={raw_target}, "
-                                f"Mandatory={mand_count}, Adjusted target_shifts={adjusted}"
-                            )
-                        else:
-                            logging.info(f"Worker {w['id']} (AUTO): target_shifts={adjusted}")
-
-            # Once all targets are set, compute work_periods-aware monthly targets
-            self._calculate_monthly_targets()
-
-            return True
-
-        except Exception as e:
-            logging.error(f"Error calculating target shifts: {e}")
-            return False
+        return TargetCalculator(self).calculate()
 
     def _calculate_manual_targets(self, manual_workers: list) -> int:
-        """
-        Calculate targets for manual workers (guardias/mes) and return the
-        total number of slots they need (raw targets including mandatory).
-        """
-        import calendar
+        """Delegate manual-target calculation to TargetCalculator (used by legacy callers)."""
+        from saldo27.target_calculator import TargetCalculator
 
-        proportional_months = 0.0
-        cur_year, cur_month = self.start_date.year, self.start_date.month
-        end_year, end_month = self.end_date.year, self.end_date.month
-        while (cur_year, cur_month) <= (end_year, end_month):
-            days_in_month = calendar.monthrange(cur_year, cur_month)[1]
-            month_start = datetime(cur_year, cur_month, 1)
-            month_end = datetime(cur_year, cur_month, days_in_month)
-            effective_start = max(month_start, self.start_date)
-            effective_end = min(month_end, self.end_date)
-            days_covered = (effective_end - effective_start).days + 1
-            fraction = days_covered / days_in_month
-            proportional_months += fraction
-            logging.debug(
-                f"Manual month calc: {cur_year}-{cur_month:02d} → "
-                f"{days_covered}/{days_in_month} days = {fraction:.3f} months"
-            )
-            cur_month += 1
-            if cur_month > 12:
-                cur_month = 1
-                cur_year += 1
+        return TargetCalculator(self)._calculate_manual_targets(manual_workers)
 
-        logging.info(f"Manual target calculation: {proportional_months:.2f} proportional months in period")
+    def _calculate_monthly_targets(self) -> bool:
+        """Delegate monthly-target calculation to TargetCalculator (used by legacy callers)."""
+        from saldo27.target_calculator import TargetCalculator
 
-        total_manual_slots = 0
-        for w in manual_workers:
-            wid = w["id"]
-            if "_original_target_shifts" not in w:
-                w["_original_target_shifts"] = w.get("target_shifts", 0)
-            guardias_per_mes = w["_original_target_shifts"]
+        return TargetCalculator(self)._calculate_monthly_targets()
 
-            # Si el médico tiene work_periods, calcular sus meses proporcionales
-            # solo sobre los periodos en que está disponible (e.g. MONICA: jul+sep = 2 meses)
-            work_periods_str = w.get("work_periods", "").strip()
-            if work_periods_str:
-                try:
-                    work_ranges = self.date_utils.parse_date_ranges(work_periods_str)
-                except (TypeError, ValueError) as exc:
-                    logging.warning(f"Worker {wid} invalid work_periods; using default availability: {exc}")
-                    work_ranges = []
+    def _get_schedule_months(self) -> dict:
+        """Delegate schedule-months lookup to TargetCalculator (used by legacy callers)."""
+        from saldo27.target_calculator import TargetCalculator
 
-                if work_ranges:
-                    worker_months = 0.0
-                    cur_year, cur_month = self.start_date.year, self.start_date.month
-                    end_year, end_month = self.end_date.year, self.end_date.month
-                    while (cur_year, cur_month) <= (end_year, end_month):
-                        days_in_month = calendar.monthrange(cur_year, cur_month)[1]
-                        month_start = datetime(cur_year, cur_month, 1)
-                        month_end = datetime(cur_year, cur_month, days_in_month)
-                        # Días de este mes cubiertos por work_periods (interseción con cada rango)
-                        covered = 0
-                        for rng_start, rng_end in work_ranges:
-                            overlap_start = max(month_start, rng_start, self.start_date)
-                            overlap_end = min(month_end, rng_end, self.end_date)
-                            if overlap_end >= overlap_start:
-                                covered += (overlap_end - overlap_start).days + 1
-                        worker_months += covered / days_in_month
-                        cur_month += 1
-                        if cur_month > 12:
-                            cur_month = 1
-                            cur_year += 1
-                    logging.debug(f"Worker {wid}: work_periods → {worker_months:.2f} effective months")
-                else:
-                    worker_months = proportional_months
-            else:
-                worker_months = proportional_months
-
-            raw_target = round(guardias_per_mes * worker_months)
-
-            mand_count = 0
-            mand_str = w.get("mandatory_days", "").strip()
-            if mand_str:
-                try:
-                    mand_dates = self.date_utils.parse_dates(mand_str)
-                    mand_count = sum(1 for d in mand_dates if self.start_date <= d <= self.end_date)
-                except Exception as e:
-                    logging.error(f"Failed to parse mandatory_days for {wid}: {e}")
-
-            adjusted = max(0, raw_target - mand_count)
-            w["target_shifts"] = adjusted
-            w["_raw_target"] = raw_target
-            w["_mandatory_count"] = mand_count
-            total_manual_slots += raw_target
-
-            logging.info(
-                f"Worker {wid} (MANUAL): {guardias_per_mes} guardias/mes * {worker_months:.2f} meses = {raw_target}, "
-                f"Mandatory={mand_count}, Adjusted target_shifts={adjusted}"
-            )
-
-        return total_manual_slots
-
-    def _calculate_monthly_targets(self):
-        """
-        Calculate monthly target shifts for each worker based on their overall targets
-        and their individual work_periods availability per month.
-        """
-        import calendar as cal_mod
-
-        logging.info("Calculating monthly target distribution...")
-
-        # Calculate schedule months (keys like "2026-07")
-        month_days = self._get_schedule_months()
-
-        # Initialize monthly targets for each worker
-        for worker in self.workers_data:
-            worker_id = worker["id"]
-            overall_target = worker.get("target_shifts", 0)
-
-            worker["monthly_targets"] = {}  # always reset to avoid stale data
-            worker["monthly_targets_ceil"] = {}  # ceiling of fractional target — used for monthly cap enforcement
-
-            # Always use target_shifts (non-mandatory budget) for monthly proportional distribution.
-            # Monthly counts exclude mandatory shifts throughout the codebase (see
-            # _would_violate_tolerance and _enforce_monthly_target_distribution), so both the
-            # floor target and the ceiling must be based on the same non-mandatory budget.
-            # Using _raw_target (which includes mandatory) would inflate quotas by the number
-            # of mandatory shifts in each month, causing over-assignment of non-mandatory shifts.
-            overall_target = worker.get("target_shifts", 0)
-
-            # Compute available days per month for this worker (respecting work_periods)
-            work_periods_str = worker.get("work_periods", "").strip()
-            if work_periods_str:
-                try:
-                    work_ranges = self.date_utils.parse_date_ranges(work_periods_str)
-                except (TypeError, ValueError) as exc:
-                    logging.warning(f"Worker {worker_id} invalid work_periods for monthly target distribution: {exc}")
-                    work_ranges = []
-            else:
-                work_ranges = []
-
-            worker_month_avail = {}  # month_key → available days for this worker
-            for month_key in month_days:
-                year_m, month_m = int(month_key[:4]), int(month_key[5:])
-                days_in_month = cal_mod.monthrange(year_m, month_m)[1]
-                month_start = datetime(year_m, month_m, 1)
-                month_end = datetime(year_m, month_m, days_in_month)
-
-                if work_ranges:
-                    avail = 0
-                    for rng_start, rng_end in work_ranges:
-                        overlap_start = max(month_start, rng_start, self.start_date)
-                        overlap_end = min(month_end, rng_end, self.end_date)
-                        if overlap_end >= overlap_start:
-                            avail += (overlap_end - overlap_start).days + 1
-                else:
-                    # No work_periods restriction — all schedule days in this month count
-                    overlap_start = max(month_start, self.start_date)
-                    overlap_end = min(month_end, self.end_date)
-                    avail = max(0, (overlap_end - overlap_start).days + 1)
-
-                worker_month_avail[month_key] = avail
-
-            total_avail_days = sum(worker_month_avail.values())
-
-            # Distribute target proportionally over available days only
-            remaining_target = overall_target
-            if total_avail_days > 0:
-                # First pass: proportional allocation
-                for month_key in month_days:
-                    avail = worker_month_avail.get(month_key, 0)
-                    if avail == 0:
-                        worker["monthly_targets"][month_key] = 0
-                        worker["monthly_targets_ceil"][month_key] = 0
-                    else:
-                        raw_fraction = overall_target * avail / total_avail_days
-                        month_target = round(raw_fraction)
-                        month_target = min(month_target, remaining_target)
-                        worker["monthly_targets"][month_key] = month_target
-                        worker["monthly_targets_ceil"][month_key] = math.ceil(raw_fraction)
-                        remaining_target -= month_target
-                        logging.debug(
-                            f"Worker {worker_id}: {month_key} → {month_target} shifts "
-                            f"({avail}/{total_avail_days} avail days)"
-                        )
-
-                # Distribute rounding remainder to months with most availability
-                if remaining_target > 0:
-                    sorted_months = sorted(
-                        [(k, v) for k, v in worker_month_avail.items() if v > 0],
-                        key=lambda x: x[1],
-                        reverse=True,
-                    )
-                    for month_key, _ in sorted_months:
-                        if remaining_target <= 0:
-                            break
-                        worker["monthly_targets"][month_key] += 1
-                        remaining_target -= 1
-            else:
-                for month_key in month_days:
-                    worker["monthly_targets"][month_key] = 0
-                    worker["monthly_targets_ceil"][month_key] = 0
-
-        logging.info("Monthly targets calculated (work_periods-aware)")
-        return True
-
-    def _get_schedule_months(self):
-        """
-        Calculate number of months in schedule period considering partial months
-
-        Returns:
-            dict: Dictionary with month keys and their available days count
-        """
-        month_days = {}
-        current = self.start_date
-        while current <= self.end_date:
-            month_key = f"{current.year}-{current.month:02d}"
-
-            # Calculate available days for this month
-            month_start = max(current.replace(day=1), self.start_date)
-            month_end = min(
-                (current.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1), self.end_date
-            )
-
-            days_in_month = (month_end - month_start).days + 1
-            month_days[month_key] = days_in_month
-
-            # Move to first day of next month
-            current = (current.replace(day=1) + timedelta(days=32)).replace(day=1)
-
-        return month_days
+        return TargetCalculator(self)._get_schedule_months()
 
     def _get_shifts_for_date(self, date):
         """Determine the number of shifts for a specific date based on variable_shifts."""
@@ -2919,122 +2483,41 @@ class Scheduler:
     # ========================================
     # 11. REAL-TIME OPERATIONS
     # ========================================
+    _RT_DISABLED: ClassVar[dict[str, Any]] = {
+        "success": False,
+        "message": "Real-time features not enabled",
+        "error": "REAL_TIME_DISABLED",
+    }
+
     def is_real_time_enabled(self) -> bool:
-        """Check if real-time features are enabled"""
+        """Return True if the real-time engine is active."""
         return self.real_time_engine is not None
 
     def enable_real_time_features(self) -> bool:
-        """
-        Enable and fully activate real-time features after schedule generation.
-        This method ensures all real-time components are properly connected and ready for use.
-
-        Returns:
-            bool: True if real-time features were successfully enabled, False otherwise
-        """
+        """Activate real-time features; returns True on success."""
         if not self.is_real_time_enabled():
             logging.warning("Cannot enable real-time features: real-time engine not initialized")
             return False
-
-        try:
-            # Ensure the real-time engine has access to the current schedule data
-            # The incremental updater should be able to access current schedule state
-            if hasattr(self.real_time_engine, "incremental_updater"):
-                logging.debug("Real-time incremental updater is ready with current schedule")
-
-            # Verify the live validator has access to current constraints and worker data
-            if hasattr(self.real_time_engine, "live_validator"):
-                logging.debug("Real-time live validator is ready with current constraints")
-
-            # Initialize change tracking for the current schedule state if available
-            if hasattr(self.real_time_engine, "change_tracker"):
-                # Record initial state as baseline for change tracking
-                logging.debug("Real-time change tracker is ready for operation")
-
-            # Publish event to notify that real-time features are fully active
-            if hasattr(self.real_time_engine, "event_bus"):
-                from saldo27.event_bus import EventType, ScheduleEvent
-
-                event = ScheduleEvent(
-                    event_type=EventType.REAL_TIME_ACTIVATED,
-                    data={"message": "Real-time features fully activated", "user_id": self.current_user},
-                )
-                self.real_time_engine.event_bus.publish(event)  # type: ignore[union-attr]
-                logging.debug("Real-time activation event published")
-
-            logging.info("Real-time features successfully enabled and activated for smart swapping")
-            return True
-
-        except Exception as e:
-            logging.error(f"Error enabling real-time features: {e}", exc_info=True)
-            return False
+        assert self.real_time_engine is not None
+        return self.real_time_engine.enable_features()
 
     def assign_worker_real_time(
         self, worker_id: str, shift_date: datetime, post_index: int, user_id: str | None = None, validate: bool = True
     ) -> dict[str, Any]:
-        """
-        Assign worker to shift with real-time validation and feedback
-
-        Args:
-            worker_id: ID of worker to assign
-            shift_date: Date of the shift
-            post_index: Post index (0-based)
-            user_id: ID of user making the change
-            validate: Whether to perform validation
-
-        Returns:
-            Dictionary with operation result and feedback
-        """
+        """Assign worker to shift with real-time validation; returns plain dict."""
         if not self.is_real_time_enabled():
-            return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
-
+            return self._RT_DISABLED
         assert self.real_time_engine is not None
-        try:
-            result = self.real_time_engine.assign_worker_real_time(worker_id, shift_date, post_index, user_id, validate)
-
-            return {
-                "success": result.success,
-                "message": result.message,
-                "operation_id": result.operation_id,
-                "validation_results": [v.__dict__ for v in (result.validation_results or [])],
-                "conflicts": [c.__dict__ for c in (result.conflicts or [])],
-                "suggestions": result.suggestions,
-            }
-
-        except Exception as e:
-            logging.error(f"Error in real-time assignment: {e}")
-            return {"success": False, "message": f"Assignment failed: {e!s}", "error": "OPERATION_FAILED"}
+        return self.real_time_engine.assign_worker_dict(worker_id, shift_date, post_index, user_id, validate)
 
     def unassign_worker_real_time(
         self, shift_date: datetime, post_index: int, user_id: str | None = None
     ) -> dict[str, Any]:
-        """
-        Unassign worker from shift with real-time feedback
-
-        Args:
-            shift_date: Date of the shift
-            post_index: Post index (0-based)
-            user_id: ID of user making the change
-
-        Returns:
-            Dictionary with operation result and feedback
-        """
+        """Unassign worker from shift with real-time feedback; returns plain dict."""
         if not self.is_real_time_enabled():
-            return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
-
+            return self._RT_DISABLED
         assert self.real_time_engine is not None
-        try:
-            result = self.real_time_engine.unassign_worker_real_time(shift_date, post_index, user_id)
-
-            return {
-                "success": result.success,
-                "message": result.message,
-                "operation_id": result.operation_id,
-                "suggestions": result.suggestions,
-            }
-
-        except Exception as e:
-            logging.error(f"Error in real-time unassignment: {e}")
-            return {"success": False, "message": f"Unassignment failed: {e!s}", "error": "OPERATION_FAILED"}
+        return self.real_time_engine.unassign_worker_dict(shift_date, post_index, user_id)
 
     def swap_workers_real_time(
         self,
@@ -3045,325 +2528,103 @@ class Scheduler:
         user_id: str | None = None,
         validate: bool = True,
     ) -> dict[str, Any]:
-        """
-        Swap workers between shifts with real-time validation
-
-        Args:
-            shift_date1: Date of first shift
-            post_index1: Post index of first shift
-            shift_date2: Date of second shift
-            post_index2: Post index of second shift
-            user_id: ID of user making the change
-            validate: Whether to perform validation
-
-        Returns:
-            Dictionary with operation result and feedback
-        """
+        """Swap workers between two shifts with real-time validation; returns plain dict."""
         if not self.is_real_time_enabled():
-            return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
-
+            return self._RT_DISABLED
         assert self.real_time_engine is not None
-        try:
-            result = self.real_time_engine.swap_workers_real_time(
-                shift_date1, post_index1, shift_date2, post_index2, user_id, validate
-            )
-
-            return {
-                "success": result.success,
-                "message": result.message,
-                "operation_id": result.operation_id,
-                "validation_results": [v.__dict__ for v in (result.validation_results or [])],
-                "conflicts": [c.__dict__ for c in (result.conflicts or [])],
-            }
-
-        except Exception as e:
-            logging.error(f"Error in real-time swap: {e}")
-            return {"success": False, "message": f"Swap failed: {e!s}", "error": "OPERATION_FAILED"}
+        return self.real_time_engine.swap_workers_dict(
+            shift_date1, post_index1, shift_date2, post_index2, user_id, validate
+        )
 
     def validate_schedule_real_time(self, quick_check: bool = False) -> dict[str, Any]:
-        """
-        Perform real-time schedule validation
-
-        Args:
-            quick_check: If True, perform only essential validations
-
-        Returns:
-            Dictionary with validation results
-        """
+        """Perform real-time schedule validation; returns plain dict."""
         if not self.is_real_time_enabled():
-            return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
-
+            return self._RT_DISABLED
         assert self.real_time_engine is not None
-        try:
-            result = self.real_time_engine.validate_schedule_real_time(quick_check)
-
-            return {
-                "success": result.success,
-                "message": result.message,
-                "operation_id": result.operation_id,
-                "validation_results": [v.__dict__ for v in (result.validation_results or [])],
-                "conflicts": [c.__dict__ for c in (result.conflicts or [])],
-            }
-
-        except Exception as e:
-            logging.error(f"Error in real-time validation: {e}")
-            return {"success": False, "message": f"Validation failed: {e!s}", "error": "OPERATION_FAILED"}
+        return self.real_time_engine.validate_schedule_dict(quick_check)
 
     def undo_last_change(self, user_id: str | None = None) -> dict[str, Any]:
-        """
-        Undo the last schedule change
-
-        Args:
-            user_id: ID of user performing the undo
-
-        Returns:
-            Dictionary with undo result
-        """
+        """Undo the last schedule change; returns plain dict."""
         if not self.is_real_time_enabled():
-            return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
-
+            return self._RT_DISABLED
         assert self.real_time_engine is not None
-        try:
-            result = self.real_time_engine.undo_last_change(user_id)
-
-            return {"success": result.success, "message": result.message, "operation_id": result.operation_id}
-
-        except Exception as e:
-            logging.error(f"Error in undo operation: {e}")
-            return {"success": False, "message": f"Undo failed: {e!s}", "error": "OPERATION_FAILED"}
+        return self.real_time_engine.undo_dict(user_id)
 
     def redo_last_change(self, user_id: str | None = None) -> dict[str, Any]:
-        """
-        Redo the last undone change
-
-        Args:
-            user_id: ID of user performing the redo
-
-        Returns:
-            Dictionary with redo result
-        """
+        """Redo the last undone change; returns plain dict."""
         if not self.is_real_time_enabled():
-            return {"success": False, "message": "Real-time features not enabled", "error": "REAL_TIME_DISABLED"}
-
+            return self._RT_DISABLED
         assert self.real_time_engine is not None
-        try:
-            result = self.real_time_engine.redo_last_change(user_id)
-
-            return {"success": result.success, "message": result.message, "operation_id": result.operation_id}
-
-        except Exception as e:
-            logging.error(f"Error in redo operation: {e}")
-            return {"success": False, "message": f"Redo failed: {e!s}", "error": "OPERATION_FAILED"}
+        return self.real_time_engine.redo_dict(user_id)
 
     def get_real_time_analytics(self) -> dict[str, Any]:
-        """
-        Get real-time analytics and metrics
-
-        Returns:
-            Dictionary with analytics data
-        """
+        """Return real-time analytics dict from the engine."""
         if not self.is_real_time_enabled():
             return {"error": "Real-time features not enabled"}
-
         assert self.real_time_engine is not None
-        try:
-            return self.real_time_engine.get_real_time_analytics()
-        except Exception as e:
-            logging.error(f"Error getting real-time analytics: {e}")
-            return {"error": f"Analytics failed: {e!s}"}
+        return self.real_time_engine.get_real_time_analytics()
 
     def get_change_history(self, limit: int = 20, user_id: str | None = None) -> dict[str, Any]:
-        """
-        Get recent schedule changes
-
-        Args:
-            limit: Maximum number of changes to return
-            user_id: Filter by user ID
-
-        Returns:
-            Dictionary with change history
-        """
+        """Return recent schedule changes as a plain dict."""
         if not self.is_real_time_enabled():
             return {"error": "Real-time features not enabled"}
-
         assert self.real_time_engine is not None
-        try:
-            changes = self.real_time_engine.change_tracker.get_change_history(limit=limit, user_id=user_id or "")
-
-            return {
-                "changes": [change.to_dict() for change in changes],
-                "total_count": len(changes),
-                "can_undo": self.real_time_engine.change_tracker.can_undo(),
-                "can_redo": self.real_time_engine.change_tracker.can_redo(),
-            }
-
-        except Exception as e:
-            logging.error(f"Error getting change history: {e}")
-            return {"error": f"History retrieval failed: {e!s}"}
+        return self.real_time_engine.change_history_dict(limit, user_id)
 
     # Predictive Analytics Integration Methods
+    _PA_DISABLED: ClassVar[dict[str, Any]] = {
+        "success": False,
+        "message": "Predictive analytics not enabled",
+        "error": "PREDICTIVE_ANALYTICS_DISABLED",
+    }
 
     def is_predictive_analytics_enabled(self) -> bool:
-        """Check if predictive analytics features are enabled"""
+        """Return True if the predictive analytics engine is active."""
         return self.predictive_analytics is not None
 
     def generate_demand_forecasts(self, forecast_days: int = 30) -> dict[str, Any]:
-        """
-        Generate demand forecasts using predictive analytics
-
-        Args:
-            forecast_days: Number of days to forecast ahead
-
-        Returns:
-            Dictionary containing forecast results and recommendations
-        """
+        """Generate demand forecasts; returns plain dict."""
         if not self.is_predictive_analytics_enabled():
-            return {
-                "success": False,
-                "message": "Predictive analytics not enabled",
-                "error": "PREDICTIVE_ANALYTICS_DISABLED",
-            }
-
+            return self._PA_DISABLED
         assert self.predictive_analytics is not None
-        try:
-            result = self.predictive_analytics.generate_demand_forecasts(forecast_days)
-
-            # Auto-collect current data after generating forecasts for future improvements
-            if self.predictive_analytics.config.get("auto_collect_data", True):
-                self.predictive_analytics.auto_collect_data_if_enabled()
-
-            return {
-                "success": True,
-                "forecasts": result.get("forecasts"),
-                "status": result.get("status"),
-                "message": f"Forecasts generated for {forecast_days} days",
-            }
-
-        except Exception as e:
-            logging.error(f"Error generating demand forecasts: {e}")
-            return {"success": False, "message": f"Forecast generation failed: {e!s}", "error": "FORECAST_FAILED"}
+        return self.predictive_analytics.generate_demand_forecasts_dict(forecast_days)
 
     def get_predictive_insights(self) -> dict[str, Any]:
-        """
-        Get comprehensive predictive insights and recommendations
-
-        Returns:
-            Dictionary containing insights, recommendations, and analytics
-        """
+        """Return comprehensive predictive insights dict."""
         if not self.is_predictive_analytics_enabled():
-            return {
-                "success": False,
-                "message": "Predictive analytics not enabled",
-                "error": "PREDICTIVE_ANALYTICS_DISABLED",
-            }
-
+            return self._PA_DISABLED
         assert self.predictive_analytics is not None
-        try:
-            result = self.predictive_analytics.get_predictive_insights()
-
-            return {
-                "success": True,
-                "insights": result.get("insights"),
-                "status": result.get("status"),
-                "message": "Predictive insights generated successfully",
-            }
-
-        except Exception as e:
-            logging.error(f"Error getting predictive insights: {e}")
-            return {"success": False, "message": f"Insights generation failed: {e!s}", "error": "INSIGHTS_FAILED"}
+        return self.predictive_analytics.get_predictive_insights_dict()
 
     def run_predictive_optimization(self) -> dict[str, Any]:
-        """
-        Run predictive optimization analysis
-
-        Returns:
-            Dictionary containing optimization results and recommendations
-        """
+        """Run predictive optimization analysis; returns plain dict."""
         if not self.is_predictive_analytics_enabled() or not self.predictive_optimizer:
             return {
                 "success": False,
                 "message": "Predictive optimization not available",
                 "error": "PREDICTIVE_OPTIMIZER_DISABLED",
             }
-
-        assert self.predictive_analytics is not None
-        try:
-            # Get latest forecasts if available
-            forecast_data: dict[str, Any] | None = None
-            if self.predictive_analytics.latest_forecasts:
-                forecast_data = self.predictive_analytics.latest_forecasts
-
-            result = self.predictive_optimizer.predict_and_optimize(forecast_data or {})
-
-            return {
-                "success": True,
-                "optimization_results": result,
-                "message": "Predictive optimization completed successfully",
-            }
-
-        except Exception as e:
-            logging.error(f"Error in predictive optimization: {e}")
-            return {
-                "success": False,
-                "message": f"Predictive optimization failed: {e!s}",
-                "error": "OPTIMIZATION_FAILED",
-            }
+        assert self.predictive_optimizer is not None
+        return self.predictive_optimizer.run_predictive_optimization_dict()
 
     def collect_historical_data(self) -> dict[str, Any]:
-        """
-        Collect and store current schedule data for historical analysis
-
-        Returns:
-            Dictionary containing collection results
-        """
+        """Collect current schedule data for historical analysis; returns plain dict."""
         if not self.is_predictive_analytics_enabled():
-            return {
-                "success": False,
-                "message": "Predictive analytics not enabled",
-                "error": "PREDICTIVE_ANALYTICS_DISABLED",
-            }
-
+            return self._PA_DISABLED
         assert self.predictive_analytics is not None
-        try:
-            result = self.predictive_analytics.collect_and_store_current_data()
-
-            return {
-                "success": result.get("status") == "success",
-                "message": result.get("message", "Data collection completed"),
-                "data_summary": result.get("data_summary"),
-            }
-
-        except Exception as e:
-            logging.error(f"Error collecting historical data: {e}")
-            return {"success": False, "message": f"Data collection failed: {e!s}", "error": "DATA_COLLECTION_FAILED"}
+        return self.predictive_analytics.collect_historical_data_dict()
 
     def get_optimization_suggestions(self) -> list[str]:
-        """
-        Get optimization suggestions based on predictive analytics
-
-        Returns:
-            List of optimization suggestions
-        """
+        """Return optimization suggestions from predictive analytics."""
         if not self.is_predictive_analytics_enabled():
             return ["Predictive analytics not enabled - enable for optimization suggestions"]
-
         assert self.predictive_analytics is not None
-        try:
-            return self.predictive_analytics.get_optimization_suggestions()
-        except Exception as e:
-            logging.error(f"Error getting optimization suggestions: {e}")
-            return [f"Error getting suggestions: {e!s}"]
+        return self.predictive_analytics.get_optimization_suggestions_list()
 
     def get_analytics_summary(self) -> dict[str, Any]:
-        """
-        Get summary of predictive analytics status and capabilities
-
-        Returns:
-            Dictionary with analytics summary
-        """
+        """Return summary of predictive analytics status and capabilities."""
         if not self.is_predictive_analytics_enabled():
             return {"enabled": False, "message": "Predictive analytics not enabled"}
-
         assert self.predictive_analytics is not None
         try:
             return self.predictive_analytics.get_analytics_summary()
@@ -3372,41 +2633,12 @@ class Scheduler:
             return {"enabled": True, "error": str(e), "message": "Error getting analytics summary"}
 
     def apply_predictive_adjustments(self, optimization_result: dict[str, Any]) -> dict[str, Any]:
-        """
-        Apply parameter adjustments recommended by predictive optimization
-
-        Args:
-            optimization_result: Result from predictive optimization
-
-        Returns:
-            Dictionary with application results
-        """
+        """Apply parameter adjustments recommended by predictive optimization; returns plain dict."""
         if not self.is_predictive_analytics_enabled() or not self.predictive_optimizer:
             return {
                 "success": False,
                 "message": "Predictive optimization not available",
                 "error": "PREDICTIVE_OPTIMIZER_DISABLED",
             }
-
-        try:
-            parameter_adjustments = optimization_result.get("parameter_adjustments", {})
-            if not parameter_adjustments:
-                return {
-                    "success": False,
-                    "message": "No parameter adjustments found in optimization result",
-                    "error": "NO_ADJUSTMENTS",
-                }
-
-            result = self.predictive_optimizer.apply_recommended_adjustments(parameter_adjustments)
-
-            return {
-                "success": result.get("status") == "success",
-                "application_results": result.get("results"),
-                "message": "Parameter adjustments applied successfully"
-                if result.get("status") == "success"
-                else f"Application failed: {result.get('message', 'Unknown error')}",
-            }
-
-        except Exception as e:
-            logging.error(f"Error applying predictive adjustments: {e}")
-            return {"success": False, "message": f"Adjustment application failed: {e!s}", "error": "ADJUSTMENT_FAILED"}
+        assert self.predictive_optimizer is not None
+        return self.predictive_optimizer.apply_predictive_adjustments_dict(optimization_result)
