@@ -15,7 +15,6 @@ dependencies = [
     "numpy>=1.24.0",
     "statsmodels>=0.14.0",
     # Visualization
-    "matplotlib>=3.7.0",
     "plotly>=5.15.0",
     # PDF Generation & Processing
     "reportlab>=4.0.0",
@@ -122,6 +121,5 @@ include = ["src", "tests"]
 [tool.deptry]
 [tool.deptry.per_rule_ignores]
 # altair is a transitive streamlit dep we pin explicitly for compatibility
-# matplotlib is imported conditionally inside functions
 # python-dateutil is used by pandas and dateutil.parser at runtime
-DEP002 = ["altair", "matplotlib", "python-dateutil"]
+DEP002 = ["altair", "python-dateutil"]
