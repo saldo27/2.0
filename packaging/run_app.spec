@@ -49,6 +49,16 @@ for py_file in py_files:
         print(f"Incluido:  {basename}")
 # ========================================================
 
+# NOTE sobre tamaño: el mayor contribuyente conocido al tamaño final es
+# `ortools` (motor CP-SAT usado de forma opcional en
+# final_adjustment_engine.py para el ajuste final). Es una dependencia
+# funcional real (no se puede excluir sin perder esa función) y trae
+# binarios nativos de C++ que no se benefician de los filtros de datos de
+# más abajo. Si el tamaño sigue siendo un problema, la única palanca
+# adicional realista sería ofrecer una build opcional sin ortools/
+# scikit-learn/statsmodels para usuarios que no necesiten ajuste avanzado
+# ni pronóstico de demanda.
+
 # ===== EXCLUSIONES =====
 # NOTE: 'sklearn' (scikit-learn) must NOT be excluded — it is a real,
 # declared dependency used by demand_forecaster.py/predictive_analytics.py
@@ -120,6 +130,50 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# ===== FILTRAR DATOS NO NECESARIOS EN TIEMPO DE EJECUCIÓN =====
+# Se aplica DESPUÉS de Analysis() porque los hooks de PyInstaller para
+# dependencias como scipy/sklearn/pandas/statsmodels (que recogen TODOS los
+# archivos de datos del paquete vía collect_data_files) se ejecutan durante
+# el propio Analysis() y solo se ven reflejados en `a.datas`, no en la lista
+# `datas` construida manualmente más arriba.
+# `a.datas` usa formato TOC: tuplas (nombre_destino, ruta_origen, tipo).
+_TEST_DATA_MARKERS = (
+    os.sep + 'tests' + os.sep,
+    os.sep + 'test' + os.sep,
+    os.sep + 'testing' + os.sep,
+)
+
+
+def _is_test_fixture(src_path):
+    normalized = os.path.normpath(src_path)
+    return any(marker in normalized for marker in _TEST_DATA_MARKERS)
+
+
+# Babel (dependencia transitoria de streamlit/altair) incluye datos de
+# localización compilados (locale-data/*.dat) para ~1000 locales. La app solo
+# necesita el fallback universal ('root'), inglés (usado por defecto por
+# varias librerías) y español (locale de la propia aplicación, ver
+# app_streamlit.py: locale.setlocale(locale.LC_TIME, "es_ES...")).
+_BABEL_LOCALE_ALLOWLIST = {'root.dat', 'en.dat', 'en_US.dat', 'es.dat', 'es_ES.dat'}
+
+
+def _is_prunable_babel_locale(src_path):
+    normalized = os.path.normpath(src_path)
+    marker = os.sep + 'locale-data' + os.sep
+    if marker not in normalized:
+        return False
+    return os.path.basename(normalized) not in _BABEL_LOCALE_ALLOWLIST
+
+
+_datas_before = len(a.datas)
+a.datas = [
+    (dest, src, typ)
+    for (dest, src, typ) in a.datas
+    if not _is_test_fixture(src) and not _is_prunable_babel_locale(src)
+]
+print(f"Datos descartados (fixtures de tests / locales no usados): {_datas_before - len(a.datas)}")
+# ================================================================
 
 pyz = PYZ(a. pure, a.zipped_data, cipher=block_cipher)
 
