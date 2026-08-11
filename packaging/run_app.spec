@@ -1,10 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import copy_metadata, collect_submodules, collect_data_files
 import os
-import glob
 
 block_cipher = None
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
+# The project code lives in src/saldo27 (installable package), one level up
+# from this packaging/ directory — NOT alongside this .spec file.
+PROJECT_ROOT = os.path.dirname(SPEC_DIR)
+SRC_DIR = os.path.join(PROJECT_ROOT, 'src')
+PACKAGE_DIR = os.path.join(SRC_DIR, 'saldo27')
 
 # ===== METADATA =====
 # copy_metadata() is required because streamlit/reportlab read their own
@@ -40,14 +44,20 @@ streamlit_hiddenimports = collect_submodules('streamlit')
 print(f"Streamlit: {len(streamlit_hiddenimports)} submódulos incluidos")
 # =========================================
 
-# ===== INCLUIR TODOS LOS ARCHIVOS .PY DEL PROYECTO =====
-py_files = glob.glob(os.path.join(SPEC_DIR, '*.py'))
-for py_file in py_files: 
-    basename = os.path. basename(py_file)
-    if basename != 'run_app.py':
-        datas. append((py_file, '.'))
-        print(f"Incluido:  {basename}")
-# ========================================================
+# ===== RECOLECTAR EL PAQUETE saldo27 =====
+# El código de la aplicación es un paquete instalable real
+# (src/saldo27/__init__.py), no un conjunto de scripts sueltos, así que sus
+# submódulos se recolectan igual que los de streamlit —vía
+# collect_submodules— en lugar de copiar manualmente cada .py como dato.
+saldo27_hiddenimports = collect_submodules('saldo27')
+print(f"saldo27: {len(saldo27_hiddenimports)} submódulos incluidos")
+
+# `app_streamlit.py` is the one exception: `run_app.py` hands its path to
+# streamlit's CLI (`streamlit run <script>`), which needs an actual .py file
+# on disk at runtime (sys._MEIPASS) — not just the compiled module bundled
+# via collect_submodules above. Copy just that file to the bundle root.
+datas.append((os.path.join(PACKAGE_DIR, 'app_streamlit.py'), '.'))
+# ==========================================
 
 # NOTE sobre tamaño: el mayor contribuyente conocido al tamaño final es
 # `ortools` (motor CP-SAT usado de forma opcional en
@@ -78,6 +88,14 @@ excludes = [
     # harmless no-ops if they are not present, kept as a safeguard against
     # them being pulled in accidentally by a future dependency bump.
     'bokeh', 'numba', 'PIL.ImageQt',
+    # streamlit.external.langchain: streamlit's optional langchain callback
+    # integration is unused by this project. On some Python/typing_extensions
+    # combinations, PyInstaller's collect_submodules('streamlit') triggers a
+    # harmless "Failed to collect submodules" WARNING while probing it
+    # (ForwardRef._evaluate() TypeError); excluding it here keeps intent
+    # explicit even though the warning itself happens during the probe and
+    # can't be fully suppressed.
+    'streamlit.external.langchain',
 ]
 
 # ===== HIDDENIMPORTS =====
@@ -105,25 +123,26 @@ hiddenimports = [
     'email',
     'email.mime',
     'importlib_metadata',
-    'scheduler_core',
-    'schedule_builder',
-    'iterative_optimizer',
-    'predictive_optimizer',
-    'balance_validator',
-    'adjustment_utils',
-    'pdf_exporter',
-] + streamlit_hiddenimports
+    'saldo27',
+    'saldo27.scheduler_core',
+    'saldo27.schedule_builder',
+    'saldo27.iterative_optimizer',
+    'saldo27.predictive_optimizer',
+    'saldo27.balance_validator',
+    'saldo27.adjustment_utils',
+    'saldo27.pdf_exporter',
+] + streamlit_hiddenimports + saldo27_hiddenimports
 
 # ===== ANALYSIS =====
 a = Analysis(
-    [os.path.join(SPEC_DIR, 'run_app.py')],
-    pathex=[SPEC_DIR],
+    [os.path.join(PACKAGE_DIR, 'run_app.py')],
+    pathex=[SRC_DIR],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[SPEC_DIR],
     hooksconfig={},
-    runtime_hooks=['rthook_streamlit.py'],
+    runtime_hooks=[os.path.join(SPEC_DIR, 'rthook_streamlit.py')],
     excludes=excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -202,7 +221,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='icon.ico',
+    icon=os.path.join(PROJECT_ROOT, 'icon.ico'),
 )
 
 coll = COLLECT(
