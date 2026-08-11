@@ -9,6 +9,20 @@ SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 PROJECT_ROOT = os.path.dirname(SPEC_DIR)
 SRC_DIR = os.path.join(PROJECT_ROOT, 'src')
 PACKAGE_DIR = os.path.join(SRC_DIR, 'saldo27')
+RUN_APP_PATH = os.path.join(PACKAGE_DIR, 'run_app.py')
+APP_STREAMLIT_PATH = os.path.join(PACKAGE_DIR, 'app_streamlit.py')
+
+if not os.path.isfile(RUN_APP_PATH):
+    raise FileNotFoundError(
+        f"run_app.py no encontrado en: {RUN_APP_PATH}. "
+        "Verifica que ejecutas PyInstaller con el run_app.spec correcto del repositorio."
+    )
+
+if not os.path.isfile(APP_STREAMLIT_PATH):
+    raise FileNotFoundError(
+        f"app_streamlit.py no encontrado en: {APP_STREAMLIT_PATH}. "
+        "El empaquetado requiere este archivo para `streamlit run`."
+    )
 
 # ===== METADATA =====
 # copy_metadata() is required because streamlit/reportlab read their own
@@ -56,7 +70,7 @@ print(f"saldo27: {len(saldo27_hiddenimports)} submódulos incluidos")
 # streamlit's CLI (`streamlit run <script>`), which needs an actual .py file
 # on disk at runtime (sys._MEIPASS) — not just the compiled module bundled
 # via collect_submodules above. Copy just that file to the bundle root.
-datas.append((os.path.join(PACKAGE_DIR, 'app_streamlit.py'), '.'))
+datas.append((APP_STREAMLIT_PATH, '.'))
 # ==========================================
 
 # NOTE sobre tamaño: el mayor contribuyente conocido al tamaño final es
@@ -135,7 +149,7 @@ hiddenimports = [
 
 # ===== ANALYSIS =====
 a = Analysis(
-    [os.path.join(PACKAGE_DIR, 'run_app.py')],
+    [RUN_APP_PATH],
     pathex=[SRC_DIR],
     binaries=[],
     datas=datas,
