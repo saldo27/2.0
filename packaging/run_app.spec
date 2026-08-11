@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import copy_metadata, collect_all, collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import copy_metadata, collect_submodules, collect_data_files
 import os
 import glob
 
@@ -7,24 +7,34 @@ block_cipher = None
 SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
 
 # ===== METADATA =====
+# copy_metadata() is required because streamlit/reportlab read their own
+# package metadata (version, etc.) via importlib.metadata at runtime.
 datas = []
 datas += copy_metadata('streamlit')
 datas += copy_metadata('reportlab')
 
-try:
-    jaraco_datas, jaraco_binaries, jaraco_hiddenimports = collect_all('jaraco')
-    datas += jaraco_datas
-except:  
-    jaraco_hiddenimports = []
+# NOTE: `collect_all('jaraco')` and `collect_all('pkg_resources')` used to be
+# forced here, but none of this project's runtime dependencies (streamlit,
+# reportlab, pandas, numpy, plotly, scikit-learn, statsmodels, ortools,
+# pdfplumber, openpyxl) actually import `pkg_resources`/`jaraco` at runtime.
+# `collect_all` bundles the *entire* package (including vendored data and
+# unrelated submodules), which added noticeable size for no functional
+# benefit. If a future dependency needs them, prefer a targeted
+# `collect_submodules`/hiddenimports entry over `collect_all`.
 
-try:
-    pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all('pkg_resources')
-    datas += pkg_datas
-except:
-    pkg_hiddenimports = []
-
-# ===== RECOLECTAR STREAMLIT COMPLETO =====
-streamlit_datas = collect_data_files('streamlit', include_py_files=True)
+# ===== RECOLECTAR STREAMLIT (solo código, sin duplicar .py como datos) =====
+# include_py_files=True duplicated every streamlit .py source file as a data
+# file on top of the compiled modules already pulled in via hiddenimports,
+# effectively shipping streamlit's source twice. Data files (non-.py assets
+# such as the static frontend build, config templates, etc.) are still
+# collected normally without include_py_files.
+#
+# NOTE: `hook_streamlit.py` in this directory (underscore) is NOT picked up
+# automatically by PyInstaller — auto-discovered hooks must be named
+# `hook-<module>.py` (hyphen). That's why streamlit hiddenimports are
+# collected manually below via `collect_submodules('streamlit')` instead of
+# relying on that file's smaller, curated hiddenimports list.
+streamlit_datas = collect_data_files('streamlit')
 datas += streamlit_datas
 streamlit_hiddenimports = collect_submodules('streamlit')
 print(f"Streamlit: {len(streamlit_hiddenimports)} submódulos incluidos")
@@ -40,16 +50,24 @@ for py_file in py_files:
 # ========================================================
 
 # ===== EXCLUSIONES =====
+# NOTE: 'sklearn' (scikit-learn) must NOT be excluded — it is a real,
+# declared dependency used by demand_forecaster.py/predictive_analytics.py
+# for the demand forecasting feature. It used to be listed here, which
+# silently disabled that feature in built .exe releases.
 excludes = [
     'PyQt5', 'PyQt6', 'PySide2', 'PySide6',
     'tkinter', 'wx', 'kivy', 'kivymd', 'pygame',
-    'matplotlib', 'torch', 'tensorflow', 'sklearn',
+    'matplotlib', 'torch', 'tensorflow',
     'langchain', 'openai', 'transformers',
     'IPython', 'jupyter', 'notebook',
     'pytest', 'unittest', 'doctest',
     'flask', 'django', 'fastapi',
     'streamlit. hello',
     'typeguard',
+    # Heavy packages not used by this project or its runtime dependencies;
+    # harmless no-ops if they are not present, kept as a safeguard against
+    # them being pulled in accidentally by a future dependency bump.
+    'bokeh', 'numba', 'PIL.ImageQt',
 ]
 
 # ===== HIDDENIMPORTS =====
@@ -84,7 +102,7 @@ hiddenimports = [
     'balance_validator',
     'adjustment_utils',
     'pdf_exporter',
-] + streamlit_hiddenimports + jaraco_hiddenimports + pkg_hiddenimports
+] + streamlit_hiddenimports
 
 # ===== ANALYSIS =====
 a = Analysis(
@@ -105,6 +123,14 @@ a = Analysis(
 
 pyz = PYZ(a. pure, a.zipped_data, cipher=block_cipher)
 
+# DLLs known to be corrupted or unstable when compressed by UPX; keep them
+# uncompressed while still UPX-compressing the rest of the bundle.
+UPX_EXCLUDE = [
+    'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll',
+    'python3.dll', 'python310.dll', 'python311.dll', 'python312.dll',
+    'api-ms-win-*.dll',
+]
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -115,6 +141,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=UPX_EXCLUDE,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -131,6 +158,6 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=UPX_EXCLUDE,
     name='GuardiasApp',
 )
