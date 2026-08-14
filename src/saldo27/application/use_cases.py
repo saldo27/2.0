@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Literal
 
+from saldo27.application.contracts import ProgressCallback
 from saldo27.scheduler import Scheduler
 
 
@@ -163,6 +164,7 @@ def generate_schedule(
     request: GenerateScheduleRequest,
     *,
     prepared: PrepareSchedulerResult | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> GenerateScheduleResult:
     validation_error = validate_generation_request(request)
     if validation_error:
@@ -172,9 +174,13 @@ def generate_schedule(
         prepared = prepare_scheduler(request)
     scheduler = prepared.scheduler
 
-    # Ensure the cancel flag is clean before starting a new generation.
-    scheduler._cancelled = False
-    success = scheduler.generate_schedule()
+    # Ensure cancellation and progress callback state are clean per run.
+    scheduler.clear_cancellation()
+    scheduler.set_progress_callback(progress_callback)
+    try:
+        success = scheduler.generate_schedule()
+    finally:
+        scheduler.set_progress_callback(None)
     if prepared.prior_schedule_error:
         message = (
             f"⚠️ Calendario anterior no pudo cargarse: {prepared.prior_schedule_error}\n✅ Horario generado"
@@ -190,7 +196,7 @@ def generate_schedule(
 
 def cancel_scheduler(scheduler: Scheduler) -> None:
     """Signal the scheduler to stop generation at the next cancellation checkpoint."""
-    scheduler._cancelled = True
+    scheduler.request_cancellation()
 
 
 def validate_schedule(scheduler: Scheduler) -> dict[str, Any]:

@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 # Imports
 import json
 import logging
 import math
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from saldo27.constraint_checker import ConstraintChecker
 from saldo27.data_manager import DataManager
@@ -13,6 +16,10 @@ from saldo27.scheduler_config import SchedulerConfig, setup_logging
 from saldo27.statistics_calculator import StatisticsCalculator
 from saldo27.utilities import DateTimeUtils, get_effective_min_gap
 from saldo27.worker_eligibility import WorkerEligibilityTracker
+
+if TYPE_CHECKING:
+    from saldo27.application.contracts import GenerationProgressEvent
+    from saldo27.domain.schedule_state import ScheduleState
 
 # Initialize logging using the configuration module
 setup_logging()
@@ -30,6 +37,8 @@ class Scheduler:
 
         # Cancellation flag — set to True from the UI to abort generation
         self._cancelled: bool = False
+        self._progress_callback: Callable[[GenerationProgressEvent], None] | None = None
+        self._phase_trace: list[Any] = []
 
         # Initialize cache for performance optimization
         self._cache: dict[str, Any] = {}
@@ -68,6 +77,46 @@ class Scheduler:
     # ------------------------------------------------------------------
     # Init sub-phases (called only from __init__)
     # ------------------------------------------------------------------
+
+    def request_cancellation(self) -> None:
+        self._cancelled = True
+
+    def clear_cancellation(self) -> None:
+        self._cancelled = False
+
+    def is_cancellation_requested(self) -> bool:
+        return self._cancelled
+
+    def set_progress_callback(self, callback: Callable[[GenerationProgressEvent], None] | None) -> None:
+        self._progress_callback = callback
+
+    def emit_progress_event(self, event: GenerationProgressEvent) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(event)
+
+    @property
+    def phase_trace(self) -> list[Any]:
+        return list(self._phase_trace)
+
+    def set_phase_trace(self, trace: list[Any]) -> None:
+        self._phase_trace = list(trace)
+
+    def snapshot_state(self, *, include_locked: bool = True) -> ScheduleState:
+        from saldo27.domain.schedule_state import ScheduleState
+
+        return ScheduleState.from_scheduler(self, include_locked=include_locked)
+
+    def restore_state(self, state: ScheduleState) -> None:
+        state.apply_to_scheduler(self)
+
+    def get_locked_mandatory(self) -> set[Any]:
+        if hasattr(self, "schedule_builder") and self.schedule_builder is not None:
+            return set(getattr(self.schedule_builder, "_locked_mandatory", set()))
+        return set()
+
+    def set_locked_mandatory(self, locked: set[Any] | tuple[Any, ...]) -> None:
+        if hasattr(self, "schedule_builder") and self.schedule_builder is not None:
+            self.schedule_builder._locked_mandatory = set(locked)
 
     @staticmethod
     def _normalize_worker_ids(workers_data: list[dict[str, Any]]) -> None:

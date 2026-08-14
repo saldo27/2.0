@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from saldo27.application.contracts import GenerationProgressEvent
 from saldo27.domain.schedule_state import ScheduleState
 
 
@@ -47,12 +48,22 @@ class OptimizationPipeline:
     def run(self, core: object, initial_state: ScheduleState) -> tuple[bool, ScheduleState, list[PhaseTrace]]:
         current_state = initial_state
         trace: list[PhaseTrace] = []
+        report_progress = getattr(core, "report_phase_progress", None)
 
         for phase in self.phases:
             started_at = datetime.now()
+            if callable(report_progress):
+                report_progress(
+                    GenerationProgressEvent(
+                        phase=phase.name,
+                        stage="started",
+                        timestamp=started_at,
+                    )
+                )
             success, current_state = phase.run(core, current_state)
             finished_at = datetime.now()
 
+            metrics = current_state.to_metrics_dict()
             trace.append(
                 PhaseTrace(
                     name=phase.name,
@@ -60,9 +71,20 @@ class OptimizationPipeline:
                     started_at=started_at,
                     finished_at=finished_at,
                     duration_seconds=(finished_at - started_at).total_seconds(),
-                    metrics=current_state.to_metrics_dict(),
+                    metrics=metrics,
                 )
             )
+            if callable(report_progress):
+                report_progress(
+                    GenerationProgressEvent(
+                        phase=phase.name,
+                        stage="completed",
+                        timestamp=finished_at,
+                        success=success,
+                        coverage=float(metrics.get("coverage", 0.0)),
+                        empty_slots=int(metrics.get("empty_slots", 0)),
+                    )
+                )
 
             if not success:
                 return False, current_state, trace

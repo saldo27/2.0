@@ -537,12 +537,14 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
         # Generación con soporte de cancelación
         import threading
         import time
+        from queue import Empty, SimpleQueue
 
         status_text = st.empty()
         cancel_placeholder = st.empty()
         st.session_state.generation_cancelled = False
 
         generation_result: dict[str, bool | Exception | None] = {"success": False, "error": None}
+        progress_events: SimpleQueue = SimpleQueue()
 
         # Instalar handler de logging para capturar progreso
         sidebar_handler = SidebarLogHandler(max_messages=80)
@@ -554,22 +556,22 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
 
             def _run_generation():
                 try:
-                    result = generate_schedule(request, prepared=prepared_scheduler)
+                    result = generate_schedule(
+                        request,
+                        prepared=prepared_scheduler,
+                        progress_callback=lambda event: progress_events.put(event),
+                    )
                     generation_result["success"] = result.success
                 except Exception as exc:
                     generation_result["error"] = exc
 
-            # Phase detection from log messages for precise status updates
-            _phase_patterns = [
-                ("Phase 1:", "⚙️ Fase 1 · Inicializando estructura del calendario"),
-                ("Phase 2:", "⚙️ Fase 2 · Asignando guardias obligatorias"),
-                ("Phase 2.5:", "⚙️ Fase 3 · Distribución inicial (múltiples intentos)"),
-                ("Starting Enhanced Improvement Loop", "⚙️ Fase 4 · Optimización iterativa del calendario"),
-                ("Phase 3.5:", "⚙️ Fase 5 · Motor de distribución avanzada"),
-                ("Phase 3.6:", "⚙️ Fase 6 · Balanceo estricto de carga"),
-                ("Phase 4: Finalizing", "⚙️ Fase 7 · Finalización y ajustes de tolerancia"),
-                ("TOLERANCE OPTIMIZATION COMPLETE", "⚙️ Fase 7 · Validación final completada"),
-            ]
+            # Structured phase detection through progress events emitted by the pipeline.
+            _phase_labels = {
+                "initialize": "⚙️ Fase 1 · Inicializando estructura del calendario",
+                "mandatory": "⚙️ Fase 2 · Asignando guardias obligatorias",
+                "distribution": "⚙️ Fase 3 · Distribución y optimización",
+                "finalize": "⚙️ Fase 4 · Finalización y validación",
+            }
             _current_phase_msg = "⚙️ Iniciando generación del calendario..."
 
             status_text.info(_current_phase_msg)
@@ -588,19 +590,21 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
                     st.session_state.generation_cancelled = True
                     st.session_state._cancel_requested = False
                     status_text.warning("⏳ Cancelando... esperando a que el motor se detenga")
-                # Detect current phase from latest log messages
-                _recent = sidebar_handler.get_messages(last_n=30)
-                for _msg in reversed(_recent):
-                    _matched = False
-                    for _pattern, _label in _phase_patterns:
-                        if _pattern in _msg:
-                            if _label != _current_phase_msg:
-                                _current_phase_msg = _label
-                                status_text.info(_current_phase_msg)
-                            _matched = True
-                            break
-                    if _matched:
+                while True:
+                    try:
+                        event = progress_events.get_nowait()
+                    except Empty:
                         break
+                    phase_label = _phase_labels.get(event.phase)
+                    if not phase_label:
+                        continue
+                    if event.stage == "completed" and event.success is False:
+                        status_text.error(f"{phase_label} ❌")
+                        _current_phase_msg = f"{phase_label} ❌"
+                        continue
+                    if phase_label != _current_phase_msg:
+                        _current_phase_msg = phase_label
+                        status_text.info(_current_phase_msg)
                 # Actualizar log de progreso en el sidebar
                 _log_ph = st.session_state.get("_sidebar_log_placeholder")
                 if _log_ph:

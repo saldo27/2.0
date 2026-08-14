@@ -3,7 +3,10 @@ from datetime import date, datetime
 from saldo27.application.use_cases import (
     GenerateScheduleRequest,
     build_scheduler_config,
+    cancel_scheduler,
     check_demo_limitations,
+    generate_schedule,
+    prepare_scheduler,
     validate_generation_request,
 )
 
@@ -64,3 +67,50 @@ def test_validate_generation_request_rejects_invalid_range(sample_workers_data):
     )
 
     assert validate_generation_request(request) == "❌ Error: La fecha final debe ser posterior a la inicial"
+
+
+def test_generate_schedule_sets_and_clears_progress_callback(sample_workers_data, monkeypatch):
+    request = GenerateScheduleRequest(
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 3, 3),
+        holidays=[],
+        variable_shifts=[],
+        workers_data=sample_workers_data,
+        config={"num_shifts": 4},
+    )
+    prepared = prepare_scheduler(request)
+    scheduler = prepared.scheduler
+
+    callback_history = []
+    cancellation_calls = []
+
+    def _set_progress_callback(callback):
+        callback_history.append(callback)
+
+    def _clear_cancellation():
+        cancellation_calls.append("cleared")
+
+    monkeypatch.setattr(scheduler, "set_progress_callback", _set_progress_callback)
+    monkeypatch.setattr(scheduler, "clear_cancellation", _clear_cancellation)
+    monkeypatch.setattr(scheduler, "generate_schedule", lambda: True)
+
+    result = generate_schedule(request, prepared=prepared, progress_callback=lambda event: None)
+
+    assert result.success is True
+    assert cancellation_calls == ["cleared"]
+    assert len(callback_history) == 2
+    assert callable(callback_history[0])
+    assert callback_history[1] is None
+
+
+def test_cancel_scheduler_uses_public_api():
+    class _DummyScheduler:
+        def __init__(self):
+            self.cancel_requested = False
+
+        def request_cancellation(self):
+            self.cancel_requested = True
+
+    scheduler = _DummyScheduler()
+    cancel_scheduler(scheduler)  # type: ignore[arg-type]
+    assert scheduler.cancel_requested is True

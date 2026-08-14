@@ -12,6 +12,7 @@ import random
 from datetime import datetime
 from typing import Any
 
+from saldo27.application.contracts import GenerationProgressEvent
 from saldo27.adaptive_iterations import AdaptiveIterationManager
 from saldo27.advanced_distribution_engine import AdvancedDistributionEngine
 from saldo27.application.pipeline import CoreMethodPhase, OptimizationPipeline
@@ -45,7 +46,6 @@ class SchedulerCore:
         self.start_date = scheduler.start_date
         self.end_date = scheduler.end_date
         self.workers_data = scheduler.workers_data
-        self._cancelled = False
 
         # Initialize enhancement systems
         self.metrics = OptimizationMetrics(scheduler)
@@ -93,7 +93,7 @@ class SchedulerCore:
             initial_state = ScheduleState.from_scheduler(self.scheduler, include_locked=False)
             pipeline = self._build_optimization_pipeline(max_improvement_loops, max_complete_attempts)
             success, final_state, phase_trace = pipeline.run(self, initial_state)
-            self.scheduler._phase_trace = phase_trace
+            self.scheduler.set_phase_trace(phase_trace)
             self._log_pipeline_trace(phase_trace)
             if not success:
                 failed_phase = next((phase.name for phase in phase_trace if not phase.success), "unknown")
@@ -163,6 +163,9 @@ class SchedulerCore:
                 metrics.get("empty_slots", 0),
             )
 
+    def report_phase_progress(self, event: GenerationProgressEvent) -> None:
+        self.scheduler.emit_progress_event(event)
+
     def _run_distribution_and_optimization_phase(self, max_improvement_loops: int, max_complete_attempts: int) -> bool:
         # Save mandatory state (preserved across all attempts)
         mandatory_snap = self._snapshot_state()
@@ -182,7 +185,7 @@ class SchedulerCore:
         complete_attempts = []
 
         for complete_attempt_num in range(1, max_complete_attempts + 1):
-            if getattr(self.scheduler, "_cancelled", False):
+            if self.scheduler.is_cancellation_requested():
                 logging.info("🛑 Schedule generation cancelled by user")
                 return False
 
@@ -253,7 +256,7 @@ class SchedulerCore:
         self.scheduler.worker_posts = best_attempt["posts"]
         if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
             self._sync_builder_references()
-            self.scheduler.schedule_builder._locked_mandatory = best_attempt["locked_mandatory"]
+            self.scheduler.set_locked_mandatory(best_attempt["locked_mandatory"])
         return True
 
     def _sync_builder_references(self):
@@ -294,50 +297,34 @@ class SchedulerCore:
             self.scheduler.stats.worker_assignments = self.scheduler.worker_assignments
 
     def _snapshot_state(self, *, include_locked: bool = True) -> dict[str, Any]:
-        """Return a lightweight snapshot of the current scheduler state.
-
-        Uses type-aware copies instead of ``copy.deepcopy`` to avoid the
-        overhead of the generic deepcopy machinery:
-
-        * ``schedule``          – ``dict[str, list[str|None]]``  → per-list copy
-        * ``worker_assignments``– ``dict[str, set[str]]``        → per-set copy
-        * ``worker_shift_counts``     – ``dict[str, int]``       → flat dict copy
-        * ``worker_weekend_counts``   – ``dict[str, int]``       → flat dict copy
-        * ``worker_posts``      – ``dict[str, set]``             → per-set copy
-        * ``_locked_mandatory`` – ``set[tuple[str, datetime]]``  → set copy
-          (only when *include_locked* is True)
-        """
-        s = self.scheduler
+        state = self.scheduler.snapshot_state(include_locked=include_locked)
         snap: dict[str, Any] = {
-            "schedule": {k: v[:] for k, v in s.schedule.items()},
-            "assignments": {k: v.copy() for k, v in s.worker_assignments.items()},
-            "counts": s.worker_shift_counts.copy(),
-            "weekend_counts": s.worker_weekend_counts.copy(),
-            "posts": {k: v.copy() for k, v in s.worker_posts.items()},
+            "schedule": {date: list(shifts) for date, shifts in state.schedule},
+            "assignments": {worker_id: set(dates) for worker_id, dates in state.worker_assignments},
+            "counts": dict(state.worker_shift_counts),
+            "weekend_counts": dict(state.worker_weekend_counts),
+            "posts": {worker_id: set(posts) for worker_id, posts in state.worker_posts},
         }
         if include_locked:
-            snap["locked_mandatory"] = s.schedule_builder._locked_mandatory.copy()
+            snap["locked_mandatory"] = set(state.locked_mandatory)
         return snap
 
     def _restore_state(self, snap: dict[str, Any], *, sync_builder: bool = True) -> None:
-        """Restore scheduler state from a snapshot produced by ``_snapshot_state``.
-
-        Args:
-            snap: Snapshot dict as returned by ``_snapshot_state``.
-            sync_builder: When True (default) call ``_sync_builder_references``
-                after restoring so that ``schedule_builder`` and dependent
-                objects point at the newly restored dicts.
-        """
-        s = self.scheduler
-        s.schedule = snap["schedule"]
-        s.worker_assignments = snap["assignments"]
-        s.worker_shift_counts = snap["counts"]
-        s.worker_weekend_counts = snap["weekend_counts"]
-        s.worker_posts = snap["posts"]
+        state = ScheduleState(
+            schedule=tuple((date, tuple(shifts)) for date, shifts in sorted(snap["schedule"].items(), key=lambda item: item[0])),
+            worker_assignments=tuple(
+                (worker_id, tuple(sorted(dates))) for worker_id, dates in sorted(snap["assignments"].items(), key=lambda item: item[0])
+            ),
+            worker_shift_counts=tuple(sorted(snap["counts"].items(), key=lambda item: item[0])),
+            worker_weekend_counts=tuple(sorted(snap["weekend_counts"].items(), key=lambda item: item[0])),
+            worker_posts=tuple(
+                (worker_id, tuple(sorted(posts))) for worker_id, posts in sorted(snap["posts"].items(), key=lambda item: item[0])
+            ),
+            locked_mandatory=tuple(sorted(snap.get("locked_mandatory", set()), key=repr)),
+        )
+        self.scheduler.restore_state(state)
         if sync_builder:
             self._sync_builder_references()
-        if "locked_mandatory" in snap:
-            s.schedule_builder._locked_mandatory = snap["locked_mandatory"]
 
     def _sanitize_restored_attempt_state(self) -> dict[str, int]:
         """
@@ -568,7 +555,7 @@ class SchedulerCore:
 
             for attempt_num in range(1, num_attempts + 1):
                 # Check cancellation flag
-                if getattr(self.scheduler, "_cancelled", False):
+                if self.scheduler.is_cancellation_requested():
                     logging.info("🛑 Initial distribution cancelled by user")
                     break
 

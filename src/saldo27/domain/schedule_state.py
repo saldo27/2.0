@@ -21,7 +21,10 @@ class ScheduleState:
     @classmethod
     def from_scheduler(cls, scheduler: Any, include_locked: bool = True) -> ScheduleState:
         locked_mandatory: tuple[Any, ...] = ()
-        if include_locked and hasattr(scheduler, "schedule_builder") and scheduler.schedule_builder:
+        if include_locked and hasattr(scheduler, "get_locked_mandatory"):
+            raw_locked = scheduler.get_locked_mandatory()
+            locked_mandatory = tuple(sorted(raw_locked, key=repr))
+        elif include_locked and hasattr(scheduler, "schedule_builder") and scheduler.schedule_builder:
             raw_locked = getattr(scheduler.schedule_builder, "_locked_mandatory", set())
             locked_mandatory = tuple(sorted(raw_locked, key=repr))
 
@@ -49,7 +52,9 @@ class ScheduleState:
         scheduler.worker_weekend_counts = dict(self.worker_weekend_counts)
         scheduler.worker_posts = {worker_id: set(posts) for worker_id, posts in self.worker_posts}
 
-        if hasattr(scheduler, "schedule_builder") and scheduler.schedule_builder is not None:
+        if hasattr(scheduler, "set_locked_mandatory"):
+            scheduler.set_locked_mandatory(set(self.locked_mandatory))
+        elif hasattr(scheduler, "schedule_builder") and scheduler.schedule_builder is not None:
             scheduler.schedule_builder._locked_mandatory = set(self.locked_mandatory)
 
     def to_metrics_dict(self) -> dict[str, float | int]:
