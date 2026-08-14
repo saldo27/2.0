@@ -12,6 +12,7 @@ from typing import Any, cast
 from saldo27.change_tracker import ChangeTracker
 from saldo27.event_bus import EventType, get_event_bus
 from saldo27.incremental_updater import IncrementalUpdater
+from saldo27.infrastructure.optional_engines import EngineCapabilities
 from saldo27.live_validator import ConflictInfo, LiveValidator, ValidationResult
 
 
@@ -48,6 +49,12 @@ class RealTimeOperationResult:
 
 class RealTimeEngine:
     """Core real-time processing engine that coordinates all real-time features"""
+
+    CAPABILITIES = EngineCapabilities(
+        name="RealTimeEngine",
+        real_time_editing=True,
+        requires_scheduler_attr="real_time_engine",
+    )
 
     def __init__(self, scheduler):
         """

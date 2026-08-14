@@ -11,12 +11,19 @@ from typing import Any
 
 from saldo27.demand_forecaster import DemandForecaster
 from saldo27.historical_data_manager import HistoricalDataManager
+from saldo27.infrastructure.optional_engines import EngineCapabilities
 
 
 class PredictiveAnalyticsEngine:
     """
     Main orchestration engine for predictive analytics capabilities
     """
+
+    CAPABILITIES = EngineCapabilities(
+        name="PredictiveAnalyticsEngine",
+        predictive_analytics=True,
+        requires_scheduler_attr="predictive_analytics",
+    )
 
     def __init__(self, scheduler, config: dict[str, Any] | None = None):
         """

@@ -44,6 +44,20 @@ def test_validate_empty_config():
     assert isinstance(is_valid, bool)
 
 
+def test_validate_pipeline_phases_accepts_known_sequence():
+    phases = SchedulerConfig.validate_pipeline_phases(["initialize", "mandatory", "finalize"])
+    assert phases == ["initialize", "mandatory", "finalize"]
+
+
+def test_validate_pipeline_phases_rejects_missing_required_phase():
+    try:
+        SchedulerConfig.validate_pipeline_phases(["mandatory", "distribution"])
+    except ValueError as exc:
+        assert str(exc) == "'pipeline_phases' debe incluir las fases requeridas: ['finalize', 'initialize']"
+    else:
+        raise AssertionError("Expected ValueError for missing required pipeline phases")
+
+
 # ── setup_logging ──────────────────────────────────────────────────
 
 

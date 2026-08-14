@@ -35,8 +35,11 @@ if TYPE_CHECKING:
 
     from saldo27.scheduler import Scheduler
 
+from saldo27.domain.engine_state_mixin import EngineStateMixin
+from saldo27.infrastructure.optional_engines import ortools_available
 
-class FinalAdjustmentEngine:
+
+class FinalAdjustmentEngine(EngineStateMixin):
     """Motor de ajuste final que equilibra turnos, fines de semana y puentes."""
 
     def __init__(self, scheduler: Scheduler) -> None:
@@ -244,39 +247,6 @@ class FinalAdjustmentEngine:
     # Internal: state save/restore (mirrors StrictBalanceOptimizer)
     # ------------------------------------------------------------------
 
-    def _save_state(self) -> dict:
-        return {
-            "schedule": {k: v[:] for k, v in self.schedule.items()},
-            "assignments": {k: set(v) for k, v in self.worker_assignments.items()},
-            "shift_counts": dict(self.scheduler.worker_shift_counts),
-            "weekdays": {k: dict(v) for k, v in self.scheduler.worker_weekdays.items()},
-            "weekends": {k: list(v) for k, v in self.scheduler.worker_weekends.items()},
-            "weekend_counts": dict(self.scheduler.worker_weekend_counts),
-            "bridge_counts": {k: set(v) for k, v in self.scheduler.worker_bridge_counts.items()},
-        }
-
-    def _restore_state(self, state: dict) -> None:
-        self.schedule.clear()
-        self.schedule.update({k: v[:] for k, v in state["schedule"].items()})
-
-        self.worker_assignments.clear()
-        self.worker_assignments.update({k: set(v) for k, v in state["assignments"].items()})
-
-        self.scheduler.worker_shift_counts.clear()
-        self.scheduler.worker_shift_counts.update(state["shift_counts"])
-
-        self.scheduler.worker_weekdays.clear()
-        self.scheduler.worker_weekdays.update({k: dict(v) for k, v in state["weekdays"].items()})
-
-        self.scheduler.worker_weekends.clear()
-        self.scheduler.worker_weekends.update({k: list(v) for k, v in state["weekends"].items()})
-
-        self.scheduler.worker_weekend_counts.clear()
-        self.scheduler.worker_weekend_counts.update(state["weekend_counts"])
-
-        self.scheduler.worker_bridge_counts.clear()
-        self.scheduler.worker_bridge_counts.update({k: set(v) for k, v in state["bridge_counts"].items()})
-
     # ------------------------------------------------------------------
     # Internal: constraint validation helpers
     # ------------------------------------------------------------------
@@ -285,13 +255,23 @@ class FinalAdjustmentEngine:
         """True si la asignación está bloqueada (mandatory)."""
         if self.schedule_builder is None:
             return False
-        return (worker_id, date) in self.schedule_builder._locked_mandatory
+        is_locked_mandatory = getattr(self.schedule_builder, "is_locked_mandatory", None)
+        if callable(is_locked_mandatory):
+            return bool(is_locked_mandatory(worker_id, date))
+        locked_mandatory = getattr(self.schedule_builder, "_locked_mandatory", ())
+        return (worker_id, date) in locked_mandatory
 
     def _is_mandatory(self, worker_id: str, date: datetime) -> bool:
         """True si la asignación es un turno obligatorio (config mandatory)."""
         if self.schedule_builder is None:
             return False
-        return self.schedule_builder._is_mandatory(worker_id, date)
+        is_mandatory = getattr(self.schedule_builder, "is_mandatory", None)
+        if callable(is_mandatory):
+            return bool(is_mandatory(worker_id, date))
+        legacy_is_mandatory = getattr(self.schedule_builder, "_is_mandatory", None)
+        if callable(legacy_is_mandatory):
+            return bool(legacy_is_mandatory(worker_id, date))
+        return False
 
     def _can_swap_away(self, worker_id: str, date: datetime) -> bool:
         """
@@ -648,19 +628,16 @@ class FinalAdjustmentEngine:
         """
         Ejecuta la Fase 4 de refinamiento CP-SAT con OR-Tools.
 
-        Si OR-Tools no está disponible se omite sin error.  Si el solver
-        no mejora las métricas actuales se descarta la solución y se
-        restaura el estado previo.
+        Usa :func:`~saldo27.infrastructure.optional_engines.ortools_available`
+        como punto de comprobación único.  Si OR-Tools no está disponible se
+        omite sin error.  Si el solver no mejora las métricas actuales se
+        descarta la solución y se restaura el estado previo.
 
         Returns:
             Número de slots reasignados por el solver (0 si no aplica).
         """
-        try:
-            import importlib
-
-            importlib.import_module("ortools.sat.python.cp_model")
-        except ImportError:
-            logging.info("FinalAdjustmentEngine: ortools no disponible, se omite la Fase 4 CP-SAT.")
+        if not ortools_available():
+            logging.info("FinalAdjustmentEngine: OR-Tools no disponible, se omite la Fase 4 CP-SAT.")
             return 0
 
         state_before = self._save_state()

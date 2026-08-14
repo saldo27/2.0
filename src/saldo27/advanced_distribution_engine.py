@@ -471,7 +471,7 @@ class AdvancedDistributionEngine:
                     continue
 
                 # No tocar mandatory
-                if (check_worker, check_date) in self.builder._locked_mandatory:
+                if self.builder.is_locked_mandatory(check_worker, check_date):
                     continue
 
                 recent_assignments.append((check_date, check_post, check_worker))
@@ -559,7 +559,7 @@ class AdvancedDistributionEngine:
 
             for date_a in assignments_a:
                 # No tocar mandatory
-                if (worker_a, date_a) in self.builder._locked_mandatory:
+                if self.builder.is_locked_mandatory(worker_a, date_a):
                     continue
 
                 try:

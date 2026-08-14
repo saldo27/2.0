@@ -33,18 +33,33 @@ class OperationPrioritizer:
             "weekend_imbalance_critical": 0.15,  # 15% de desbalance en fines de semana (was 30%)
         }
 
-    def prioritize_operations_dynamically(self) -> list[tuple[str, Callable, int]]:
+    def prioritize_operations_dynamically(
+        self,
+        *,
+        current_state: dict | None = None,
+    ) -> list[tuple[str, Callable, int]]:
         """
-        Priorizar operaciones basándose en el estado actual del schedule
+        Priorizar operaciones basándose en el estado actual del schedule.
+
+        Args:
+            current_state: Pre-computed state dict with keys ``empty_shifts_count``,
+                ``workload_imbalance``, and ``weekend_imbalance``.  When provided
+                the method skips the three corresponding metric calls, avoiding
+                redundant computation with the caller that already has the values.
 
         Returns:
             List[Tuple[str, callable, priority]]: Lista de (nombre, función, prioridad)
         """
         try:
-            # Evaluar estado actual
-            empty_shifts_count = self.metrics.count_empty_shifts()
-            workload_imbalance = self.metrics.calculate_workload_imbalance()
-            weekend_imbalance = self.metrics.calculate_weekend_imbalance()
+            # Evaluar estado actual — reutilizar valores del caller si ya los tiene
+            if current_state is not None:
+                empty_shifts_count = current_state["empty_shifts_count"]
+                workload_imbalance = current_state["workload_imbalance"]
+                weekend_imbalance = current_state["weekend_imbalance"]
+            else:
+                empty_shifts_count = self.metrics.count_empty_shifts()
+                workload_imbalance = self.metrics.calculate_workload_imbalance()
+                weekend_imbalance = self.metrics.calculate_weekend_imbalance()
 
             # Evaluar desequilibrio de puentes
             bridge_imbalance = 0.0

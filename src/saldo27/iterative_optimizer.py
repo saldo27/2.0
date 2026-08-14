@@ -154,7 +154,7 @@ class IterativeOptimizer:
 
         for iteration in range(1, self.max_iterations + 1):
             # Check cancellation flag
-            if self.scheduler and getattr(self.scheduler, "_cancelled", False):
+            if self.scheduler and self.scheduler.is_cancellation_requested():
                 logging.info(f"🛑 Optimization cancelled by user at iteration {iteration}")
                 break
 

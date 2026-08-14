@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 from logging.handlers import RotatingFileHandler
+from typing import Any
 
 
 def setup_logging(
@@ -101,6 +102,8 @@ class SchedulerConfig:
     # All balance engines read this value from config["balance_tolerance"] so that
     # the tolerance is defined in exactly one place.
     DEFAULT_BALANCE_TOLERANCE = 1
+    VALID_PIPELINE_PHASES: frozenset[str] = frozenset({"initialize", "mandatory", "distribution", "finalize"})
+    REQUIRED_PIPELINE_PHASES: frozenset[str] = frozenset({"initialize", "finalize"})
 
     # Performance optimization settings
     CACHE_ENABLED = True
@@ -160,3 +163,28 @@ class SchedulerConfig:
             return False, "max_consecutive_weekends must be positive"
 
         return True, None
+
+    @classmethod
+    def validate_pipeline_phases(cls, phases: Any) -> list[str]:
+        """Validate ``pipeline_phases`` and return a normalized list."""
+        if not isinstance(phases, list) or not phases:
+            raise ValueError(
+                f"'pipeline_phases' debe ser una lista no vacía. Fases válidas: {sorted(cls.VALID_PIPELINE_PHASES)}"
+            )
+        unknown = [phase for phase in phases if phase not in cls.VALID_PIPELINE_PHASES]
+        if unknown:
+            raise ValueError(
+                f"Fases desconocidas en 'pipeline_phases': {unknown}. "
+                f"Fases válidas: {sorted(cls.VALID_PIPELINE_PHASES)}"
+            )
+        missing = cls.REQUIRED_PIPELINE_PHASES - set(phases)
+        if missing:
+            raise ValueError(f"'pipeline_phases' debe incluir las fases requeridas: {sorted(missing)}")
+        return list(phases)
+
+    @classmethod
+    def resolve_pipeline_phases(cls, phases: Any, *, default_order: list[str]) -> list[str]:
+        """Return validated pipeline phases or the provided default order."""
+        if phases is None:
+            return list(default_order)
+        return cls.validate_pipeline_phases(phases)

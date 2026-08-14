@@ -10,11 +10,15 @@ import logging
 import math
 import random
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 from saldo27.adaptive_iterations import AdaptiveIterationManager
 from saldo27.advanced_distribution_engine import AdvancedDistributionEngine
+from saldo27.application.contracts import GenerationProgressEvent, SchedulerCoreProtocol
+from saldo27.application.pipeline import CoreMethodPhase, OptimizationPipeline
 from saldo27.balance_validator import BalanceValidator
+from saldo27.domain.schedule_state import ScheduleState
 from saldo27.exceptions import ConstraintViolationError, SchedulerError
 from saldo27.iterative_optimizer import IterativeOptimizer
 from saldo27.operation_prioritizer import OperationPrioritizer
@@ -43,7 +47,6 @@ class SchedulerCore:
         self.start_date = scheduler.start_date
         self.end_date = scheduler.end_date
         self.workers_data = scheduler.workers_data
-        self._cancelled = False
 
         # Initialize enhancement systems
         self.metrics = OptimizationMetrics(scheduler)
@@ -88,119 +91,17 @@ class SchedulerCore:
         start_time = datetime.now()
 
         try:
-            # Phase 1: Initialize schedule structure
-            if not self._initialize_schedule_phase():
-                raise ConstraintViolationError("Failed to initialize schedule structure")
-
-            # Phase 2: Assign mandatory shifts
-            if not self._assign_mandatory_phase():
-                raise ConstraintViolationError("Failed to assign mandatory shifts")
-
-            # Save mandatory state (preserved across all attempts)
-            mandatory_snap = self._snapshot_state()
-
-            # Phase 3: Multiple complete attempts
-            logging.info("=" * 80)
-
-            # SIMULATION MODE: Single attempt
-            if self.config.get("is_simulation", False):
-                logging.info("🧪 SIMULATION MODE: Limiting to 1 complete attempt")
-                max_complete_attempts = 1
-
-            logging.info(f"🔄 STARTING {max_complete_attempts} COMPLETE SCHEDULE ATTEMPTS")
-            logging.info("   Each attempt will respect Phase 1 (±10% OBJECTIVE) tolerance initially")
-            logging.info("   Phase 2 (±12% ABSOLUTE LIMIT) activates if coverage < 95%")
-            logging.info("=" * 80)
-
-            complete_attempts = []
-
-            for complete_attempt_num in range(1, max_complete_attempts + 1):
-                # Check cancellation flag
-                if getattr(self.scheduler, "_cancelled", False):
-                    logging.info("🛑 Schedule generation cancelled by user")
-                    return False
-
-                logging.info(f"\n{'█' * 80}")
-                logging.info(f"🎯 COMPLETE ATTEMPT {complete_attempt_num}/{max_complete_attempts}")
-                logging.info(f"{'█' * 80}")
-
-                # Restore mandatory state for this attempt
-                self._restore_state(mandatory_snap)
-
-                # Phase 3.1: Multiple initial distribution attempts
-                if not self._multiple_initial_distribution_attempts(complete_attempt_num):
-                    logging.warning(f"Complete attempt {complete_attempt_num} failed at initial distribution")
-                    continue
-
-                # Phase 3.2: Iterative improvement
-                if not self._iterative_improvement_phase(max_improvement_loops):
-                    logging.warning(f"Complete attempt {complete_attempt_num} failed at iterative improvement")
-                    # Don't skip - save what we have
-
-                # Calculate final metrics
-                coverage = self._calculate_coverage_percentage()
-                empty_shifts = self.metrics.count_empty_shifts()
-                score = self.metrics.calculate_overall_schedule_score()
-                workload_imbalance = self.metrics.calculate_workload_imbalance()
-                weekend_imbalance = self.metrics.calculate_weekend_imbalance()
-
-                logging.info(f"\n📊 Complete Attempt {complete_attempt_num} Final Metrics:")
-                logging.info(f"   Coverage: {coverage:.2f}%")
-                logging.info(f"   Empty Shifts: {empty_shifts}")
-                logging.info(f"   Overall Score: {score:.2f}")
-                logging.info(f"   Workload Imbalance: {workload_imbalance:.2f}")
-                logging.info(f"   Weekend Imbalance: {weekend_imbalance:.2f}")
-
-                # Save this complete attempt
-                _attempt_snap = self._snapshot_state()
-                complete_attempts.append(
-                    {
-                        "attempt": complete_attempt_num,
-                        "coverage": coverage,
-                        "empty_shifts": empty_shifts,
-                        "score": score,
-                        "workload_imbalance": workload_imbalance,
-                        "weekend_imbalance": weekend_imbalance,
-                        "schedule": _attempt_snap["schedule"],
-                        "assignments": _attempt_snap["assignments"],
-                        "counts": _attempt_snap["counts"],
-                        "weekend_counts": _attempt_snap["weekend_counts"],
-                        "posts": _attempt_snap["posts"],
-                        "locked_mandatory": _attempt_snap["locked_mandatory"],
-                    }
-                )
-
-                logging.info(f"✅ Complete attempt {complete_attempt_num} saved successfully")
-
-            # Phase 4: Select best complete attempt
-            if not complete_attempts:
-                raise ConstraintViolationError("All complete attempts failed!")
-
-            best_attempt = self._select_best_complete_attempt(complete_attempts)
-
-            # Apply the best complete attempt
-            logging.info(f"\n{'=' * 80}")
-            logging.info(f"🏆 SELECTING BEST COMPLETE ATTEMPT #{best_attempt['attempt']}")
-            logging.info(f"{'=' * 80}")
-            logging.info(f"   Coverage: {best_attempt['coverage']:.2f}%")
-            logging.info(f"   Empty Shifts: {best_attempt['empty_shifts']}")
-            logging.info(f"   Overall Score: {best_attempt['score']:.2f}")
-            logging.info(f"   Workload Imbalance: {best_attempt['workload_imbalance']:.2f}")
-            logging.info(f"   Weekend Imbalance: {best_attempt['weekend_imbalance']:.2f}")
-
-            self.scheduler.schedule = best_attempt["schedule"]
-            self.scheduler.worker_assignments = best_attempt["assignments"]
-            self.scheduler.worker_shift_counts = best_attempt["counts"]
-            self.scheduler.worker_weekend_counts = best_attempt["weekend_counts"]
-            self.scheduler.worker_posts = best_attempt["posts"]
-            # Sync ALL schedule_builder references + restore locked mandatory
-            self._sync_builder_references()
-            self.scheduler.schedule_builder._locked_mandatory = best_attempt["locked_mandatory"]
-
-            # Phase 5: Finalization
-            if not self._finalization_phase():
-                raise ConstraintViolationError("Failed to finalize schedule")
-
+            initial_state = ScheduleState.from_scheduler(self.scheduler, include_locked=False)
+            pipeline = self._build_optimization_pipeline(max_improvement_loops, max_complete_attempts)
+            success, final_state, phase_trace = pipeline.run(self, initial_state)
+            self.scheduler.set_phase_trace(phase_trace)
+            self._log_pipeline_trace(phase_trace)
+            if not success:
+                failed_phase = next((phase.name for phase in phase_trace if not phase.success), "unknown")
+                raise ConstraintViolationError(f"Failed during phase: {failed_phase}")
+            final_state.apply_to_scheduler(self.scheduler)
+            if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
+                self._sync_builder_references()
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
             logging.info(f"Schedule generation orchestration completed successfully in {duration:.2f} seconds.")
@@ -212,6 +113,150 @@ class SchedulerCore:
                 raise e
             else:
                 raise SchedulerError(f"Orchestration failed: {e!s}")
+
+    def _build_optimization_pipeline(
+        self, max_improvement_loops: int, max_complete_attempts: int
+    ) -> OptimizationPipeline:
+        configured = self.config.get("pipeline_phases")
+        default_order = ["initialize", "mandatory", "distribution", "finalize"]
+        enabled = SchedulerConfig.resolve_pipeline_phases(configured, default_order=default_order)
+
+        # Named phase runners replace the previous anonymous lambdas so that:
+        # (a) the SchedulerCoreProtocol type is explicit at each call site, and
+        # (b) stack traces and logging show a meaningful function name.
+        def _run_initialize(core: SchedulerCoreProtocol) -> bool:
+            return core._initialize_schedule_phase()
+
+        def _run_mandatory(core: SchedulerCoreProtocol) -> bool:
+            return core._assign_mandatory_phase()
+
+        def _run_distribution(core: SchedulerCoreProtocol) -> bool:
+            return core._run_distribution_and_optimization_phase(
+                max_improvement_loops, max_complete_attempts
+            )
+
+        def _run_finalize(core: SchedulerCoreProtocol) -> bool:
+            return core._finalization_phase()
+
+        phases_catalog: dict[str, CoreMethodPhase] = {
+            "initialize": CoreMethodPhase("initialize", _run_initialize),
+            "mandatory": CoreMethodPhase("mandatory", _run_mandatory),
+            "distribution": CoreMethodPhase("distribution", _run_distribution),
+            "finalize": CoreMethodPhase("finalize", _run_finalize),
+        }
+
+        return OptimizationPipeline([phases_catalog[name] for name in enabled])
+
+    def _log_pipeline_trace(self, phase_trace) -> None:
+        if not phase_trace:
+            return
+        logging.info("Pipeline trace:")
+        for phase in phase_trace:
+            metrics = phase.metrics
+            logging.info(
+                "  - %s: %s (%.2fs, coverage=%.2f%%, empty=%s)",
+                phase.name,
+                "ok" if phase.success else "failed",
+                phase.duration_seconds,
+                metrics.get("coverage", 0.0),
+                metrics.get("empty_slots", 0),
+            )
+
+    def report_phase_progress(self, event: GenerationProgressEvent) -> None:
+        self.scheduler.emit_progress_event(event)
+
+    def _run_distribution_and_optimization_phase(self, max_improvement_loops: int, max_complete_attempts: int) -> bool:
+        # Save mandatory state (preserved across all attempts)
+        mandatory_snap = self._snapshot_state()
+
+        logging.info("=" * 80)
+
+        # SIMULATION MODE: Single attempt
+        if self.config.get("is_simulation", False):
+            logging.info("🧪 SIMULATION MODE: Limiting to 1 complete attempt")
+            max_complete_attempts = 1
+
+        logging.info(f"🔄 STARTING {max_complete_attempts} COMPLETE SCHEDULE ATTEMPTS")
+        logging.info("   Each attempt will respect Phase 1 (±10% OBJECTIVE) tolerance initially")
+        logging.info("   Phase 2 (±12% ABSOLUTE LIMIT) activates if coverage < 95%")
+        logging.info("=" * 80)
+
+        complete_attempts = []
+
+        for complete_attempt_num in range(1, max_complete_attempts + 1):
+            if self.scheduler.is_cancellation_requested():
+                logging.info("🛑 Schedule generation cancelled by user")
+                return False
+
+            logging.info(f"\n{'█' * 80}")
+            logging.info(f"🎯 COMPLETE ATTEMPT {complete_attempt_num}/{max_complete_attempts}")
+            logging.info(f"{'█' * 80}")
+
+            self._restore_state(mandatory_snap)
+
+            if not self._multiple_initial_distribution_attempts(complete_attempt_num):
+                logging.warning(f"Complete attempt {complete_attempt_num} failed at initial distribution")
+                continue
+
+            if not self._iterative_improvement_phase(max_improvement_loops):
+                logging.warning(f"Complete attempt {complete_attempt_num} failed at iterative improvement")
+
+            coverage = self._calculate_coverage_percentage()
+            empty_shifts = self.metrics.count_empty_shifts()
+            score = self.metrics.calculate_overall_schedule_score()
+            workload_imbalance = self.metrics.calculate_workload_imbalance()
+            weekend_imbalance = self.metrics.calculate_weekend_imbalance()
+
+            logging.info(f"\n📊 Complete Attempt {complete_attempt_num} Final Metrics:")
+            logging.info(f"   Coverage: {coverage:.2f}%")
+            logging.info(f"   Empty Shifts: {empty_shifts}")
+            logging.info(f"   Overall Score: {score:.2f}")
+            logging.info(f"   Workload Imbalance: {workload_imbalance:.2f}")
+            logging.info(f"   Weekend Imbalance: {weekend_imbalance:.2f}")
+
+            _attempt_snap = self._snapshot_state()
+            complete_attempts.append(
+                {
+                    "attempt": complete_attempt_num,
+                    "coverage": coverage,
+                    "empty_shifts": empty_shifts,
+                    "score": score,
+                    "workload_imbalance": workload_imbalance,
+                    "weekend_imbalance": weekend_imbalance,
+                    "schedule": _attempt_snap["schedule"],
+                    "assignments": _attempt_snap["assignments"],
+                    "counts": _attempt_snap["counts"],
+                    "weekend_counts": _attempt_snap["weekend_counts"],
+                    "posts": _attempt_snap["posts"],
+                    "locked_mandatory": _attempt_snap["locked_mandatory"],
+                }
+            )
+
+            logging.info(f"✅ Complete attempt {complete_attempt_num} saved successfully")
+
+        if not complete_attempts:
+            return False
+
+        best_attempt = self._select_best_complete_attempt(complete_attempts)
+
+        logging.info(f"\n{'=' * 80}")
+        logging.info(f"🏆 SELECTING BEST COMPLETE ATTEMPT #{best_attempt['attempt']}")
+        logging.info(f"{'=' * 80}")
+        logging.info(f"   Coverage: {best_attempt['coverage']:.2f}%")
+        logging.info(f"   Empty Shifts: {best_attempt['empty_shifts']}")
+        logging.info(f"   Overall Score: {best_attempt['score']:.2f}")
+        logging.info(f"   Workload Imbalance: {best_attempt['workload_imbalance']:.2f}")
+        logging.info(f"   Weekend Imbalance: {best_attempt['weekend_imbalance']:.2f}")
+
+        self.scheduler.schedule = best_attempt["schedule"]
+        self.scheduler.worker_assignments = best_attempt["assignments"]
+        self.scheduler.worker_shift_counts = best_attempt["counts"]
+        self.scheduler.worker_weekend_counts = best_attempt["weekend_counts"]
+        self.scheduler.worker_posts = best_attempt["posts"]
+        if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
+            self._sync_builder_references()
+            self.scheduler.set_locked_mandatory(best_attempt["locked_mandatory"])
+        return True
 
     def _sync_builder_references(self):
         """
@@ -254,15 +299,14 @@ class SchedulerCore:
         """Return a lightweight snapshot of the current scheduler state.
 
         Uses type-aware copies instead of ``copy.deepcopy`` to avoid the
-        overhead of the generic deepcopy machinery:
+        overhead of generic deepcopy machinery:
 
-        * ``schedule``          – ``dict[str, list[str|None]]``  → per-list copy
-        * ``worker_assignments``– ``dict[str, set[str]]``        → per-set copy
-        * ``worker_shift_counts``     – ``dict[str, int]``       → flat dict copy
-        * ``worker_weekend_counts``   – ``dict[str, int]``       → flat dict copy
-        * ``worker_posts``      – ``dict[str, set]``             → per-set copy
-        * ``_locked_mandatory`` – ``set[tuple[str, datetime]]``  → set copy
-          (only when *include_locked* is True)
+        * ``schedule``          – ``dict[datetime, list[str|None]]``
+        * ``assignments``       – ``dict[str, set[datetime]]``
+        * ``counts``            – ``dict[str, int]``
+        * ``weekend_counts``    – ``dict[str, int]``
+        * ``posts``             – ``dict[str, set[int]]``
+        * ``locked_mandatory``  – ``set[tuple[str, datetime]]`` (optional)
         """
         s = self.scheduler
         snap: dict[str, Any] = {
@@ -273,10 +317,10 @@ class SchedulerCore:
             "posts": {k: v.copy() for k, v in s.worker_posts.items()},
         }
         if include_locked:
-            snap["locked_mandatory"] = s.schedule_builder._locked_mandatory.copy()
+            snap["locked_mandatory"] = s.get_locked_mandatory()
         return snap
 
-    def _restore_state(self, snap: dict[str, Any], *, sync_builder: bool = True) -> None:
+    def _restore_state(self, snap: dict[str, Any], *, sync_builder: bool = True, consume: bool = False) -> None:
         """Restore scheduler state from a snapshot produced by ``_snapshot_state``.
 
         Args:
@@ -284,17 +328,41 @@ class SchedulerCore:
             sync_builder: When True (default) call ``_sync_builder_references``
                 after restoring so that ``schedule_builder`` and dependent
                 objects point at the newly restored dicts.
+            consume: When True the snapshot is treated as single-use — its
+                already-copied objects are assigned directly to the scheduler
+                (O(1) per collection) instead of being copied again.  The
+                caller MUST NOT reuse the snapshot after passing consume=True.
+                Use this for per-operation rollback checkpoints and any other
+                snapshot that is discarded immediately after restoration.
+                Leave False (default) for snapshots that are restored more
+                than once (e.g. ``mandatory_snap`` in the initial-distribution
+                loop) so the template stays uncorrupted across restores.
         """
         s = self.scheduler
-        s.schedule = snap["schedule"]
-        s.worker_assignments = snap["assignments"]
-        s.worker_shift_counts = snap["counts"]
-        s.worker_weekend_counts = snap["weekend_counts"]
-        s.worker_posts = snap["posts"]
+        if consume:
+            # Single-use path: the snapshot already holds independent copies
+            # (created by _snapshot_state).  Assigning them directly is O(1)
+            # and safe because the caller will not restore from this snapshot
+            # again.
+            s.schedule = snap["schedule"]
+            s.worker_assignments = snap["assignments"]
+            s.worker_shift_counts = snap["counts"]
+            s.worker_weekend_counts = snap["weekend_counts"]
+            s.worker_posts = snap["posts"]
+        else:
+            # Multi-use path: create fresh copies so the scheduler cannot
+            # mutate the snapshot's objects in place — corrupted snapshots
+            # would cause the optimizer to restore stale/incorrect state on
+            # subsequent attempts.
+            s.schedule = {k: v[:] for k, v in snap["schedule"].items()}
+            s.worker_assignments = {k: v.copy() for k, v in snap["assignments"].items()}
+            s.worker_shift_counts = snap["counts"].copy()
+            s.worker_weekend_counts = snap["weekend_counts"].copy()
+            s.worker_posts = {k: v.copy() for k, v in snap["posts"].items()}
         if sync_builder:
             self._sync_builder_references()
         if "locked_mandatory" in snap:
-            s.schedule_builder._locked_mandatory = snap["locked_mandatory"]
+            s.set_locked_mandatory(snap["locked_mandatory"])
 
     def _sanitize_restored_attempt_state(self) -> dict[str, int]:
         """
@@ -474,32 +542,19 @@ class SchedulerCore:
 
             # Determine number of initial attempts based on complexity
             complexity_score = adaptive_config.get("complexity_score", 0)
-
-            # UPDATED: Reduced maximum attempts from 60 to 40 for better performance
-            # SIMULATION MODE: Cap attempts to ensure responsiveness
-            if is_simulation:
-                num_attempts = 5
-                logging.info("🧪 Simulation Mode: Capped initial distribution attempts to 5")
-            elif complexity_score < 1000:
-                num_attempts = 10
-            elif complexity_score < 5000:
-                num_attempts = 20
-            elif complexity_score < 15000:
-                num_attempts = 30
-            else:
-                num_attempts = 40  # Maximum reduced from 60 to 40
-
-            # When prior-period data is loaded the initial worker ordering is already
-            # biased by accumulated shift counts, so there is less variance between
-            # attempts.  Halve the attempt count to recover most of the extra time
-            # cost introduced by the prior-data constraints, while keeping at least 5.
             has_prior = bool(getattr(self.scheduler, "prior_assignments", {}))
-            if has_prior and not is_simulation:
-                num_attempts = max(5, num_attempts // 2)
-                logging.info(f"📅 Prior calendar loaded: reduced initial attempts to {num_attempts}")
+            num_attempts = self._determine_initial_distribution_attempts(
+                complexity_score=complexity_score,
+                is_simulation=is_simulation,
+                has_prior=has_prior,
+            )
 
             logging.info(f"Problem complexity: {complexity_score:.0f}")
             logging.info(f"Number of initial distribution attempts: {num_attempts}")
+
+            # Compute fill_attempts ONCE for this full Phase 2.5 run.
+            fill_attempts = adaptive_config.get("fill_attempts", 16)
+            logging.info(f"Configured fill attempts per strategy: {fill_attempts}")
 
             # Save current mandatory state (this must be preserved)
             mandatory_snap = self._snapshot_state()
@@ -522,10 +577,12 @@ class SchedulerCore:
 
             # Start adaptive iteration manager timer
             self.adaptive_manager.start_time = datetime.now()
+            phase25_start = perf_counter()
 
             for attempt_num in range(1, num_attempts + 1):
+                attempt_start = perf_counter()
                 # Check cancellation flag
-                if getattr(self.scheduler, "_cancelled", False):
+                if self.scheduler.is_cancellation_requested():
                     logging.info("🛑 Initial distribution cancelled by user")
                     break
 
@@ -540,11 +597,14 @@ class SchedulerCore:
                 if _prior_seeded_counts:
                     self.scheduler.worker_shift_counts.update(_prior_seeded_counts)
 
-                # CRITICAL: Sync ALL schedule_builder references to the new deep-copied objects
+                # _restore_state already called _sync_builder_references so the
+                # builder's mutable references (schedule, assignments, …) are up to
+                # date.  _build_optimization_caches() is intentionally NOT called here:
+                # all four caches it rebuilds (worker, incompatibility, mandatory-dates,
+                # date) are derived exclusively from static worker config and calendar
+                # data — they never change between attempts.  Calling it 40× per
+                # complete attempt was the main cause of the Fase-1/Fase-2 slowdown.
                 if hasattr(self.scheduler, "schedule_builder"):
-                    # _restore_state already called _sync_builder_references; just rebuild caches
-                    # CRITICAL: Rebuild caches to reflect new state (prevents cache staling between attempts)
-                    self.scheduler.schedule_builder._build_optimization_caches()
                     attempt_state_stats = self._sanitize_restored_attempt_state()
                 else:
                     attempt_state_stats = {
@@ -557,7 +617,6 @@ class SchedulerCore:
                     }
 
                 logging.info(f"Restored {len(mandatory_snap['locked_mandatory'])} locked mandatory shifts")
-                logging.info("Rebuilt schedule builder caches for fresh attempt")
                 if attempt_state_stats["stray_prefilled_slots"] > 0:
                     logging.warning(
                         "Cleared %s stray prefilled non-mandatory slots before initial fill",
@@ -579,7 +638,8 @@ class SchedulerCore:
                 logging.info(f"Strategy for attempt {attempt_num} (effective {effective_attempt}): {strategy['name']}")
 
                 # Perform initial fill with this strategy
-                success = self._perform_initial_fill_with_strategy(strategy)
+                success = self._perform_initial_fill_with_strategy(strategy, fill_attempts=fill_attempts)
+                fill_stats = getattr(self, "_last_initial_fill_stats", {})
 
                 # Log state after fill
                 empty_after = sum(
@@ -591,7 +651,15 @@ class SchedulerCore:
                 if not success:
                     logging.warning(f"Attempt {attempt_num} failed to fill schedule")
                     attempts_results.append(
-                        {"attempt": attempt_num, "strategy": strategy["name"], "success": False, "score": 0}
+                        {
+                            "attempt": attempt_num,
+                            "strategy": strategy["name"],
+                            "success": False,
+                            "score": 0,
+                            "duration_sec": perf_counter() - attempt_start,
+                            "fill_duration_sec": fill_stats.get("duration_sec", 0.0),
+                            "fill_attempts": fill_stats.get("fill_attempts", fill_attempts),
+                        }
                     )
                     continue
 
@@ -619,11 +687,14 @@ class SchedulerCore:
                         "empty_shifts": empty_shifts,
                         "workload_imbalance": workload_imbalance,
                         "weekend_imbalance": weekend_imbalance,
+                        "duration_sec": perf_counter() - attempt_start,
+                        "fill_duration_sec": fill_stats.get("duration_sec", 0.0),
+                        "fill_attempts": fill_stats.get("fill_attempts", fill_attempts),
                     }
                 )
 
                 # Check if this is the best so far
-                if score > best_score:
+                if self._is_meaningful_score_improvement(score, best_score):
                     best_score = score
                     best_attempt = attempt_num
                     no_improve_count = 0  # Reset early-stop counter on improvement
@@ -634,8 +705,8 @@ class SchedulerCore:
                 else:
                     no_improve_count += 1
 
-                # Early stop: if no improvement for 8 consecutive attempts, stop
-                if no_improve_count >= 8 and attempt_num >= 10:
+                # Early stop: require fewer non-improving attempts to cut wasted cycles.
+                if no_improve_count >= 6 and attempt_num >= 8:
                     logging.info(
                         f"⏩ Early stop: no improvement in {no_improve_count} consecutive attempts "
                         f"(best score: {best_score:.2f} from attempt #{best_attempt})"
@@ -657,9 +728,10 @@ class SchedulerCore:
 
             # Display results table
             logging.info(
-                f"\n{'Attempt':<10} {'Strategy':<25} {'Score':<10} {'Empty':<8} {'Work Imb':<10} {'Weekend Imb':<12}"
+                f"\n{'Attempt':<10} {'Strategy':<25} {'Score':<10} {'Empty':<8} "
+                f"{'Work Imb':<10} {'Weekend Imb':<12} {'Time(s)':<8} {'Fill(s)':<8} {'Fills':<6}"
             )
-            logging.info("─" * 90)
+            logging.info("─" * 122)
 
             for result in attempts_results:
                 if result["success"]:
@@ -667,15 +739,21 @@ class SchedulerCore:
                     logging.info(
                         f"{marker} {result['attempt']:<8} {result['strategy']:<25} "
                         f"{result['score']:<10.2f} {result['empty_shifts']:<8} "
-                        f"{result['workload_imbalance']:<10.2f} {result['weekend_imbalance']:<12.2f}"
+                        f"{result['workload_imbalance']:<10.2f} {result['weekend_imbalance']:<12.2f} "
+                        f"{result.get('duration_sec', 0.0):<8.2f} {result.get('fill_duration_sec', 0.0):<8.2f} "
+                        f"{result.get('fill_attempts', fill_attempts):<6}"
                     )
                 else:
-                    logging.info(f"  {result['attempt']:<8} {result['strategy']:<25} FAILED")
+                    logging.info(
+                        f"  {result['attempt']:<8} {result['strategy']:<25} FAILED "
+                        f"{result.get('duration_sec', 0.0):<8.2f} {result.get('fill_duration_sec', 0.0):<8.2f} "
+                        f"{result.get('fill_attempts', fill_attempts):<6}"
+                    )
 
             # Apply the best attempt
             logging.info(f"\n🏆 Applying best attempt #{best_attempt} with score {best_score:.2f}")
 
-            self._restore_state(best_snap)
+            self._restore_state(best_snap, consume=True)
 
             logging.info(f"Restored {len(best_snap['locked_mandatory'])} locked mandatory shifts from best attempt")
 
@@ -688,6 +766,14 @@ class SchedulerCore:
             # Export initial calendar PDF before optimization
             self._export_initial_calendar_pdf()
 
+            phase25_duration = perf_counter() - phase25_start
+            logging.info(
+                "⏱️ Phase 2.5 timing summary: attempts=%s, fill_attempts=%s, total_time=%.2fs, avg_attempt=%.2fs",
+                len(attempts_results),
+                fill_attempts,
+                phase25_duration,
+                (phase25_duration / len(attempts_results)) if attempts_results else 0.0,
+            )
             logging.info("=" * 80)
             logging.info("✅ Multiple initial distribution phase completed successfully")
             logging.info("=" * 80)
@@ -697,6 +783,39 @@ class SchedulerCore:
         except Exception as e:
             logging.error(f"Error during multiple initial distribution attempts: {e!s}", exc_info=True)
             return False
+
+    def _determine_initial_distribution_attempts(
+        self, *, complexity_score: float, is_simulation: bool, has_prior: bool
+    ) -> int:
+        """
+        Choose Phase 2.5 attempt count with stricter caps for complex cases.
+        """
+        if is_simulation:
+            logging.info("🧪 Simulation Mode: Capped initial distribution attempts to 5")
+            return 5
+
+        if complexity_score < 1000:
+            attempts = 8
+        elif complexity_score < 5000:
+            attempts = 14
+        elif complexity_score < 15000:
+            attempts = 20
+        else:
+            attempts = 28
+
+        # Prior-period bias lowers exploration variance: reduce attempts further.
+        if has_prior:
+            attempts = max(4, attempts // 2)
+            logging.info(f"📅 Prior calendar loaded: reduced initial attempts to {attempts}")
+
+        return attempts
+
+    @staticmethod
+    def _is_meaningful_score_improvement(score: float, best_score: float, min_delta: float = 0.25) -> bool:
+        """Return True only for meaningful score gains to avoid pseudo-improvements."""
+        if best_score < 0:
+            return True
+        return (score - best_score) >= min_delta
 
     def _iterative_improvement_phase(self, max_improvement_loops: int) -> bool:
         """
@@ -751,24 +870,38 @@ class SchedulerCore:
             sa_cooling_rate = 0.90  # was 0.7 — too aggressive for 70+ iterations; 0.9 keeps T>0.01 for ~45 iters
             sa_max_drop = -2.0  # never accept a drop worse than this
 
+            # Chained score: tracks actual current score without redundant recalculation.
+            # Updated to after_score of last executed (non-reverted) operation so that
+            # before_score for the next operation avoids an extra calculate_overall_schedule_score()
+            # call per operation per cycle.
+            chain_score = current_overall_score
+
             while overall_improvement_made and improvement_loop_count < max_improvement_loops:
                 loop_start_time = datetime.now()
                 improvement_loop_count += 1
 
                 logging.info(f"--- Starting Enhanced Improvement Loop {improvement_loop_count} ---")
 
-                # Get current state for decision making
+                # Compute the three state metrics exactly once per cycle and reuse them in
+                # both the current_state dict (for should_skip_operation) and in
+                # prioritize_operations_dynamically to avoid six metric calls per cycle.
                 current_state = {
                     "empty_shifts_count": self.metrics.count_empty_shifts(),
                     "workload_imbalance": self.metrics.calculate_workload_imbalance(),
                     "weekend_imbalance": self.metrics.calculate_weekend_imbalance(),
                 }
 
-                # Record score at the start of this cycle for aggregate comparison
-                cycle_start_score = self.metrics.calculate_overall_schedule_score()
+                # Record score at the start of this cycle for aggregate comparison.
+                # Reuse the chained score (= current_overall_score from the previous
+                # loop-end, or the initial score on the first iteration) to avoid an extra
+                # calculate_overall_schedule_score() call.
+                cycle_start_score = chain_score
 
-                # Get dynamically prioritized operations
-                prioritized_operations = self.prioritizer.prioritize_operations_dynamically()
+                # Get dynamically prioritized operations, passing the pre-computed state so
+                # the prioritizer doesn't recompute the same three metrics.
+                prioritized_operations = self.prioritizer.prioritize_operations_dynamically(
+                    current_state=current_state
+                )
 
                 # Execute operations with enhanced tracking
                 operation_results = {}
@@ -798,14 +931,16 @@ class SchedulerCore:
                             }
                             continue
 
-                        # Per-operation checkpoint: save state before non-trivial operations
+                        # Per-operation checkpoint: save state before non-trivial operations.
+                        # Placed AFTER skip checks so skipped operations never pay snapshot cost.
                         if operation_name != "synchronize_tracking_data":
                             op_checkpoint = self._snapshot_state()
                         else:
                             op_checkpoint = None
 
-                        # Measure performance of operation
-                        before_score = self.metrics.calculate_overall_schedule_score()
+                        # Reuse chained score as before_score — avoids a redundant
+                        # calculate_overall_schedule_score() call for every operation.
+                        before_score = chain_score
                         operation_start_time = datetime.now()
 
                         # Execute operation
@@ -841,16 +976,22 @@ class SchedulerCore:
                                     "improved": False,
                                     "sa_accepted": True,
                                 }
+                                # State accepted — advance chain score
+                                chain_score = after_score
                                 continue
                             # Revert: SA rejected or drop too large
-                            self._restore_state(op_checkpoint)
+                            self._restore_state(op_checkpoint, consume=True)
                             logging.info(f"↩️  {operation_name}: revertido ({before_score:.2f} → {after_score:.2f})")
                             operation_results[operation_name] = {
                                 "improved": False,
                                 "reverted": True,
                             }
                             reverted_ops.add(operation_name)
+                            # chain_score stays at before_score (state was restored)
                             continue
+
+                        # Advance chain score — state not reverted
+                        chain_score = after_score
 
                         if operation_made_change and operation_name != "synchronize_tracking_data":
                             is_significant, improvement_ratio = self.metrics.evaluate_improvement_quality(
@@ -879,6 +1020,8 @@ class SchedulerCore:
 
                 # Update current score after all operations
                 current_overall_score = self.metrics.calculate_overall_schedule_score(log_components=True)
+                # Resync chain score so the next cycle starts from the authoritative post-loop score
+                chain_score = current_overall_score
 
                 # Track iteration progress with enhanced monitoring
                 progress_data = self.progress_monitor.track_iteration_progress(
@@ -903,26 +1046,27 @@ class SchedulerCore:
                     logging.info(f"🛑 Parada temprana activada: {reason}")
                     break
 
-                # Use aggregate cycle score improvement OR per-operation significance as loop guard
-                cycle_end_score = self.metrics.calculate_overall_schedule_score()
-                cycle_delta = cycle_end_score - cycle_start_score
+                # Use aggregate cycle score improvement OR per-operation significance as loop guard.
+                # current_overall_score is already the authoritative end-of-cycle score — reuse it
+                # instead of calling calculate_overall_schedule_score() a second time.
+                cycle_delta = current_overall_score - cycle_start_score
                 overall_improvement_made = cycle_improvement_made or cycle_delta > 0.01
 
                 # Checkpoint: save state if this is the best score so far
-                if cycle_end_score > best_loop_score + 0.001:
-                    best_loop_score = cycle_end_score
+                if current_overall_score > best_loop_score + 0.001:
+                    best_loop_score = current_overall_score
                     best_loop_state = self._snapshot_state()
                     logging.info(f"💾 Checkpoint guardado: score {best_loop_score:.2f}")
 
                 if cycle_delta > 0.01 and not cycle_improvement_made:
                     logging.info(
                         f"📈 Aggregate cycle improvement: +{cycle_delta:.2f} "
-                        f"({cycle_start_score:.2f} → {cycle_end_score:.2f})"
+                        f"({cycle_start_score:.2f} → {current_overall_score:.2f})"
                     )
                 elif cycle_improvement_made and cycle_delta <= 0.01:
                     logging.info(
                         f"📈 Operations improved components but aggregate score flat/down "
-                        f"({cycle_start_score:.2f} → {cycle_end_score:.2f}), continuing..."
+                        f"({cycle_start_score:.2f} → {current_overall_score:.2f}), continuing..."
                     )
 
                 # Log cycle summary
@@ -949,7 +1093,7 @@ class SchedulerCore:
                     f"🔄 Restaurando mejor checkpoint: {final_score:.2f} → {best_loop_score:.2f} "
                     f"(+{best_loop_score - final_score:.2f})"
                 )
-                self._restore_state(best_loop_state)
+                self._restore_state(best_loop_state, consume=True)
 
             # Phase 3.5: Advanced distribution engine as final push
             logging.info("\n" + "=" * 80)
@@ -1013,7 +1157,7 @@ class SchedulerCore:
                             f"⚠️ Phase 3.6 strict optimizer WORSENED score "
                             f"({score_before_strict:.2f} → {score_after_strict:.2f}). Reverting."
                         )
-                        self._restore_state(state_before_strict)
+                        self._restore_state(state_before_strict, consume=True)
                     elif balance_achieved:
                         logging.info(f"✅ Perfect balance achieved: All workers within ±{_bal_tol} shift of target")
                     else:
@@ -1177,7 +1321,7 @@ class SchedulerCore:
                 logging.warning("   RESTORING pre-finalization state...")
 
                 # Restore pre-finalization state
-                self._restore_state(pre_finalization_state)
+                self._restore_state(pre_finalization_state, consume=True)
 
                 logging.info("✅ Pre-finalization state restored successfully")
             else:
@@ -2334,7 +2478,7 @@ class SchedulerCore:
         chosen_any["attempt_num"] = attempt_num
         return chosen_any
 
-    def _perform_initial_fill_with_strategy(self, strategy: dict[str, Any]) -> bool:
+    def _perform_initial_fill_with_strategy(self, strategy: dict[str, Any], fill_attempts: int | None = None) -> bool:
         """
         Perform initial schedule fill using the specified strategy.
 
@@ -2371,17 +2515,25 @@ class SchedulerCore:
 
             logging.info(f"Filling schedule with {len(workers_list)} workers using '{strategy['name']}' strategy")
 
-            # Perform initial fill
-            # Use adaptive iteration config to determine fill attempts
-            adaptive_config = self.adaptive_manager.calculate_adaptive_iterations()
-            fill_attempts = adaptive_config.get("fill_attempts", 16)
+            # Perform initial fill (fill_attempts is now computed once per Phase 2.5)
+            if fill_attempts is None:
+                adaptive_config = self.adaptive_manager.calculate_adaptive_iterations()
+                fill_attempts = adaptive_config.get("fill_attempts", 16)
 
-            logging.info(f"Using {fill_attempts} fill attempts based on adaptive configuration")
+            logging.info(f"Using {fill_attempts} fill attempts for this strategy")
 
             # Call schedule builder's fill method with custom worker ordering
+            fill_start = perf_counter()
             success = self.scheduler.schedule_builder._try_fill_empty_shifts_with_worker_order(
                 workers_list, max_attempts=fill_attempts
             )
+            fill_duration = perf_counter() - fill_start
+            self._last_initial_fill_stats = {
+                "duration_sec": fill_duration,
+                "fill_attempts": fill_attempts,
+                "strategy": strategy["name"],
+            }
+            logging.info("⏱️ Fill attempt runtime: %.2fs", fill_duration)
 
             if success:
                 logging.info(f"✅ Initial fill successful with '{strategy['name']}' strategy")

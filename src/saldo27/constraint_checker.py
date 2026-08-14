@@ -770,7 +770,7 @@ class ConstraintChecker:
         # Incompatibility violations
         mandatory_pairs: set[tuple] = set()
         if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
-            mandatory_pairs = getattr(self.scheduler.schedule_builder, "_locked_mandatory", set())
+            mandatory_pairs = self.scheduler.get_locked_mandatory()
 
         for date, shifts in self.scheduler.schedule.items():
             workers_on_date = [w for w in shifts if w is not None]

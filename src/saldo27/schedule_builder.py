@@ -69,6 +69,7 @@ class ScheduleBuilder:
         self._date_cache: dict[datetime, dict[str, Any]] = {}
         self._incompatibility_cache: dict[str, set] = {}
         self._assignment_cache: dict[str, Any] = {}
+        self._unavailability_cache: dict[tuple[str, datetime], bool] = {}
 
         self.iteration_manager = AdaptiveIterationManager(scheduler)
         self.adaptive_config = self.iteration_manager.calculate_adaptive_iterations()
@@ -253,6 +254,7 @@ class ScheduleBuilder:
         """Clear optimization caches when data changes significantly"""
         self._assignment_cache.clear()
         self._incompatibility_cache.clear()
+        self._unavailability_cache.clear()
 
     # ========================================
     # 2. UTILITY AND HELPER METHODS
@@ -279,6 +281,30 @@ class ScheduleBuilder:
     # ========================================
     # 3. WORKER CONSTRAINT CHECKING
     # ========================================
+
+    # ------------------------------------------------------------------
+    # Public API for mandatory-lock state — use these from external modules
+    # instead of accessing _locked_mandatory directly.
+    # ------------------------------------------------------------------
+
+    def is_locked_mandatory(self, worker_id: str, date: object) -> bool:
+        """Return True if (worker_id, date) is in the locked-mandatory set."""
+        return (worker_id, date) in self._locked_mandatory
+
+    def is_mandatory(self, worker_id: object, date: object) -> bool:
+        """Public alias for _is_mandatory; safe to call from external modules."""
+        return self._is_mandatory(worker_id, date)
+
+    def get_locked_mandatory(self) -> set:
+        """Return a copy of the locked-mandatory set."""
+        return set(self._locked_mandatory)
+
+    def set_locked_mandatory(self, locked: set | tuple) -> None:
+        """Replace the entire locked-mandatory collection (used on state restore)."""
+        self._locked_mandatory = set(locked)
+
+    # ------------------------------------------------------------------
+
     def _is_mandatory(self, worker_id, date):
         # Use pre-parsed cache for O(1) lookup instead of re-parsing each time
         if hasattr(self, "_mandatory_dates_cache") and worker_id in self._mandatory_dates_cache:
@@ -409,11 +435,15 @@ class ScheduleBuilder:
         Returns:
             bool: True if worker is unavailable, False otherwise
         """
+        cache_key = (str(worker_id), date)
+        if cache_key in self._unavailability_cache:
+            return self._unavailability_cache[cache_key]
+
         # Get worker data
-        worker_data = next(
-            (w for w in self.workers_data if w["id"] == worker_id), None
-        )  # Corrected to worker_data as per user
+        worker_cached = self._get_worker_cached(worker_id)
+        worker_data = worker_cached["data"] if worker_cached else None
         if not worker_data:
+            self._unavailability_cache[cache_key] = True
             return True
 
         # Check work periods - if work_periods is empty, worker is available for all dates
@@ -422,9 +452,11 @@ class ScheduleBuilder:
             try:
                 work_ranges = self.date_utils.parse_date_ranges(work_periods_str)
                 if not any(start <= date <= end for start, end in work_ranges):
+                    self._unavailability_cache[cache_key] = True
                     return True  # Not within any defined work period
             except Exception as e:
                 logging.error(f"Error parsing work_periods for {worker_id}: {e}")
+                self._unavailability_cache[cache_key] = True
                 return True  # Fail safe
 
         # Check days off
@@ -433,11 +465,14 @@ class ScheduleBuilder:
             try:
                 off_ranges = self.date_utils.parse_date_ranges(days_off_str)
                 if any(start <= date <= end for start, end in off_ranges):
+                    self._unavailability_cache[cache_key] = True
                     return True
             except Exception as e:
                 logging.error(f"Error parsing days_off for {worker_id}: {e}")
+                self._unavailability_cache[cache_key] = True
                 return True  # Fail safe
 
+        self._unavailability_cache[cache_key] = False
         return False
 
     def _would_violate_tolerance(self, worker_id, date, allow_relaxation=False, ignore_pacing: bool = False):
@@ -458,7 +493,8 @@ class ScheduleBuilder:
         Returns:
             bool: True if would violate tolerance (should block), False if OK
         """
-        worker_data = next((w for w in self.workers_data if w["id"] == worker_id), None)
+        worker_cached = self._get_worker_cached(worker_id)
+        worker_data = worker_cached["data"] if worker_cached else None
         if not worker_data:
             return False  # Unknown worker, let other checks handle it
 
@@ -480,11 +516,14 @@ class ScheduleBuilder:
         # Count mandatory shifts already assigned
         mandatory_count = 0
         mandatory_str = worker_data.get("mandatory_days", "")
-        mandatory_dates_set: set = set()
-        if mandatory_str:
+        mandatory_dates_set: set = set(self._mandatory_dates_cache.get(worker_id, set()))
+        if mandatory_dates_set:
+            mandatory_count = sum(1 for d in all_assignments if d in mandatory_dates_set)
+        elif mandatory_str:
             try:
                 mandatory_dates_set = set(self.date_utils.parse_dates(mandatory_str))
                 mandatory_count = sum(1 for d in all_assignments if d in mandatory_dates_set)
+                self._mandatory_dates_cache[worker_id] = mandatory_dates_set
             except (TypeError, ValueError) as e:
                 logging.debug(f"Error parsing mandatory_days for {worker_id} in tolerance check: {e!s}")
                 pass
@@ -687,12 +726,14 @@ class ScheduleBuilder:
         - Performs intersection operation for faster checking
         - Early termination on incompatibility detection
         """
-        worker_to_check_data = next((w for w in self.workers_data if w["id"] == worker_id_to_check), None)
-        if not worker_to_check_data:
+        worker_id_str = str(worker_id_to_check)
+        if worker_id_str not in self._worker_cache:
             return True  # Should not happen, but fail safe
 
         # Convert to set for faster lookups
-        incompatible_with_candidate = set(str(id) for id in worker_to_check_data.get("incompatible_with", []))
+        incompatible_with_candidate = {
+            str(x) for x in self._incompatibility_cache.get(worker_id_to_check, set())
+        }
 
         # Convert assigned workers to set for faster lookups, excluding None values
         assigned_workers_set = {
@@ -706,13 +747,10 @@ class ScheduleBuilder:
             return False
 
         # Bidirectional check - check if any assigned worker has candidate in their incompatible list
-        worker_id_str = str(worker_id_to_check)
         for assigned_id in assigned_workers_set:
-            assigned_worker_data = next((w for w in self.workers_data if str(w["id"]) == assigned_id), None)
-            if assigned_worker_data:
-                assigned_incompatible = set(str(id) for id in assigned_worker_data.get("incompatible_with", []))
-                if worker_id_str in assigned_incompatible:
-                    return False
+            assigned_incompatible = {str(x) for x in self._incompatibility_cache.get(assigned_id, set())}
+            if worker_id_str in assigned_incompatible:
+                return False
 
         return True  # No incompatibilities found
 
@@ -2054,11 +2092,12 @@ class ScheduleBuilder:
             # Calculate shift deficit early for logging purposes
             current_shifts = len(self.worker_assignments[worker_id])
             target_shifts = worker.get("target_shifts", 0)
-            worker_data = next((w for w in self.workers_data if w["id"] == worker_id), None)
-            mandatory_dates = set()
-            if worker_data and worker_data.get("mandatory_days"):
+            worker_data = worker
+            mandatory_dates = set(self._mandatory_dates_cache.get(worker_id, set()))
+            if not mandatory_dates and worker_data.get("mandatory_days"):
                 try:
                     mandatory_dates = set(self.date_utils.parse_dates(worker_data["mandatory_days"]))
+                    self._mandatory_dates_cache[worker_id] = mandatory_dates
                 except (TypeError, ValueError) as e:
                     logging.debug(f"Error parsing mandatory_days for {worker_id} in worker score: {e!s}")
                     pass
@@ -3689,6 +3728,7 @@ class ScheduleBuilder:
 
         shifts_filled = 0
         made_change = False
+        total_days = max(1, (self.end_date - self.start_date).days)
 
         # Build a stable position map so that 'list_position' tiebreaker can sort
         # tied candidates by their order in workers_list rather than alphabetically.
@@ -3779,45 +3819,46 @@ class ScheduleBuilder:
                 # CRITICAL FIX: Collect ALL valid candidates with their scores
                 # Then select based on score + tiebreaker strategy
                 valid_candidates = []  # List of (worker_id, score, worker_data)
+                elapsed_days = max(0, (date_val - self.start_date).days)
+                elapsed_frac = max(0.01, elapsed_days / total_days)
 
-                for position, worker_data in enumerate(workers_list):
+                others_now = [
+                    w for i, w in enumerate(self.schedule.get(date_val, [])) if i != post_val and w is not None
+                ]
+
+                for worker_data in workers_list:
                     worker_id = worker_data["id"]
 
                     # Check if worker can be assigned
                     score = self._calculate_worker_score(worker_data, date_val, post_val, relaxation_level=0)
 
                     if score > float("-inf"):
-                        # Additional incompatibility check
-                        others_now = [
-                            w for i, w in enumerate(self.schedule.get(date_val, [])) if i != post_val and w is not None
-                        ]
-
+                        # Incompatibility check with co-workers on the same day
                         if not self._check_incompatibility_with_list(worker_id, others_now):
                             continue
 
                         if not self._can_assign_worker(worker_id, date_val, post_val):
                             continue
 
-                        # CRITICAL: Check ±8% tolerance before assignment
+                        # Workload tolerance guard (±8%)
                         if self._would_violate_tolerance(worker_id, date_val, allow_relaxation=False):
                             continue
 
-                        # CRITICAL: Final check - ensure slot not protected
+                        # Ensure the slot is not protected by a mandatory assignment
                         if self.schedule[date_val][post_val] is not None:
                             existing = self.schedule[date_val][post_val]
-                            if (existing, date_val) in self._locked_mandatory or self._is_mandatory(existing, date_val):
+                            if (existing, date_val) in self._locked_mandatory or self._is_mandatory(
+                                existing, date_val
+                            ):
                                 continue
 
                         # Temporal pacing adjustment: penalise workers ahead of their
                         # scheduled pace and reward those behind. This prevents
                         # front-loading by naturally spreading assignments across the
                         # full scheduling period without introducing hard blocks.
-                        _total_days = max(1, (self.end_date - self.start_date).days)
-                        _elapsed_days = max(0, (date_val - self.start_date).days)
-                        _elapsed_frac = max(0.01, _elapsed_days / _total_days)
                         _wk_target = worker_data.get("target_shifts", 0)
                         if _wk_target > 0:
-                            _expected_so_far = _wk_target * _elapsed_frac
+                            _expected_so_far = _wk_target * elapsed_frac
                             _current_count = len(self.worker_assignments.get(worker_id, set()))
                             # pace_delta > 0: behind pace (bonus); < 0: ahead of pace (penalty)
                             _pace_delta = (_expected_so_far - _current_count) / _wk_target
@@ -3844,8 +3885,8 @@ class ScheduleBuilder:
                             rcl = [c for c in valid_candidates if c[1] >= threshold]
                         else:
                             rcl = valid_candidates  # All tied – pure random
-                        selected = random.choice(rcl)
-                        best_worker = selected[0]
+                        random.shuffle(rcl)
+                        best_worker = rcl[0][0]
                         if attempt == 1 and filled_this_attempt == 0:
                             pass
                     else:
@@ -3874,7 +3915,6 @@ class ScheduleBuilder:
                             # Fallback: first in list
                             best_worker = tied_candidates[0][0]
 
-                # Assign the selected worker
                 if best_worker is not None:
                     self.schedule[date_val][post_val] = best_worker
                     self.worker_assignments[best_worker].add(date_val)
