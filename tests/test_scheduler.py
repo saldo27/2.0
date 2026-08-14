@@ -46,3 +46,19 @@ def test_update_tracking_data_removal_drops_post_when_last_assignment_is_removed
 
     assert scheduler.worker_assignments["DOC001"] == set()
     assert scheduler.worker_posts["DOC001"] == set()
+
+
+def test_validate_and_fix_final_schedule_uses_canonical_weekly_pattern_violation(sample_workers_data):
+    scheduler = _build_scheduler(sample_workers_data)
+    first_date = datetime(2026, 3, 2)
+    second_date = datetime(2026, 3, 9)
+
+    scheduler.schedule[first_date][0] = "DOC001"
+    scheduler.schedule[second_date][0] = "DOC001"
+    scheduler._synchronize_tracking_data()
+
+    fixes_made = scheduler.validate_and_fix_final_schedule()
+
+    assert fixes_made == 1
+    assert scheduler.schedule[second_date][0] is None
+    assert scheduler.worker_assignments["DOC001"] == {first_date}

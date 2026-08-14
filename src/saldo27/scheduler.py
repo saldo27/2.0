@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -1476,22 +1477,22 @@ class Scheduler:
             logging.error(f"Error checking schedule constraints: {e!s}", exc_info=True)
             return []
 
-    def _fix_constraint_violations(self):
+    def _fix_constraint_violations(self, violations: list[dict[str, Any]] | None = None) -> int:
         """
         Try to fix constraint violations in the current schedule.
-        Returns True if fixed, False if couldn't fix all.
+        Returns the number of fixes made.
         """
         try:
-            violations = self._check_schedule_constraints()
+            violations = self._check_schedule_constraints() if violations is None else violations
             if not violations:
-                return True
+                return 0
 
             logging.info(f"Attempting to fix {len(violations)} constraint violations")
             fixes_made = 0
 
             # Fix each violation
             for violation in violations:
-                if violation["type"] == "min_rest_days" or violation["type"] == "weekly_pattern":
+                if violation["type"] in {"min_rest_days", "friday_monday_pattern", "weekly_pattern"}:
                     # Fix by unassigning one of the shifts
                     worker_id = violation["worker_id"]
                     date1 = violation["date1"]
@@ -1540,7 +1541,11 @@ class Scheduler:
                         self.schedule[date_to_unassign][shift_num] = None
                         self.worker_assignments[worker_id].remove(date_to_unassign)
                         self._update_tracking_data(worker_id, date_to_unassign, shift_num, removing=True)
-                        violation_type = "rest period" if violation["type"] == "min_rest_days" else "weekly pattern"
+                        violation_type = {
+                            "min_rest_days": "rest period",
+                            "friday_monday_pattern": "Friday-Monday pattern",
+                            "weekly_pattern": "weekly pattern",
+                        }[violation["type"]]
                         logging.info(
                             f"Fixed {violation_type} violation: Unassigned worker {worker_id} from {date_to_unassign}"
                         )
@@ -1606,14 +1611,14 @@ class Scheduler:
             remaining_violations = self._check_schedule_constraints()
             if remaining_violations:
                 logging.warning(f"After fixing attempts, {len(remaining_violations)} violations still remain")
-                return False
+                return fixes_made
             else:
                 logging.info(f"Successfully fixed all {fixes_made} constraint violations")
-                return True
+                return fixes_made
 
         except Exception as e:
             logging.error(f"Error fixing constraint violations: {e!s}", exc_info=True)
-            return False
+            return 0
 
     # ========================================
     # 5. SCHEDULE GENERATION AND OPTIMIZATION
@@ -2017,220 +2022,26 @@ class Scheduler:
     # ========================================
     def validate_and_fix_final_schedule(self):
         """
-        Final validator that scans the entire schedule and fixes any constraint violations.
+        Final validator that reports through ConstraintChecker and fixes through Scheduler.
         Returns the number of fixes made.
         """
         logging.info("Running final schedule validation...")
-
-        # Count issues
-        incompatibility_issues = 0
-        gap_issues = 0
-        other_issues = 0
-        fixes_made = 0
-
-        # 1. Check for incompatibilities
-        for date in sorted(self.schedule.keys()):
-            workers_assigned = [w for w in self.schedule.get(date, []) if w is not None]  # Use .get for safety
-
-            # Use indices to safely modify the list while iterating conceptually
-            indices_to_check = list(range(len(workers_assigned)))
-            processed_pairs = set()  # Avoid redundant checks/fixes if multiple pairs exist
-
-            for i in indices_to_check:
-                if i >= len(workers_assigned):
-                    continue  # List size might change
-                worker1_id = workers_assigned[i]
-                if worker1_id is None:
-                    continue  # Slot might have been cleared by a previous fix
-
-                for j in range(i + 1, len(workers_assigned)):
-                    if j >= len(workers_assigned):
-                        continue  # List size might change
-                    worker2_id = workers_assigned[j]
-                    if worker2_id is None:
-                        continue  # Slot might have been cleared
-
-                    pair = tuple(sorted((worker1_id, worker2_id)))
-                    if pair in processed_pairs:
-                        continue  # Already handled this pair
-
-                    # Check if workers are incompatible using the schedule_builder method
-                    if self.schedule_builder._are_workers_incompatible(worker1_id, worker2_id):
-                        incompatibility_issues += 1  # Count issue regardless of fix success
-                        processed_pairs.add(pair)  # Mark pair as processed
-                        logging.warning(
-                            f"VALIDATION: Found incompatible workers {worker1_id} and {worker2_id} on {date}"
-                        )
-
-                        # CRITICAL: Check if either worker has a mandatory assignment for this date
-                        worker1_is_mandatory = self.schedule_builder.is_mandatory(worker1_id, date)
-                        worker2_is_mandatory = self.schedule_builder.is_mandatory(worker2_id, date)
-
-                        # If both are mandatory, we have a configuration error - log it but don't remove
-                        if worker1_is_mandatory and worker2_is_mandatory:
-                            logging.error(
-                                f"VALIDATION ERROR: Both workers {worker1_id} and {worker2_id} have mandatory assignments on {date} but are incompatible. This is a configuration error that must be fixed in worker data."
-                            )
-                            continue  # Skip this fix - cannot remove mandatory assignments
-
-                        # If one is mandatory, remove the other one
-                        if worker1_is_mandatory:
-                            worker_to_remove = worker2_id
-                            logging.info(
-                                f"VALIDATION: Worker {worker1_id} has mandatory assignment, will remove {worker2_id}"
-                            )
-                        elif worker2_is_mandatory:
-                            worker_to_remove = worker1_id
-                            logging.info(
-                                f"VALIDATION: Worker {worker2_id} has mandatory assignment, will remove {worker1_id}"
-                            )
-                        else:
-                            # Neither is mandatory - remove one with more assignments
-                            w1_count = len(self.worker_assignments.get(worker1_id, set()))
-                            w2_count = len(self.worker_assignments.get(worker2_id, set()))
-                            worker_to_remove = worker1_id if w1_count >= w2_count else worker2_id
-                        try:
-                            # Find the post index IN THE ORIGINAL schedule[date] list
-                            post_to_remove = self.schedule[date].index(worker_to_remove)
-
-                            # CRITICAL: Final check - verify we can remove this worker
-                            if hasattr(self, "schedule_builder"):
-                                if not self.schedule_builder._can_modify_assignment(
-                                    worker_to_remove, date, "validation_fix_incompat"
-                                ):
-                                    logging.error(
-                                        f"🔒 BLOCKED: Cannot remove MANDATORY {worker_to_remove} from {date.strftime('%Y-%m-%d')} - This is a configuration error!"
-                                    )
-                                    continue
-
-                            # Remove the worker from schedule
-                            self.schedule[date][post_to_remove] = None
-
-                            # Remove from assignments tracking
-                            if worker_to_remove in self.worker_assignments:
-                                self.worker_assignments[worker_to_remove].discard(date)  # Use discard
-
-                            # --- ADDED: Update Tracking Data ---
-                            self._update_tracking_data(worker_to_remove, date, post_to_remove, removing=True)
-                            # --- END ADDED ---
-
-                            fixes_made += 1
-                            logging.warning(
-                                f"VALIDATION: Removed worker {worker_to_remove} from {date} Post {post_to_remove} to fix incompatibility"
-                            )
-
-                            # Update the local workers_assigned list for subsequent checks on the same date
-                            if worker_to_remove == worker1_id:
-                                workers_assigned[i] = None  # Mark as None in local list
-                            else:
-                                workers_assigned[j] = None  # Mark as None in local list
-
-                        except ValueError:
-                            logging.error(
-                                f"VALIDATION FIX ERROR: Worker {worker_to_remove} not found in schedule for {date} during fix."
-                            )
-                        except Exception as e:
-                            logging.error(
-                                f"VALIDATION FIX ERROR: Unexpected error removing {worker_to_remove} from {date}: {e}"
-                            )
-
-        # 2. Check for minimum gap violations (Ensure this also calls _update_tracking_data)
-        for worker_id in list(self.worker_assignments.keys()):  # Iterate over copy of keys
-            assignments = sorted(list(self.worker_assignments.get(worker_id, set())))  # Use .get
-
-            indices_to_remove_gap = []  # Store (date, post) to remove after checking all pairs
-
-            for i in range(len(assignments) - 1):
-                date1 = assignments[i]
-                date2 = assignments[i + 1]
-                days_between = (date2 - date1).days
-
-                worker_data = next((w for w in self.workers_data if w["id"] == worker_id), None)
-                min_days_between = get_effective_min_gap(worker_data, self.gap_between_shifts)
-
-                if days_between < min_days_between:
-                    gap_issues += 1
-                    logging.warning(
-                        f"VALIDATION: Found gap violation for worker {worker_id}: only {days_between} days between {date1} and {date2}, minimum required: {min_days_between}"
-                    )
-
-                    # CRITICAL: Check if either date is a mandatory assignment
-                    date1_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date1)
-                    date2_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date2)
-
-                    # If both are mandatory, this is a configuration error - log it but don't remove
-                    if date1_is_mandatory and date2_is_mandatory:
-                        logging.error(
-                            f"VALIDATION ERROR: Worker {worker_id} has mandatory assignments on {date1} and {date2} but they violate minimum gap requirement. This is a configuration error that must be fixed in worker data."
-                        )
-                        continue  # Skip this fix - cannot remove mandatory assignments
-
-                    # If date1 is mandatory, try to remove date2
-                    # If date2 is mandatory, try to remove date1
-                    # If neither is mandatory, remove the later one (date2)
-                    if date2_is_mandatory:
-                        date_to_remove = date1
-                        logging.info(
-                            f"VALIDATION: {date2} is mandatory for worker {worker_id}, will try to remove {date1}"
-                        )
-                    elif date1_is_mandatory:
-                        date_to_remove = date2
-                        logging.info(
-                            f"VALIDATION: {date1} is mandatory for worker {worker_id}, will try to remove {date2}"
-                        )
-                    else:
-                        date_to_remove = date2  # Default: remove later assignment
-
-                    # Mark the assignment for removal
-                    try:
-                        # Find post index for date_to_remove
-                        if date_to_remove in self.schedule and worker_id in self.schedule[date_to_remove]:
-                            post_to_remove_gap = self.schedule[date_to_remove].index(worker_id)
-                            indices_to_remove_gap.append((date_to_remove, post_to_remove_gap))
-                        else:
-                            logging.error(
-                                f"VALIDATION FIX ERROR (GAP): Worker {worker_id} assignment for {date_to_remove} not found in schedule."
-                            )
-                    except ValueError:
-                        logging.error(
-                            f"VALIDATION FIX ERROR (GAP): Worker {worker_id} not found in schedule list for {date_to_remove}."
-                        )
-
-            # Now perform removals for gap violations
-            for date_rem, post_rem in indices_to_remove_gap:
-                if (
-                    date_rem in self.schedule
-                    and len(self.schedule[date_rem]) > post_rem
-                    and self.schedule[date_rem][post_rem] == worker_id
-                ):
-                    # CRITICAL: Final verification - never remove mandatory
-                    if hasattr(self, "schedule_builder"):
-                        if not self.schedule_builder._can_modify_assignment(worker_id, date_rem, "validation_fix_gap"):
-                            logging.error(
-                                f"🔒 BLOCKED: Cannot remove MANDATORY {worker_id} from {date_rem.strftime('%Y-%m-%d')} - Gap violation cannot be fixed!"
-                            )
-                            continue
-
-                    self.schedule[date_rem][post_rem] = None
-                    self.worker_assignments[worker_id].discard(date_rem)
-                    # --- ADDED: Update Tracking Data ---
-                    self._update_tracking_data(worker_id, date_rem, post_rem, removing=True)
-                    # --- END ADDED ---
-                    fixes_made += 1
-                    logging.warning(
-                        f"VALIDATION: Removed worker {worker_id} from {date_rem} Post {post_rem} to fix gap violation"
-                    )
-                else:
-                    logging.warning(
-                        f"VALIDATION FIX SKIP (GAP): State changed, worker {worker_id} no longer at {date_rem} Post {post_rem}."
-                    )
-
-        # 3. Run the reconcile method to ensure data consistency
-        if self._reconcile_schedule_tracking():
-            other_issues += 1
-
+        violations = self._check_schedule_constraints()
+        violation_counts = Counter(v["type"] for v in violations)
+        fixes_made = self._fix_constraint_violations(violations)
+        other_issues = 1 if self._reconcile_schedule_tracking() else 0
+        remaining_violations = self._check_schedule_constraints()
         logging.info(
-            f"Final validation complete: Found {incompatibility_issues} incompatibility issues, {gap_issues} gap issues, and {other_issues} other issues. Made {fixes_made} fixes."
+            "Final validation complete: Found %s incompatibility issues, %s gap/pattern issues, "
+            "%s other issues. Made %s fixes. Remaining violations: %s.",
+            violation_counts.get("incompatibility", 0),
+            sum(
+                violation_counts.get(kind, 0)
+                for kind in ("min_rest_days", "friday_monday_pattern", "weekly_pattern")
+            ),
+            other_issues,
+            fixes_made,
+            len(remaining_violations),
         )
         return fixes_made
 

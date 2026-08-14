@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from saldo27.application.contracts import ProgressCallback
 from saldo27.scheduler import Scheduler
+from saldo27.scheduler_config import SchedulerConfig
 
 
 @dataclass(frozen=True)
@@ -81,41 +82,14 @@ def validate_generation_request(request: GenerateScheduleRequest) -> str | None:
     return None
 
 
-_VALID_PIPELINE_PHASES: frozenset[str] = frozenset({"initialize", "mandatory", "distribution", "finalize"})
-_REQUIRED_PIPELINE_PHASES: frozenset[str] = frozenset({"initialize", "finalize"})
-
-
-def _validate_pipeline_phases(phases: Any) -> list[str]:
-    """Validate the ``pipeline_phases`` config value and return a clean list.
-
-    Raises ``ValueError`` with a descriptive message if the value is not a
-    non-empty list of known phase names or if mandatory phases are missing.
-    """
-    if not isinstance(phases, list) or not phases:
-        raise ValueError(
-            f"'pipeline_phases' debe ser una lista no vacía. "
-            f"Fases válidas: {sorted(_VALID_PIPELINE_PHASES)}"
-        )
-    unknown = [p for p in phases if p not in _VALID_PIPELINE_PHASES]
-    if unknown:
-        raise ValueError(
-            f"Fases desconocidas en 'pipeline_phases': {unknown}. "
-            f"Fases válidas: {sorted(_VALID_PIPELINE_PHASES)}"
-        )
-    missing = _REQUIRED_PIPELINE_PHASES - set(phases)
-    if missing:
-        raise ValueError(
-            f"'pipeline_phases' debe incluir las fases requeridas: {sorted(missing)}"
-        )
-    return list(phases)
-
-
 def build_scheduler_config(request: GenerateScheduleRequest) -> dict[str, Any]:
     start_date = _to_datetime(request.start_date)
     end_date = _to_datetime(request.end_date)
 
     raw_phases = request.config.get("pipeline_phases")
-    pipeline_phases = _validate_pipeline_phases(raw_phases) if raw_phases is not None else None
+    pipeline_phases = (
+        SchedulerConfig.validate_pipeline_phases(raw_phases) if raw_phases is not None else None
+    )
 
     return {
         "start_date": start_date,

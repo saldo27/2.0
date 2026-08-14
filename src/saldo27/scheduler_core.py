@@ -118,7 +118,7 @@ class SchedulerCore:
     ) -> OptimizationPipeline:
         configured = self.config.get("pipeline_phases")
         default_order = ["initialize", "mandatory", "distribution", "finalize"]
-        enabled: list[str] = configured if isinstance(configured, list) and configured else default_order
+        enabled = SchedulerConfig.resolve_pipeline_phases(configured, default_order=default_order)
 
         phases_catalog = {
             "initialize": CoreMethodPhase("initialize", lambda core: core._initialize_schedule_phase()),
@@ -131,19 +131,6 @@ class SchedulerCore:
             ),
             "finalize": CoreMethodPhase("finalize", lambda core: core._finalization_phase()),
         }
-
-        unknown = [name for name in enabled if name not in phases_catalog]
-        if unknown:
-            raise ValueError(
-                f"Fases de pipeline desconocidas: {unknown}. "
-                f"Fases válidas: {sorted(phases_catalog)}"
-            )
-        required = {"initialize", "finalize"}
-        missing = required - set(enabled)
-        if missing:
-            raise ValueError(
-                f"El pipeline debe incluir las fases requeridas: {sorted(missing)}"
-            )
 
         return OptimizationPipeline([phases_catalog[name] for name in enabled])
 
