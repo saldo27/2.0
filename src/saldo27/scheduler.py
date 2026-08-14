@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from saldo27.constraint_checker import ConstraintChecker
 from saldo27.data_manager import DataManager
 from saldo27.exceptions import ConfigurationError, SchedulerError
+from saldo27.infrastructure.optional_engines import load_optional_engines
 from saldo27.scheduler_config import SchedulerConfig, setup_logging
 from saldo27.statistics_calculator import StatisticsCalculator
 from saldo27.utilities import DateTimeUtils, get_effective_min_gap
@@ -187,37 +188,22 @@ class Scheduler:
             scheduler=self,
         )
 
-        # Real-time engine (optional)
-        self.real_time_engine = None
-        if config.get("enable_real_time", False):
-            try:
-                from saldo27.real_time_engine import RealTimeEngine
+        # Optional engines loaded through infrastructure adapter
+        loaded_optional = load_optional_engines(self, config)
 
-                self.real_time_engine = RealTimeEngine(self)
-                logging.info("Real-time engine initialized")
-            except ImportError:
-                logging.warning("Real-time engine not available - real-time features disabled")
-
-        # Predictive analytics engine (optional)
-        self.predictive_analytics = None
+        # Predictive optimizer depends on predictive_analytics when present.
         self.predictive_optimizer = None
-        if config.get("enable_predictive_analytics", True):
+        self.predictive_analytics = loaded_optional.get("predictive_analytics")
+        if self.predictive_analytics is not None:
             try:
-                from saldo27.predictive_analytics import PredictiveAnalyticsEngine
                 from saldo27.predictive_optimizer import PredictiveOptimizer
 
-                predictive_config = config.get("predictive_analytics_config", {})
-                self.predictive_analytics = PredictiveAnalyticsEngine(self, predictive_config)
                 self.predictive_optimizer = PredictiveOptimizer(self, self.predictive_analytics)
-                logging.info("Predictive analytics engine initialized")
-
+                predictive_config = config.get("predictive_analytics_config", {})
                 if predictive_config.get("auto_collect_data", True):
                     self.predictive_analytics.auto_collect_data_if_enabled()
-
-            except ImportError as e:
-                logging.warning(f"Predictive analytics not available - predictive features disabled: {e}")
             except Exception as e:
-                logging.error(f"Error initializing predictive analytics: {e}")
+                logging.error(f"Error initializing predictive optimizer: {e}")
 
     def _init_targets_and_prior(self) -> None:
         """Phase 5: Calculate shift targets and initialize prior-schedule containers."""

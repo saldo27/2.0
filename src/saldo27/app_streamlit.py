@@ -28,6 +28,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
+from saldo27.application.use_cases import GenerateScheduleRequest, build_scheduler_config
 from saldo27.license_manager import license_manager
 from saldo27.scheduler import Scheduler
 from saldo27.scheduler_config import SchedulerConfig, setup_logging
@@ -520,26 +521,16 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
         # target_shifts calculation internally using its sophisticated logic
         # (including largest-remainder rounding, work periods, etc.)
 
-        config = {
-            "start_date": start_date,
-            "end_date": end_date,
-            "num_shifts": st.session_state.config.get("num_shifts", 4),
-            "workers_data": st.session_state.workers_data,  # Pass directly, matching Kivy
-            "holidays": holidays,
-            "variable_shifts": variable_shifts,
-            "gap_between_shifts": st.session_state.config.get("gap_between_shifts", 3),
-            "max_consecutive_weekends": st.session_state.config.get("max_consecutive_weekends", 3),
-            "enable_proportional_weekends": st.session_state.config.get("enable_proportional_weekends", True),
-            "weekend_tolerance": st.session_state.config.get("weekend_tolerance", 1),
-            "cache_enabled": st.session_state.config.get("cache_enabled", False),
-            "lazy_evaluation": st.session_state.config.get("lazy_evaluation", False),
-            "batch_size": st.session_state.config.get("batch_size", 100),
-            "max_improvement_loops": st.session_state.config.get("max_improvement_loops", 150),
-            "last_post_adjustment_max_iterations": st.session_state.config.get(
-                "last_post_adjustment_max_iterations", 10
-            ),
-            "max_complete_attempts": st.session_state.config.get("max_complete_attempts", 5),  # Match Kivy default
-        }
+        request = GenerateScheduleRequest(
+            start_date=start_date,
+            end_date=end_date,
+            holidays=holidays,
+            variable_shifts=variable_shifts,
+            workers_data=st.session_state.workers_data,
+            config=st.session_state.config,
+            prior_schedule_raw=st.session_state.get("prior_schedule_raw"),
+        )
+        config = build_scheduler_config(request)
 
         # Crear scheduler
         scheduler = Scheduler(config)
