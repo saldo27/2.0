@@ -254,13 +254,23 @@ class FinalAdjustmentEngine(EngineStateMixin):
         """True si la asignación está bloqueada (mandatory)."""
         if self.schedule_builder is None:
             return False
-        return self.schedule_builder.is_locked_mandatory(worker_id, date)
+        is_locked_mandatory = getattr(self.schedule_builder, "is_locked_mandatory", None)
+        if callable(is_locked_mandatory):
+            return bool(is_locked_mandatory(worker_id, date))
+        locked_mandatory = getattr(self.schedule_builder, "_locked_mandatory", ())
+        return (worker_id, date) in locked_mandatory
 
     def _is_mandatory(self, worker_id: str, date: datetime) -> bool:
         """True si la asignación es un turno obligatorio (config mandatory)."""
         if self.schedule_builder is None:
             return False
-        return self.schedule_builder.is_mandatory(worker_id, date)
+        is_mandatory = getattr(self.schedule_builder, "is_mandatory", None)
+        if callable(is_mandatory):
+            return bool(is_mandatory(worker_id, date))
+        legacy_is_mandatory = getattr(self.schedule_builder, "_is_mandatory", None)
+        if callable(legacy_is_mandatory):
+            return bool(legacy_is_mandatory(worker_id, date))
+        return False
 
     def _can_swap_away(self, worker_id: str, date: datetime) -> bool:
         """
