@@ -14,6 +14,7 @@ from saldo27.infrastructure.optional_engines import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_scheduler():
     return types.SimpleNamespace()
 
@@ -63,6 +64,7 @@ class _WrongAttrCapEngine:
 # EngineCapabilities
 # ---------------------------------------------------------------------------
 
+
 def test_engine_capabilities_defaults():
     caps = EngineCapabilities(name="Test")
     assert caps.real_time_editing is False
@@ -80,6 +82,7 @@ def test_engine_capabilities_frozen():
 # ---------------------------------------------------------------------------
 # Protocol check
 # ---------------------------------------------------------------------------
+
 
 def test_optional_engine_protocol_satisfied_by_good_engine():
     assert hasattr(_GoodEngine, "CAPABILITIES")
@@ -119,6 +122,7 @@ def test_validate_capabilities_fails_wrong_scheduler_attr(recwarn):
 
 def test_validate_capabilities_passes_empty_requires_attr():
     """requires_scheduler_attr='' means 'no check' — should pass regardless."""
+
     class _NeutralEngine:
         CAPABILITIES = EngineCapabilities(name="Neutral")
 
@@ -137,6 +141,7 @@ def test_validate_capabilities_passes_empty_requires_attr():
 # ---------------------------------------------------------------------------
 # load_optional_engines — import failure
 # ---------------------------------------------------------------------------
+
 
 def test_optional_loader_disables_unavailable_engines(monkeypatch):
     scheduler = _make_scheduler()
@@ -162,6 +167,7 @@ def test_optional_loader_disables_unavailable_engines(monkeypatch):
 # ---------------------------------------------------------------------------
 # load_optional_engines — capabilities contract enforcement
 # ---------------------------------------------------------------------------
+
 
 def _spec_for(engine_cls, scheduler_attr: str = "test_engine") -> OptionalEngineSpec:
     return OptionalEngineSpec(
@@ -225,6 +231,7 @@ def test_load_accepts_engine_with_valid_capabilities(monkeypatch):
 
 def test_load_engine_disabled_by_config(monkeypatch):
     """Engine is not loaded when its config flag is False."""
+
     class _ValidEngine:
         CAPABILITIES = EngineCapabilities(name="Valid", requires_scheduler_attr="test_engine")
 
@@ -244,6 +251,7 @@ def test_load_engine_disabled_by_config(monkeypatch):
 # ---------------------------------------------------------------------------
 # Real engines satisfy the contract
 # ---------------------------------------------------------------------------
+
 
 def test_real_time_engine_has_valid_capabilities():
     from saldo27.real_time_engine import RealTimeEngine
@@ -266,6 +274,7 @@ def test_predictive_analytics_engine_has_valid_capabilities():
 # ---------------------------------------------------------------------------
 # ortools_available
 # ---------------------------------------------------------------------------
+
 
 def test_ortools_available_returns_bool():
     result = ortools_available()
@@ -304,4 +313,3 @@ def test_ortools_available_false_when_missing(monkeypatch):
     monkeypatch.setattr(_mod, "import_module", lambda _name: (_ for _ in ()).throw(ImportError("no ortools")))
 
     assert _mod.ortools_available() is False
-

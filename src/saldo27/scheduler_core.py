@@ -131,9 +131,7 @@ class SchedulerCore:
             return core._assign_mandatory_phase()
 
         def _run_distribution(core: SchedulerCoreProtocol) -> bool:
-            return core._run_distribution_and_optimization_phase(
-                max_improvement_loops, max_complete_attempts
-            )
+            return core._run_distribution_and_optimization_phase(max_improvement_loops, max_complete_attempts)
 
         def _run_finalize(core: SchedulerCoreProtocol) -> bool:
             return core._finalization_phase()
@@ -899,9 +897,7 @@ class SchedulerCore:
 
                 # Get dynamically prioritized operations, passing the pre-computed state so
                 # the prioritizer doesn't recompute the same three metrics.
-                prioritized_operations = self.prioritizer.prioritize_operations_dynamically(
-                    current_state=current_state
-                )
+                prioritized_operations = self.prioritizer.prioritize_operations_dynamically(current_state=current_state)
 
                 # Execute operations with enhanced tracking
                 operation_results = {}
