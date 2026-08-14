@@ -28,9 +28,10 @@ import logging
 import random
 
 from saldo27.balance_validator import BalanceValidator
+from saldo27.domain.engine_state_mixin import EngineStateMixin
 
 
-class StrictBalanceOptimizer:
+class StrictBalanceOptimizer(EngineStateMixin):
     """Optimizador estricto de balance de turnos"""
 
     def __init__(self, scheduler, schedule_builder):
@@ -306,7 +307,7 @@ class StrictBalanceOptimizer:
 
                 for date in over_assignments:
                     # No tocar mandatory
-                    if (over_id, date) in self.builder._locked_mandatory:
+                    if self.builder.is_locked_mandatory(over_id, date):
                         continue
 
                     # Verificar que podemos modificar
@@ -416,7 +417,7 @@ class StrictBalanceOptimizer:
             over_dates = self._sort_dates_by_monthly_excess(over_id, over_dates)
 
             for date_a in over_dates[:10]:  # Limitar para rendimiento
-                if (over_id, date_a) in self.builder._locked_mandatory:
+                if self.builder.is_locked_mandatory(over_id, date_a):
                     continue
 
                 if not self.builder._can_modify_assignment(over_id, date_a, "three_way"):
@@ -502,7 +503,7 @@ class StrictBalanceOptimizer:
                         if date_c == date_a:  # No puede ser el mismo día
                             continue
 
-                        if (c_id, date_c) in self.builder._locked_mandatory:
+                        if self.builder.is_locked_mandatory(c_id, date_c):
                             continue
 
                         # C gives away date_c — check monthly floor
@@ -639,7 +640,7 @@ class StrictBalanceOptimizer:
             over_dates = self._sort_dates_by_monthly_excess(over_id, over_dates)
 
             for date in over_dates:
-                if (over_id, date) in self.builder._locked_mandatory:
+                if self.builder.is_locked_mandatory(over_id, date):
                     continue
 
                 if not self.builder._can_modify_assignment(over_id, date, "reassignment"):
@@ -747,7 +748,7 @@ class StrictBalanceOptimizer:
                 over_assignments = list(self.worker_assignments.get(over_id, set()))
 
                 for date in over_assignments:
-                    if (over_id, date) in self.builder._locked_mandatory:
+                    if self.builder.is_locked_mandatory(over_id, date):
                         continue
 
                     # Giver monthly check (same guard as _try_direct_swap)
@@ -841,7 +842,7 @@ class StrictBalanceOptimizer:
             over_dates = self._sort_dates_by_monthly_excess(over_id, over_dates)
 
             for date_a in over_dates[:15]:  # Más fechas
-                if (over_id, date_a) in self.builder._locked_mandatory:
+                if self.builder.is_locked_mandatory(over_id, date_a):
                     continue
 
                 if not self.builder._can_modify_assignment(over_id, date_a, "aggressive_three_way"):
@@ -918,7 +919,7 @@ class StrictBalanceOptimizer:
                         if date_c == date_a:
                             continue
 
-                        if (c_id, date_c) in self.builder._locked_mandatory:
+                        if self.builder.is_locked_mandatory(c_id, date_c):
                             continue
 
                         # C gives away date_c — check monthly floor
@@ -1034,41 +1035,6 @@ class StrictBalanceOptimizer:
 
         return False
 
-    def _save_state(self) -> dict:
-        """Guarda el estado actual para rollback, incluyendo todos los contadores de tracking."""
-        return {
-            "schedule": {k: v[:] for k, v in self.schedule.items()},
-            "assignments": {k: set(v) for k, v in self.worker_assignments.items()},
-            "shift_counts": dict(self.scheduler.worker_shift_counts),
-            "weekdays": {k: dict(v) for k, v in self.scheduler.worker_weekdays.items()},
-            "weekends": {k: list(v) for k, v in self.scheduler.worker_weekends.items()},
-            "weekend_counts": dict(self.scheduler.worker_weekend_counts),
-            "bridge_counts": {k: set(v) for k, v in self.scheduler.worker_bridge_counts.items()},
-        }
-
-    def _restore_state(self, state: dict):
-        """Restaura un estado previo, incluyendo todos los contadores de tracking."""
-        self.schedule.clear()
-        self.schedule.update({k: v[:] for k, v in state["schedule"].items()})
-
-        self.worker_assignments.clear()
-        self.worker_assignments.update({k: set(v) for k, v in state["assignments"].items()})
-
-        self.scheduler.worker_shift_counts.clear()
-        self.scheduler.worker_shift_counts.update(state["shift_counts"])
-
-        self.scheduler.worker_weekdays.clear()
-        self.scheduler.worker_weekdays.update({k: dict(v) for k, v in state["weekdays"].items()})
-
-        self.scheduler.worker_weekends.clear()
-        self.scheduler.worker_weekends.update({k: list(v) for k, v in state["weekends"].items()})
-
-        self.scheduler.worker_weekend_counts.clear()
-        self.scheduler.worker_weekend_counts.update(state["weekend_counts"])
-
-        self.scheduler.worker_bridge_counts.clear()
-        self.scheduler.worker_bridge_counts.update({k: set(v) for k, v in state["bridge_counts"].items()})
-
     def _try_chain_swap(self, overloaded: list, underloaded: list, tolerance: int) -> bool:
         """
         Intenta una cadena de intercambios entre 4 o más trabajadores.
@@ -1086,7 +1052,7 @@ class StrictBalanceOptimizer:
             over_dates = self._sort_dates_by_monthly_excess(over_id, over_dates)
 
             for date_a in over_dates[:8]:
-                if (over_id, date_a) in self.builder._locked_mandatory:
+                if self.builder.is_locked_mandatory(over_id, date_a):
                     continue
 
                 if not self.builder._can_modify_assignment(over_id, date_a, "chain_swap"):
@@ -1163,7 +1129,7 @@ class StrictBalanceOptimizer:
                 random.shuffle(next_dates)
 
                 for next_date in next_dates[:5]:
-                    if (next_id, next_date) in self.builder._locked_mandatory:
+                    if self.builder.is_locked_mandatory(next_id, next_date):
                         continue
 
                     if not self.builder._can_modify_assignment(next_id, next_date, "chain"):
@@ -1283,7 +1249,7 @@ class StrictBalanceOptimizer:
                 random.shuffle(mid_dates)
 
                 for date in mid_dates[:10]:
-                    if (mid_id, date) in self.builder._locked_mandatory:
+                    if self.builder.is_locked_mandatory(mid_id, date):
                         continue
 
                     if not self.builder._can_modify_assignment(mid_id, date, "forced"):

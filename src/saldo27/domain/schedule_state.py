@@ -55,7 +55,7 @@ class ScheduleState:
         if hasattr(scheduler, "set_locked_mandatory"):
             scheduler.set_locked_mandatory(set(self.locked_mandatory))
         elif hasattr(scheduler, "schedule_builder") and scheduler.schedule_builder is not None:
-            scheduler.schedule_builder._locked_mandatory = set(self.locked_mandatory)
+            scheduler.schedule_builder.set_locked_mandatory(set(self.locked_mandatory))
 
     def to_metrics_dict(self) -> dict[str, float | int]:
         total_slots = 0

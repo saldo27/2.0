@@ -83,7 +83,7 @@ class IncrementalUpdater:
 
             # CRITICAL: If there's a previous worker and it's a mandatory assignment, block the reassignment
             if previous_worker and hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder:
-                if self.scheduler.schedule_builder._is_mandatory(previous_worker, shift_date):
+                if self.scheduler.schedule_builder.is_mandatory(previous_worker, shift_date):
                     logging.error(
                         f"BLOCKED assignment: Cannot replace worker {previous_worker} on {shift_date.strftime('%Y-%m-%d')} - this is a MANDATORY assignment"
                     )
@@ -146,7 +146,7 @@ class IncrementalUpdater:
 
             # CRITICAL: Check if this is a mandatory assignment - cannot unassign
             if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder:
-                if self.scheduler.schedule_builder._is_mandatory(current_worker, shift_date):
+                if self.scheduler.schedule_builder.is_mandatory(current_worker, shift_date):
                     logging.warning(
                         f"Cannot unassign worker {current_worker} from {shift_date.strftime('%d-%m-%Y')} - this is a MANDATORY assignment"
                     )
@@ -390,7 +390,7 @@ class IncrementalUpdater:
         if worker1:
             # We need to check if worker1 has a mandatory assignment on shift_date1
             if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder:
-                if self.scheduler.schedule_builder._is_mandatory(worker1, shift_date1):
+                if self.scheduler.schedule_builder.is_mandatory(worker1, shift_date1):
                     constraints_ok = False
                     conflicts.append(
                         f"Worker {worker1} has a MANDATORY assignment on {shift_date1.strftime('%d-%m-%Y')} - cannot swap"
@@ -399,7 +399,7 @@ class IncrementalUpdater:
         if worker2:
             # Check if worker2 has a mandatory assignment on shift_date2
             if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder:
-                if self.scheduler.schedule_builder._is_mandatory(worker2, shift_date2):
+                if self.scheduler.schedule_builder.is_mandatory(worker2, shift_date2):
                     constraints_ok = False
                     conflicts.append(
                         f"Worker {worker2} has a MANDATORY assignment on {shift_date2.strftime('%d-%m-%Y')} - cannot swap"

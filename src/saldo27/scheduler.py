@@ -116,7 +116,7 @@ class Scheduler:
 
     def set_locked_mandatory(self, locked: set[Any] | tuple[Any, ...]) -> None:
         if hasattr(self, "schedule_builder") and self.schedule_builder is not None:
-            self.schedule_builder._locked_mandatory = set(locked)
+            self.schedule_builder.set_locked_mandatory(locked)
 
     @staticmethod
     def _normalize_worker_ids(workers_data: list[dict[str, Any]]) -> None:
@@ -1393,10 +1393,9 @@ class Scheduler:
                     if self.schedule[date][post] is not None:
                         existing = self.schedule[date][post]
                         if hasattr(self, "schedule_builder"):
-                            if (
-                                existing,
-                                date,
-                            ) in self.schedule_builder._locked_mandatory or self.schedule_builder._is_mandatory(
+                            if self.schedule_builder.is_locked_mandatory(
+                                existing, date
+                            ) or self.schedule_builder.is_mandatory(
                                 existing, date
                             ):
                                 logging.warning(
@@ -1499,8 +1498,8 @@ class Scheduler:
                     date2 = violation["date2"]
 
                     # CRITICAL: Check if either date is mandatory
-                    date1_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date1)
-                    date2_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date2)
+                    date1_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date1)
+                    date2_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date2)
 
                     # If both are mandatory, we cannot fix this - it's a configuration error
                     if date1_is_mandatory and date2_is_mandatory:
@@ -1554,8 +1553,8 @@ class Scheduler:
                     date = violation["date"]
 
                     # CRITICAL: Check if either worker has a mandatory assignment for this date
-                    worker_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date)
-                    incompatible_is_mandatory = self.schedule_builder._is_mandatory(incompatible_id, date)
+                    worker_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date)
+                    incompatible_is_mandatory = self.schedule_builder.is_mandatory(incompatible_id, date)
 
                     # If both are mandatory, we cannot fix this - it's a configuration error
                     if worker_is_mandatory and incompatible_is_mandatory:
@@ -2064,8 +2063,8 @@ class Scheduler:
                         )
 
                         # CRITICAL: Check if either worker has a mandatory assignment for this date
-                        worker1_is_mandatory = self.schedule_builder._is_mandatory(worker1_id, date)
-                        worker2_is_mandatory = self.schedule_builder._is_mandatory(worker2_id, date)
+                        worker1_is_mandatory = self.schedule_builder.is_mandatory(worker1_id, date)
+                        worker2_is_mandatory = self.schedule_builder.is_mandatory(worker2_id, date)
 
                         # If both are mandatory, we have a configuration error - log it but don't remove
                         if worker1_is_mandatory and worker2_is_mandatory:
@@ -2156,8 +2155,8 @@ class Scheduler:
                     )
 
                     # CRITICAL: Check if either date is a mandatory assignment
-                    date1_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date1)
-                    date2_is_mandatory = self.schedule_builder._is_mandatory(worker_id, date2)
+                    date1_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date1)
+                    date2_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date2)
 
                     # If both are mandatory, this is a configuration error - log it but don't remove
                     if date1_is_mandatory and date2_is_mandatory:

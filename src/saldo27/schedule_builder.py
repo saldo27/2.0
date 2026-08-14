@@ -279,6 +279,26 @@ class ScheduleBuilder:
     # ========================================
     # 3. WORKER CONSTRAINT CHECKING
     # ========================================
+
+    # ------------------------------------------------------------------
+    # Public API for mandatory-lock state — use these from external modules
+    # instead of accessing _locked_mandatory directly.
+    # ------------------------------------------------------------------
+
+    def is_locked_mandatory(self, worker_id: str, date: object) -> bool:
+        """Return True if (worker_id, date) is in the locked-mandatory set."""
+        return (worker_id, date) in self._locked_mandatory
+
+    def is_mandatory(self, worker_id: object, date: object) -> bool:
+        """Public alias for _is_mandatory; safe to call from external modules."""
+        return self._is_mandatory(worker_id, date)
+
+    def set_locked_mandatory(self, locked: set | tuple) -> None:
+        """Replace the entire locked-mandatory collection (used on state restore)."""
+        self._locked_mandatory = set(locked)
+
+    # ------------------------------------------------------------------
+
     def _is_mandatory(self, worker_id, date):
         # Use pre-parsed cache for O(1) lookup instead of re-parsing each time
         if hasattr(self, "_mandatory_dates_cache") and worker_id in self._mandatory_dates_cache:

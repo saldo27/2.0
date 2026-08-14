@@ -35,8 +35,10 @@ if TYPE_CHECKING:
 
     from saldo27.scheduler import Scheduler
 
+from saldo27.domain.engine_state_mixin import EngineStateMixin
 
-class FinalAdjustmentEngine:
+
+class FinalAdjustmentEngine(EngineStateMixin):
     """Motor de ajuste final que equilibra turnos, fines de semana y puentes."""
 
     def __init__(self, scheduler: Scheduler) -> None:
@@ -244,39 +246,6 @@ class FinalAdjustmentEngine:
     # Internal: state save/restore (mirrors StrictBalanceOptimizer)
     # ------------------------------------------------------------------
 
-    def _save_state(self) -> dict:
-        return {
-            "schedule": {k: v[:] for k, v in self.schedule.items()},
-            "assignments": {k: set(v) for k, v in self.worker_assignments.items()},
-            "shift_counts": dict(self.scheduler.worker_shift_counts),
-            "weekdays": {k: dict(v) for k, v in self.scheduler.worker_weekdays.items()},
-            "weekends": {k: list(v) for k, v in self.scheduler.worker_weekends.items()},
-            "weekend_counts": dict(self.scheduler.worker_weekend_counts),
-            "bridge_counts": {k: set(v) for k, v in self.scheduler.worker_bridge_counts.items()},
-        }
-
-    def _restore_state(self, state: dict) -> None:
-        self.schedule.clear()
-        self.schedule.update({k: v[:] for k, v in state["schedule"].items()})
-
-        self.worker_assignments.clear()
-        self.worker_assignments.update({k: set(v) for k, v in state["assignments"].items()})
-
-        self.scheduler.worker_shift_counts.clear()
-        self.scheduler.worker_shift_counts.update(state["shift_counts"])
-
-        self.scheduler.worker_weekdays.clear()
-        self.scheduler.worker_weekdays.update({k: dict(v) for k, v in state["weekdays"].items()})
-
-        self.scheduler.worker_weekends.clear()
-        self.scheduler.worker_weekends.update({k: list(v) for k, v in state["weekends"].items()})
-
-        self.scheduler.worker_weekend_counts.clear()
-        self.scheduler.worker_weekend_counts.update(state["weekend_counts"])
-
-        self.scheduler.worker_bridge_counts.clear()
-        self.scheduler.worker_bridge_counts.update({k: set(v) for k, v in state["bridge_counts"].items()})
-
     # ------------------------------------------------------------------
     # Internal: constraint validation helpers
     # ------------------------------------------------------------------
@@ -285,13 +254,13 @@ class FinalAdjustmentEngine:
         """True si la asignación está bloqueada (mandatory)."""
         if self.schedule_builder is None:
             return False
-        return (worker_id, date) in self.schedule_builder._locked_mandatory
+        return self.schedule_builder.is_locked_mandatory(worker_id, date)
 
     def _is_mandatory(self, worker_id: str, date: datetime) -> bool:
         """True si la asignación es un turno obligatorio (config mandatory)."""
         if self.schedule_builder is None:
             return False
-        return self.schedule_builder._is_mandatory(worker_id, date)
+        return self.schedule_builder.is_mandatory(worker_id, date)
 
     def _can_swap_away(self, worker_id: str, date: datetime) -> bool:
         """
