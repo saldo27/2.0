@@ -111,7 +111,7 @@ class Scheduler:
 
     def get_locked_mandatory(self) -> set[Any]:
         if hasattr(self, "schedule_builder") and self.schedule_builder is not None:
-            return set(getattr(self.schedule_builder, "_locked_mandatory", set()))
+            return self.schedule_builder.get_locked_mandatory()
         return set()
 
     def set_locked_mandatory(self, locked: set[Any] | tuple[Any, ...]) -> None:

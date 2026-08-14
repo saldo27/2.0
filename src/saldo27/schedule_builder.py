@@ -293,6 +293,10 @@ class ScheduleBuilder:
         """Public alias for _is_mandatory; safe to call from external modules."""
         return self._is_mandatory(worker_id, date)
 
+    def get_locked_mandatory(self) -> set:
+        """Return a copy of the locked-mandatory set."""
+        return set(self._locked_mandatory)
+
     def set_locked_mandatory(self, locked: set | tuple) -> None:
         """Replace the entire locked-mandatory collection (used on state restore)."""
         self._locked_mandatory = set(locked)

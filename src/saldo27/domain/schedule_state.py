@@ -25,7 +25,7 @@ class ScheduleState:
             raw_locked = scheduler.get_locked_mandatory()
             locked_mandatory = tuple(sorted(raw_locked, key=repr))
         elif include_locked and hasattr(scheduler, "schedule_builder") and scheduler.schedule_builder:
-            raw_locked = getattr(scheduler.schedule_builder, "_locked_mandatory", set())
+            raw_locked = scheduler.schedule_builder.get_locked_mandatory()
             locked_mandatory = tuple(sorted(raw_locked, key=repr))
 
         return cls(
