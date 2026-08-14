@@ -5,17 +5,44 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from saldo27.application.contracts import GenerationProgressEvent
+from saldo27.application.contracts import GenerationProgressEvent, SchedulerCoreProtocol
 from saldo27.domain.schedule_state import ScheduleState
+
+# ---------------------------------------------------------------------------
+# Phase-name catalog — single source of truth for valid built-in phase names.
+# Both the pipeline builder and the config validator must reference this set.
+# ---------------------------------------------------------------------------
+
+KNOWN_PHASE_NAMES: frozenset[str] = frozenset({"initialize", "mandatory", "distribution", "finalize"})
+
+
+def validate_phase_names(names: list[str]) -> list[str]:
+    """Raise :exc:`ValueError` if *names* contains any unknown phase name.
+
+    Returns *names* unchanged on success so the function can be used inline::
+
+        phases = validate_phase_names(config.get("pipeline_phases", default_order))
+    """
+    unknown = [n for n in names if n not in KNOWN_PHASE_NAMES]
+    if unknown:
+        raise ValueError(
+            f"Unknown pipeline phases: {unknown}. "
+            f"Valid phase names are: {sorted(KNOWN_PHASE_NAMES)}"
+        )
+    return names
+
+
+# ---------------------------------------------------------------------------
+# Pipeline abstractions
+# ---------------------------------------------------------------------------
+
+PhaseRunner = Callable[[SchedulerCoreProtocol], bool]
 
 
 class PipelinePhase(Protocol):
     name: str
 
-    def run(self, core: object, state: ScheduleState) -> tuple[bool, ScheduleState]: ...
-
-
-PhaseRunner = Callable[[object], bool]
+    def run(self, core: SchedulerCoreProtocol, state: ScheduleState) -> tuple[bool, ScheduleState]: ...
 
 
 @dataclass(frozen=True)
@@ -23,11 +50,11 @@ class CoreMethodPhase:
     name: str
     runner: PhaseRunner
 
-    def run(self, core: object, state: ScheduleState) -> tuple[bool, ScheduleState]:
+    def run(self, core: SchedulerCoreProtocol, state: ScheduleState) -> tuple[bool, ScheduleState]:
         success = self.runner(core)
         if not success:
             return False, state
-        scheduler = core.scheduler
+        scheduler = core.scheduler  # type: ignore[attr-defined]
         return True, ScheduleState.from_scheduler(scheduler)
 
 
@@ -45,7 +72,11 @@ class PhaseTrace:
 class OptimizationPipeline:
     phases: list[PipelinePhase]
 
-    def run(self, core: object, initial_state: ScheduleState) -> tuple[bool, ScheduleState, list[PhaseTrace]]:
+    def run(
+        self,
+        core: SchedulerCoreProtocol,
+        initial_state: ScheduleState,
+    ) -> tuple[bool, ScheduleState, list[PhaseTrace]]:
         current_state = initial_state
         trace: list[PhaseTrace] = []
         report_progress = getattr(core, "report_phase_progress", None)

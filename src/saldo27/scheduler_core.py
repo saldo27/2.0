@@ -14,7 +14,7 @@ from typing import Any
 
 from saldo27.adaptive_iterations import AdaptiveIterationManager
 from saldo27.advanced_distribution_engine import AdvancedDistributionEngine
-from saldo27.application.contracts import GenerationProgressEvent
+from saldo27.application.contracts import GenerationProgressEvent, SchedulerCoreProtocol
 from saldo27.application.pipeline import CoreMethodPhase, OptimizationPipeline
 from saldo27.balance_validator import BalanceValidator
 from saldo27.domain.schedule_state import ScheduleState
@@ -120,16 +120,28 @@ class SchedulerCore:
         default_order = ["initialize", "mandatory", "distribution", "finalize"]
         enabled = SchedulerConfig.resolve_pipeline_phases(configured, default_order=default_order)
 
-        phases_catalog = {
-            "initialize": CoreMethodPhase("initialize", lambda core: core._initialize_schedule_phase()),
-            "mandatory": CoreMethodPhase("mandatory", lambda core: core._assign_mandatory_phase()),
-            "distribution": CoreMethodPhase(
-                "distribution",
-                lambda core: core._run_distribution_and_optimization_phase(
-                    max_improvement_loops, max_complete_attempts
-                ),
-            ),
-            "finalize": CoreMethodPhase("finalize", lambda core: core._finalization_phase()),
+        # Named phase runners replace the previous anonymous lambdas so that:
+        # (a) the SchedulerCoreProtocol type is explicit at each call site, and
+        # (b) stack traces and logging show a meaningful function name.
+        def _run_initialize(core: SchedulerCoreProtocol) -> bool:
+            return core._initialize_schedule_phase()
+
+        def _run_mandatory(core: SchedulerCoreProtocol) -> bool:
+            return core._assign_mandatory_phase()
+
+        def _run_distribution(core: SchedulerCoreProtocol) -> bool:
+            return core._run_distribution_and_optimization_phase(
+                max_improvement_loops, max_complete_attempts
+            )
+
+        def _run_finalize(core: SchedulerCoreProtocol) -> bool:
+            return core._finalization_phase()
+
+        phases_catalog: dict[str, CoreMethodPhase] = {
+            "initialize": CoreMethodPhase("initialize", _run_initialize),
+            "mandatory": CoreMethodPhase("mandatory", _run_mandatory),
+            "distribution": CoreMethodPhase("distribution", _run_distribution),
+            "finalize": CoreMethodPhase("finalize", _run_finalize),
         }
 
         return OptimizationPipeline([phases_catalog[name] for name in enabled])
@@ -777,24 +789,38 @@ class SchedulerCore:
             sa_cooling_rate = 0.90  # was 0.7 — too aggressive for 70+ iterations; 0.9 keeps T>0.01 for ~45 iters
             sa_max_drop = -2.0  # never accept a drop worse than this
 
+            # Chained score: tracks actual current score without redundant recalculation.
+            # Updated to after_score of last executed (non-reverted) operation so that
+            # before_score for the next operation avoids an extra calculate_overall_schedule_score()
+            # call per operation per cycle.
+            chain_score = current_overall_score
+
             while overall_improvement_made and improvement_loop_count < max_improvement_loops:
                 loop_start_time = datetime.now()
                 improvement_loop_count += 1
 
                 logging.info(f"--- Starting Enhanced Improvement Loop {improvement_loop_count} ---")
 
-                # Get current state for decision making
+                # Compute the three state metrics exactly once per cycle and reuse them in
+                # both the current_state dict (for should_skip_operation) and in
+                # prioritize_operations_dynamically to avoid six metric calls per cycle.
                 current_state = {
                     "empty_shifts_count": self.metrics.count_empty_shifts(),
                     "workload_imbalance": self.metrics.calculate_workload_imbalance(),
                     "weekend_imbalance": self.metrics.calculate_weekend_imbalance(),
                 }
 
-                # Record score at the start of this cycle for aggregate comparison
-                cycle_start_score = self.metrics.calculate_overall_schedule_score()
+                # Record score at the start of this cycle for aggregate comparison.
+                # Reuse the chained score (= current_overall_score from the previous
+                # loop-end, or the initial score on the first iteration) to avoid an extra
+                # calculate_overall_schedule_score() call.
+                cycle_start_score = chain_score
 
-                # Get dynamically prioritized operations
-                prioritized_operations = self.prioritizer.prioritize_operations_dynamically()
+                # Get dynamically prioritized operations, passing the pre-computed state so
+                # the prioritizer doesn't recompute the same three metrics.
+                prioritized_operations = self.prioritizer.prioritize_operations_dynamically(
+                    current_state=current_state
+                )
 
                 # Execute operations with enhanced tracking
                 operation_results = {}
@@ -824,14 +850,16 @@ class SchedulerCore:
                             }
                             continue
 
-                        # Per-operation checkpoint: save state before non-trivial operations
+                        # Per-operation checkpoint: save state before non-trivial operations.
+                        # Placed AFTER skip checks so skipped operations never pay snapshot cost.
                         if operation_name != "synchronize_tracking_data":
                             op_checkpoint = self._snapshot_state()
                         else:
                             op_checkpoint = None
 
-                        # Measure performance of operation
-                        before_score = self.metrics.calculate_overall_schedule_score()
+                        # Reuse chained score as before_score — avoids a redundant
+                        # calculate_overall_schedule_score() call for every operation.
+                        before_score = chain_score
                         operation_start_time = datetime.now()
 
                         # Execute operation
@@ -867,6 +895,8 @@ class SchedulerCore:
                                     "improved": False,
                                     "sa_accepted": True,
                                 }
+                                # State accepted — advance chain score
+                                chain_score = after_score
                                 continue
                             # Revert: SA rejected or drop too large
                             self._restore_state(op_checkpoint)
@@ -876,7 +906,11 @@ class SchedulerCore:
                                 "reverted": True,
                             }
                             reverted_ops.add(operation_name)
+                            # chain_score stays at before_score (state was restored)
                             continue
+
+                        # Advance chain score — state not reverted
+                        chain_score = after_score
 
                         if operation_made_change and operation_name != "synchronize_tracking_data":
                             is_significant, improvement_ratio = self.metrics.evaluate_improvement_quality(
@@ -905,6 +939,8 @@ class SchedulerCore:
 
                 # Update current score after all operations
                 current_overall_score = self.metrics.calculate_overall_schedule_score(log_components=True)
+                # Resync chain score so the next cycle starts from the authoritative post-loop score
+                chain_score = current_overall_score
 
                 # Track iteration progress with enhanced monitoring
                 progress_data = self.progress_monitor.track_iteration_progress(
@@ -929,26 +965,27 @@ class SchedulerCore:
                     logging.info(f"🛑 Parada temprana activada: {reason}")
                     break
 
-                # Use aggregate cycle score improvement OR per-operation significance as loop guard
-                cycle_end_score = self.metrics.calculate_overall_schedule_score()
-                cycle_delta = cycle_end_score - cycle_start_score
+                # Use aggregate cycle score improvement OR per-operation significance as loop guard.
+                # current_overall_score is already the authoritative end-of-cycle score — reuse it
+                # instead of calling calculate_overall_schedule_score() a second time.
+                cycle_delta = current_overall_score - cycle_start_score
                 overall_improvement_made = cycle_improvement_made or cycle_delta > 0.01
 
                 # Checkpoint: save state if this is the best score so far
-                if cycle_end_score > best_loop_score + 0.001:
-                    best_loop_score = cycle_end_score
+                if current_overall_score > best_loop_score + 0.001:
+                    best_loop_score = current_overall_score
                     best_loop_state = self._snapshot_state()
                     logging.info(f"💾 Checkpoint guardado: score {best_loop_score:.2f}")
 
                 if cycle_delta > 0.01 and not cycle_improvement_made:
                     logging.info(
                         f"📈 Aggregate cycle improvement: +{cycle_delta:.2f} "
-                        f"({cycle_start_score:.2f} → {cycle_end_score:.2f})"
+                        f"({cycle_start_score:.2f} → {current_overall_score:.2f})"
                     )
                 elif cycle_improvement_made and cycle_delta <= 0.01:
                     logging.info(
                         f"📈 Operations improved components but aggregate score flat/down "
-                        f"({cycle_start_score:.2f} → {cycle_end_score:.2f}), continuing..."
+                        f"({cycle_start_score:.2f} → {current_overall_score:.2f}), continuing..."
                     )
 
                 # Log cycle summary
