@@ -7,14 +7,6 @@ from typing import Protocol
 
 from saldo27.application.contracts import GenerationProgressEvent, SchedulerCoreProtocol
 from saldo27.domain.schedule_state import ScheduleState
-
-# ---------------------------------------------------------------------------
-# Phase-name catalog — delegates to SchedulerConfig so there is a single
-# source of truth for valid built-in phase names.
-# ---------------------------------------------------------------------------
-
-# Imported lazily at module level to avoid a hard circular-import risk;
-# the scheduler_config module has no dependency on pipeline.
 from saldo27.scheduler_config import SchedulerConfig
 
 KNOWN_PHASE_NAMES: frozenset[str] = SchedulerConfig.VALID_PIPELINE_PHASES
