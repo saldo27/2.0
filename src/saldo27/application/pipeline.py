@@ -9,11 +9,15 @@ from saldo27.application.contracts import GenerationProgressEvent, SchedulerCore
 from saldo27.domain.schedule_state import ScheduleState
 
 # ---------------------------------------------------------------------------
-# Phase-name catalog — single source of truth for valid built-in phase names.
-# Both the pipeline builder and the config validator must reference this set.
+# Phase-name catalog — delegates to SchedulerConfig so there is a single
+# source of truth for valid built-in phase names.
 # ---------------------------------------------------------------------------
 
-KNOWN_PHASE_NAMES: frozenset[str] = frozenset({"initialize", "mandatory", "distribution", "finalize"})
+# Imported lazily at module level to avoid a hard circular-import risk;
+# the scheduler_config module has no dependency on pipeline.
+from saldo27.scheduler_config import SchedulerConfig
+
+KNOWN_PHASE_NAMES: frozenset[str] = SchedulerConfig.VALID_PIPELINE_PHASES
 
 
 def validate_phase_names(names: list[str]) -> list[str]:
