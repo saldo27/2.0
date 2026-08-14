@@ -55,7 +55,9 @@ class SchedulerInitializer:
 
             if "work_percentage" in worker:
                 try:
-                    work_percentage = float(str(worker["work_percentage"]).strip()) if worker["work_percentage"] else 100
+                    work_percentage = (
+                        float(str(worker["work_percentage"]).strip()) if worker["work_percentage"] else 100
+                    )
                     if work_percentage == 0:
                         worker["work_percentage"] = 100
                     elif work_percentage < 0 or work_percentage > 100:

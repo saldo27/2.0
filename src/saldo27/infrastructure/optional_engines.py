@@ -12,6 +12,7 @@ OR-Tools availability is exposed through :func:`ortools_available` so that any
 module that needs CP-SAT can ask once via the canonical path instead of issuing
 its own ``importlib.import_module`` call.
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,6 +23,7 @@ from typing import Any, Protocol, runtime_checkable
 # ---------------------------------------------------------------------------
 # Public contract types
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class EngineCapabilities:
@@ -84,6 +86,7 @@ def ortools_available() -> bool:
 # Engine spec registry
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class OptionalEngineSpec:
     config_flag: str
@@ -117,6 +120,7 @@ OPTIONAL_ENGINE_SPECS: tuple[OptionalEngineSpec, ...] = (
 # Loader
 # ---------------------------------------------------------------------------
 
+
 def _validate_capabilities(engine_cls: type, spec: OptionalEngineSpec) -> bool:
     """Return *True* if *engine_cls* satisfies the capabilities contract.
 
@@ -140,8 +144,7 @@ def _validate_capabilities(engine_cls: type, spec: OptionalEngineSpec) -> bool:
         return False
     if caps.requires_scheduler_attr and caps.requires_scheduler_attr != spec.scheduler_attr:
         logging.warning(
-            "%s.CAPABILITIES.requires_scheduler_attr=%r no coincide con spec.scheduler_attr=%r "
-            "— motor deshabilitado.",
+            "%s.CAPABILITIES.requires_scheduler_attr=%r no coincide con spec.scheduler_attr=%r — motor deshabilitado.",
             spec.class_name,
             caps.requires_scheduler_attr,
             spec.scheduler_attr,
@@ -183,9 +186,7 @@ def load_optional_engines(scheduler: Any, config: dict[str, Any]) -> dict[str, A
 
         if not _validate_capabilities(engine_cls, spec):
             if spec.required:
-                raise RuntimeError(
-                    f"{spec.class_name} no satisface el contrato de EngineCapabilities y es requerido."
-                )
+                raise RuntimeError(f"{spec.class_name} no satisface el contrato de EngineCapabilities y es requerido.")
             continue
 
         try:

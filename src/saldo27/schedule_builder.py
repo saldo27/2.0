@@ -731,9 +731,7 @@ class ScheduleBuilder:
             return True  # Should not happen, but fail safe
 
         # Convert to set for faster lookups
-        incompatible_with_candidate = {
-            str(x) for x in self._incompatibility_cache.get(worker_id_to_check, set())
-        }
+        incompatible_with_candidate = {str(x) for x in self._incompatibility_cache.get(worker_id_to_check, set())}
 
         # Convert assigned workers to set for faster lookups, excluding None values
         assigned_workers_set = {
@@ -3847,9 +3845,7 @@ class ScheduleBuilder:
                         # Ensure the slot is not protected by a mandatory assignment
                         if self.schedule[date_val][post_val] is not None:
                             existing = self.schedule[date_val][post_val]
-                            if (existing, date_val) in self._locked_mandatory or self._is_mandatory(
-                                existing, date_val
-                            ):
+                            if (existing, date_val) in self._locked_mandatory or self._is_mandatory(existing, date_val):
                                 continue
 
                         # Temporal pacing adjustment: penalise workers ahead of their

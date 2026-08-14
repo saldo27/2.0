@@ -213,7 +213,9 @@ class SchedulerTrackingState:
                 )
 
             if validation_report["is_synchronized"]:
-                logging.debug("✓ Data synchronization validation passed: worker_assignments and schedule are synchronized")
+                logging.debug(
+                    "✓ Data synchronization validation passed: worker_assignments and schedule are synchronized"
+                )
             else:
                 logging.warning(
                     f"✗ Data synchronization issues detected: {len(validation_report['discrepancies'])} workers affected"
@@ -251,9 +253,9 @@ class SchedulerTrackingState:
 
             is_synchronized_after, _ = self.validate_synchronization()
             if is_synchronized_after:
-                total_fixes = validation_report.get("summary", {}).get("missing_from_tracking", 0) + validation_report.get(
-                    "summary", {}
-                ).get("extra_in_tracking", 0)
+                total_fixes = validation_report.get("summary", {}).get(
+                    "missing_from_tracking", 0
+                ) + validation_report.get("summary", {}).get("extra_in_tracking", 0)
                 logging.info(f"✓ Data synchronization repair successful: Fixed {total_fixes} inconsistencies")
                 return True
 
@@ -362,9 +364,9 @@ class SchedulerTrackingState:
                 else:
                     scheduler.eligibility_tracker.update_worker_status(worker_id, date)
 
-            if hasattr(scheduler, "_validate_assignment_consistency") and not scheduler._validate_assignment_consistency(
-                worker_id, date, removing
-            ):
+            if hasattr(
+                scheduler, "_validate_assignment_consistency"
+            ) and not scheduler._validate_assignment_consistency(worker_id, date, removing):
                 logging.error(
                     f"SYNC ERROR: Data synchronization issue detected after "
                     f"{'removing' if removing else 'adding'} worker {worker_id} on {date.strftime('%Y-%m-%d')}"

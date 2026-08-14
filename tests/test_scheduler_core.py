@@ -218,31 +218,30 @@ def test_strict_balance_optimizer_not_called_in_finalization_phase():
 def test_determine_initial_distribution_attempts_uses_aggressive_caps():
     core = SchedulerCore(MagicMock())
 
-    assert core._determine_initial_distribution_attempts(
-        complexity_score=800, is_simulation=False, has_prior=False
-    ) == 8
-    assert core._determine_initial_distribution_attempts(
-        complexity_score=3000, is_simulation=False, has_prior=False
-    ) == 14
-    assert core._determine_initial_distribution_attempts(
-        complexity_score=9000, is_simulation=False, has_prior=False
-    ) == 20
-    assert core._determine_initial_distribution_attempts(
-        complexity_score=18000, is_simulation=False, has_prior=False
-    ) == 28
+    assert (
+        core._determine_initial_distribution_attempts(complexity_score=800, is_simulation=False, has_prior=False) == 8
+    )
+    assert (
+        core._determine_initial_distribution_attempts(complexity_score=3000, is_simulation=False, has_prior=False) == 14
+    )
+    assert (
+        core._determine_initial_distribution_attempts(complexity_score=9000, is_simulation=False, has_prior=False) == 20
+    )
+    assert (
+        core._determine_initial_distribution_attempts(complexity_score=18000, is_simulation=False, has_prior=False)
+        == 28
+    )
 
     # Prior-calendar seeding should cut attempts further with a floor.
-    assert core._determine_initial_distribution_attempts(
-        complexity_score=18000, is_simulation=False, has_prior=True
-    ) == 14
-    assert core._determine_initial_distribution_attempts(
-        complexity_score=800, is_simulation=False, has_prior=True
-    ) == 4
+    assert (
+        core._determine_initial_distribution_attempts(complexity_score=18000, is_simulation=False, has_prior=True) == 14
+    )
+    assert core._determine_initial_distribution_attempts(complexity_score=800, is_simulation=False, has_prior=True) == 4
 
     # Simulation always has the strictest cap.
-    assert core._determine_initial_distribution_attempts(
-        complexity_score=50000, is_simulation=True, has_prior=False
-    ) == 5
+    assert (
+        core._determine_initial_distribution_attempts(complexity_score=50000, is_simulation=True, has_prior=False) == 5
+    )
 
 
 def test_is_meaningful_score_improvement_uses_min_delta():

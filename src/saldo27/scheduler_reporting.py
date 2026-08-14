@@ -199,7 +199,9 @@ class SchedulerReportingService:
                             if scheduler.date_utils.is_weekend_day(date, scheduler.holidays)
                         ]
                     )
-                    file_obj.write(f"{worker['name']} ({worker_id}): {shift_count} turnos, {weekend_count} fines de semana\n")
+                    file_obj.write(
+                        f"{worker['name']} ({worker_id}): {shift_count} turnos, {weekend_count} fines de semana\n"
+                    )
 
         logging.info(f"Schedule exported to {filename}")
         return filename
@@ -210,9 +212,7 @@ class SchedulerReportingService:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"schedule_complete_{timestamp}.json"
 
-        schedule_serializable = {
-            date.strftime("%Y-%m-%d"): workers for date, workers in scheduler.schedule.items()
-        }
+        schedule_serializable = {date.strftime("%Y-%m-%d"): workers for date, workers in scheduler.schedule.items()}
         worker_assignments_serializable = {
             worker_id: [date.strftime("%Y-%m-%d") for date in sorted(dates)]
             for worker_id, dates in scheduler.worker_assignments.items()

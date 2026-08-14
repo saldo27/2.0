@@ -206,6 +206,7 @@ def execute_generation_workflow(
     root_logger.addHandler(workflow.log_handler)
 
     try:
+
         def _run_generation() -> None:
             try:
                 result = generate_schedule(

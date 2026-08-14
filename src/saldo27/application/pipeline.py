@@ -21,10 +21,7 @@ def validate_phase_names(names: list[str]) -> list[str]:
     """
     unknown = [n for n in names if n not in KNOWN_PHASE_NAMES]
     if unknown:
-        raise ValueError(
-            f"Unknown pipeline phases: {unknown}. "
-            f"Valid phase names are: {sorted(KNOWN_PHASE_NAMES)}"
-        )
+        raise ValueError(f"Unknown pipeline phases: {unknown}. Valid phase names are: {sorted(KNOWN_PHASE_NAMES)}")
     return names
 
 
