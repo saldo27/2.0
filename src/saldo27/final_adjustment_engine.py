@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
 
 from saldo27.domain.engine_state_mixin import EngineStateMixin
+from saldo27.infrastructure.optional_engines import ortools_available
 
 
 class FinalAdjustmentEngine(EngineStateMixin):
@@ -627,19 +628,16 @@ class FinalAdjustmentEngine(EngineStateMixin):
         """
         Ejecuta la Fase 4 de refinamiento CP-SAT con OR-Tools.
 
-        Si OR-Tools no está disponible se omite sin error.  Si el solver
-        no mejora las métricas actuales se descarta la solución y se
-        restaura el estado previo.
+        Usa :func:`~saldo27.infrastructure.optional_engines.ortools_available`
+        como punto de comprobación único.  Si OR-Tools no está disponible se
+        omite sin error.  Si el solver no mejora las métricas actuales se
+        descarta la solución y se restaura el estado previo.
 
         Returns:
             Número de slots reasignados por el solver (0 si no aplica).
         """
-        try:
-            import importlib
-
-            importlib.import_module("ortools.sat.python.cp_model")
-        except ImportError:
-            logging.info("FinalAdjustmentEngine: ortools no disponible, se omite la Fase 4 CP-SAT.")
+        if not ortools_available():
+            logging.info("FinalAdjustmentEngine: OR-Tools no disponible, se omite la Fase 4 CP-SAT.")
             return 0
 
         state_before = self._save_state()

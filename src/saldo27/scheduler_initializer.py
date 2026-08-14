@@ -160,17 +160,25 @@ class SchedulerInitializer:
         loaded_optional = load_optional_engines(scheduler, config)
 
         scheduler.predictive_optimizer = None
-        scheduler.predictive_analytics = loaded_optional.get("predictive_analytics")
         if scheduler.predictive_analytics is not None:
-            try:
-                from saldo27.predictive_optimizer import PredictiveOptimizer
+            self._init_predictive_optimizer(scheduler, config)
 
-                scheduler.predictive_optimizer = PredictiveOptimizer(scheduler, scheduler.predictive_analytics)
-                predictive_config = config.get("predictive_analytics_config", {})
-                if predictive_config.get("auto_collect_data", True):
-                    scheduler.predictive_analytics.auto_collect_data_if_enabled()
-            except Exception as exc:
-                logging.error(f"Error initializing predictive optimizer: {exc}")
+    def _init_predictive_optimizer(self, scheduler: Any, config: dict[str, Any]) -> None:
+        """Initialise PredictiveOptimizer after the analytics engine is ready.
+
+        Kept as a separate method so that it is easy to test in isolation and
+        does not clutter :meth:`initialize_modules`.
+        """
+        try:
+            from saldo27.predictive_optimizer import PredictiveOptimizer
+
+            scheduler.predictive_optimizer = PredictiveOptimizer(scheduler, scheduler.predictive_analytics)
+            predictive_config = config.get("predictive_analytics_config", {})
+            if predictive_config.get("auto_collect_data", True):
+                scheduler.predictive_analytics.auto_collect_data_if_enabled()
+            logging.info("PredictiveOptimizer inicializado.")
+        except Exception as exc:
+            logging.error("Error al inicializar PredictiveOptimizer — deshabilitado: %s", exc, exc_info=True)
 
     def initialize_targets_and_prior(self) -> None:
         scheduler = self.scheduler
