@@ -49,7 +49,18 @@ def test_update_tracking_data_removal_drops_post_when_last_assignment_is_removed
 
 
 def test_validate_and_fix_final_schedule_uses_canonical_weekly_pattern_violation(sample_workers_data):
-    scheduler = _build_scheduler(sample_workers_data)
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 10),
+            "num_shifts": 4,
+            "workers_data": sample_workers_data,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
     first_date = datetime(2026, 3, 2)
     second_date = datetime(2026, 3, 9)
 

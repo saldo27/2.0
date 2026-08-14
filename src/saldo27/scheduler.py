@@ -5,7 +5,6 @@ import json
 import logging
 import math
 from collections import Counter
-from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -19,6 +18,8 @@ from saldo27.utilities import DateTimeUtils, get_effective_min_gap
 from saldo27.worker_eligibility import WorkerEligibilityTracker
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from saldo27.application.contracts import GenerationProgressEvent
     from saldo27.domain.schedule_state import ScheduleState
 
@@ -1396,9 +1397,7 @@ class Scheduler:
                         if hasattr(self, "schedule_builder"):
                             if self.schedule_builder.is_locked_mandatory(
                                 existing, date
-                            ) or self.schedule_builder.is_mandatory(
-                                existing, date
-                            ):
+                            ) or self.schedule_builder.is_mandatory(existing, date):
                                 logging.warning(
                                     f"🔒 BLOCKED: Cannot overwrite MANDATORY {existing} on {date.strftime('%Y-%m-%d')} post {post}"
                                 )
@@ -1489,6 +1488,7 @@ class Scheduler:
 
             logging.info(f"Attempting to fix {len(violations)} constraint violations")
             fixes_made = 0
+            schedule_builder = self.schedule_builder if hasattr(self, "schedule_builder") else None
 
             # Fix each violation
             for violation in violations:
@@ -1499,8 +1499,8 @@ class Scheduler:
                     date2 = violation["date2"]
 
                     # CRITICAL: Check if either date is mandatory
-                    date1_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date1)
-                    date2_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date2)
+                    date1_is_mandatory = schedule_builder.is_mandatory(worker_id, date1) if schedule_builder else False
+                    date2_is_mandatory = schedule_builder.is_mandatory(worker_id, date2) if schedule_builder else False
 
                     # If both are mandatory, we cannot fix this - it's a configuration error
                     if date1_is_mandatory and date2_is_mandatory:
@@ -1528,14 +1528,13 @@ class Scheduler:
 
                     if shift_num is not None:
                         # CRITICAL: Verify we can modify this assignment (never remove mandatory)
-                        if hasattr(self, "schedule_builder"):
-                            if not self.schedule_builder._can_modify_assignment(
-                                worker_id, date_to_unassign, "fix_constraint_rest"
-                            ):
-                                logging.warning(
-                                    f"🔒 BLOCKED: Cannot unassign MANDATORY {worker_id} from {date_to_unassign.strftime('%Y-%m-%d')}"
-                                )
-                                continue
+                        if schedule_builder and not schedule_builder._can_modify_assignment(
+                            worker_id, date_to_unassign, "fix_constraint_rest"
+                        ):
+                            logging.warning(
+                                f"🔒 BLOCKED: Cannot unassign MANDATORY {worker_id} from {date_to_unassign.strftime('%Y-%m-%d')}"
+                            )
+                            continue
 
                         # Unassign this worker
                         self.schedule[date_to_unassign][shift_num] = None
@@ -1558,8 +1557,10 @@ class Scheduler:
                     date = violation["date"]
 
                     # CRITICAL: Check if either worker has a mandatory assignment for this date
-                    worker_is_mandatory = self.schedule_builder.is_mandatory(worker_id, date)
-                    incompatible_is_mandatory = self.schedule_builder.is_mandatory(incompatible_id, date)
+                    worker_is_mandatory = schedule_builder.is_mandatory(worker_id, date) if schedule_builder else False
+                    incompatible_is_mandatory = (
+                        schedule_builder.is_mandatory(incompatible_id, date) if schedule_builder else False
+                    )
 
                     # If both are mandatory, we cannot fix this - it's a configuration error
                     if worker_is_mandatory and incompatible_is_mandatory:
@@ -1589,14 +1590,13 @@ class Scheduler:
 
                     if shift_num is not None:
                         # CRITICAL: Verify we can modify this assignment (never remove mandatory)
-                        if hasattr(self, "schedule_builder"):
-                            if not self.schedule_builder._can_modify_assignment(
-                                worker_to_unassign, date, "fix_constraint_incompat"
-                            ):
-                                logging.warning(
-                                    f"🔒 BLOCKED: Cannot unassign MANDATORY {worker_to_unassign} from {date.strftime('%Y-%m-%d')}"
-                                )
-                                continue
+                        if schedule_builder and not schedule_builder._can_modify_assignment(
+                            worker_to_unassign, date, "fix_constraint_incompat"
+                        ):
+                            logging.warning(
+                                f"🔒 BLOCKED: Cannot unassign MANDATORY {worker_to_unassign} from {date.strftime('%Y-%m-%d')}"
+                            )
+                            continue
 
                         # Unassign this worker
                         self.schedule[date][shift_num] = None
@@ -2035,10 +2035,7 @@ class Scheduler:
             "Final validation complete: Found %s incompatibility issues, %s gap/pattern issues, "
             "%s other issues. Made %s fixes. Remaining violations: %s.",
             violation_counts.get("incompatibility", 0),
-            sum(
-                violation_counts.get(kind, 0)
-                for kind in ("min_rest_days", "friday_monday_pattern", "weekly_pattern")
-            ),
+            sum(violation_counts.get(kind, 0) for kind in ("min_rest_days", "friday_monday_pattern", "weekly_pattern")),
             other_issues,
             fixes_made,
             len(remaining_violations),

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from saldo27.application.contracts import ProgressCallback
 from saldo27.scheduler import Scheduler
 from saldo27.scheduler_config import SchedulerConfig
+
+if TYPE_CHECKING:
+    from saldo27.application.contracts import ProgressCallback
 
 
 @dataclass(frozen=True)
@@ -87,9 +89,7 @@ def build_scheduler_config(request: GenerateScheduleRequest) -> dict[str, Any]:
     end_date = _to_datetime(request.end_date)
 
     raw_phases = request.config.get("pipeline_phases")
-    pipeline_phases = (
-        SchedulerConfig.validate_pipeline_phases(raw_phases) if raw_phases is not None else None
-    )
+    pipeline_phases = SchedulerConfig.validate_pipeline_phases(raw_phases) if raw_phases is not None else None
 
     return {
         "start_date": start_date,
@@ -173,7 +173,7 @@ def cancel_scheduler(scheduler: Scheduler) -> None:
     scheduler.request_cancellation()
 
 
-def validate_schedule(scheduler: Scheduler) -> dict[str, Any]:
+def validate_schedule(scheduler: Scheduler) -> int:
     return scheduler.validate_and_fix_final_schedule()
 
 

@@ -169,8 +169,7 @@ class SchedulerConfig:
         """Validate ``pipeline_phases`` and return a normalized list."""
         if not isinstance(phases, list) or not phases:
             raise ValueError(
-                f"'pipeline_phases' debe ser una lista no vacía. "
-                f"Fases válidas: {sorted(cls.VALID_PIPELINE_PHASES)}"
+                f"'pipeline_phases' debe ser una lista no vacía. Fases válidas: {sorted(cls.VALID_PIPELINE_PHASES)}"
             )
         unknown = [phase for phase in phases if phase not in cls.VALID_PIPELINE_PHASES]
         if unknown:
@@ -180,9 +179,7 @@ class SchedulerConfig:
             )
         missing = cls.REQUIRED_PIPELINE_PHASES - set(phases)
         if missing:
-            raise ValueError(
-                f"'pipeline_phases' debe incluir las fases requeridas: {sorted(missing)}"
-            )
+            raise ValueError(f"'pipeline_phases' debe incluir las fases requeridas: {sorted(missing)}")
         return list(phases)
 
     @classmethod

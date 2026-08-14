@@ -12,9 +12,9 @@ import random
 from datetime import datetime
 from typing import Any
 
-from saldo27.application.contracts import GenerationProgressEvent
 from saldo27.adaptive_iterations import AdaptiveIterationManager
 from saldo27.advanced_distribution_engine import AdvancedDistributionEngine
+from saldo27.application.contracts import GenerationProgressEvent
 from saldo27.application.pipeline import CoreMethodPhase, OptimizationPipeline
 from saldo27.balance_validator import BalanceValidator
 from saldo27.domain.schedule_state import ScheduleState
@@ -133,7 +133,6 @@ class SchedulerCore:
         }
 
         return OptimizationPipeline([phases_catalog[name] for name in enabled])
-
 
     def _log_pipeline_trace(self, phase_trace) -> None:
         if not phase_trace:
