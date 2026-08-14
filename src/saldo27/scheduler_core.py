@@ -322,12 +322,15 @@ class SchedulerCore:
         return snap
 
     def _restore_state(self, snap: dict[str, Any], *, sync_builder: bool = True) -> None:
+        # Create fresh copies so the scheduler cannot mutate the snapshot's
+        # objects in place — corrupted snapshots would cause the optimizer to
+        # restore stale/incorrect state on subsequent attempts.
         s = self.scheduler
-        s.schedule = snap["schedule"]
-        s.worker_assignments = snap["assignments"]
-        s.worker_shift_counts = snap["counts"]
-        s.worker_weekend_counts = snap["weekend_counts"]
-        s.worker_posts = snap["posts"]
+        s.schedule = {k: v[:] for k, v in snap["schedule"].items()}
+        s.worker_assignments = {k: v.copy() for k, v in snap["assignments"].items()}
+        s.worker_shift_counts = snap["counts"].copy()
+        s.worker_weekend_counts = snap["weekend_counts"].copy()
+        s.worker_posts = {k: v.copy() for k, v in snap["posts"].items()}
         if sync_builder:
             self._sync_builder_references()
         if "locked_mandatory" in snap:
