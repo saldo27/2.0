@@ -1127,7 +1127,7 @@ class Scheduler:
     # 9. REPORTING AND EXPORT
     # ========================================
     def export_schedule(self, format="txt"):
-        return self._reporting_service.export_schedule(format=format)
+        return self._reporting_service.export_schedule(output_format=format)
 
     def export_schedule_json(self, filename=None):
         return self._reporting_service.export_schedule_json(filename=filename)

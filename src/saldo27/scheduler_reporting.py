@@ -145,12 +145,12 @@ class SchedulerReportingService:
 
         return metrics
 
-    def export_schedule(self, format: str = "txt") -> str:
+    def export_schedule(self, output_format: str = "txt") -> str:
         scheduler = self.scheduler
         timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
-        filename = f"schedule_{timestamp}.{format}"
+        filename = f"schedule_{timestamp}.{output_format}"
 
-        if format == "txt":
+        if output_format == "txt":
             worker_names = {worker["id"]: worker["name"] for worker in scheduler.workers_data}
             with open(filename, "w", encoding="utf-8") as file_obj:
                 file_obj.write("=" * 60 + "\n")

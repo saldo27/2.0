@@ -293,7 +293,7 @@ class SchedulerTrackingState:
             if worker_id not in scheduler.worker_assignments:
                 scheduler.worker_assignments[worker_id] = set()
             if worker_id not in scheduler.worker_posts or not isinstance(scheduler.worker_posts.get(worker_id), set):
-                logging.warning(f"Re-initializing self.worker_posts[{worker_id}] as a set due to incorrect type.")
+                logging.warning(f"Re-initializing scheduler.worker_posts[{worker_id}] as a set due to incorrect type.")
                 scheduler.worker_posts[worker_id] = set()
             if worker_id not in scheduler.worker_weekdays:
                 scheduler.worker_weekdays[worker_id] = {day: 0 for day in range(7)}
