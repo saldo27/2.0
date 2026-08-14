@@ -10,6 +10,7 @@ import logging
 import math
 import random
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 from saldo27.adaptive_iterations import AdaptiveIterationManager
@@ -541,32 +542,19 @@ class SchedulerCore:
 
             # Determine number of initial attempts based on complexity
             complexity_score = adaptive_config.get("complexity_score", 0)
-
-            # UPDATED: Reduced maximum attempts from 60 to 40 for better performance
-            # SIMULATION MODE: Cap attempts to ensure responsiveness
-            if is_simulation:
-                num_attempts = 5
-                logging.info("🧪 Simulation Mode: Capped initial distribution attempts to 5")
-            elif complexity_score < 1000:
-                num_attempts = 10
-            elif complexity_score < 5000:
-                num_attempts = 20
-            elif complexity_score < 15000:
-                num_attempts = 30
-            else:
-                num_attempts = 40  # Maximum reduced from 60 to 40
-
-            # When prior-period data is loaded the initial worker ordering is already
-            # biased by accumulated shift counts, so there is less variance between
-            # attempts.  Halve the attempt count to recover most of the extra time
-            # cost introduced by the prior-data constraints, while keeping at least 5.
             has_prior = bool(getattr(self.scheduler, "prior_assignments", {}))
-            if has_prior and not is_simulation:
-                num_attempts = max(5, num_attempts // 2)
-                logging.info(f"📅 Prior calendar loaded: reduced initial attempts to {num_attempts}")
+            num_attempts = self._determine_initial_distribution_attempts(
+                complexity_score=complexity_score,
+                is_simulation=is_simulation,
+                has_prior=has_prior,
+            )
 
             logging.info(f"Problem complexity: {complexity_score:.0f}")
             logging.info(f"Number of initial distribution attempts: {num_attempts}")
+
+            # Compute fill_attempts ONCE for this full Phase 2.5 run.
+            fill_attempts = adaptive_config.get("fill_attempts", 16)
+            logging.info(f"Configured fill attempts per strategy: {fill_attempts}")
 
             # Save current mandatory state (this must be preserved)
             mandatory_snap = self._snapshot_state()
@@ -589,8 +577,10 @@ class SchedulerCore:
 
             # Start adaptive iteration manager timer
             self.adaptive_manager.start_time = datetime.now()
+            phase25_start = perf_counter()
 
             for attempt_num in range(1, num_attempts + 1):
+                attempt_start = perf_counter()
                 # Check cancellation flag
                 if self.scheduler.is_cancellation_requested():
                     logging.info("🛑 Initial distribution cancelled by user")
@@ -648,7 +638,8 @@ class SchedulerCore:
                 logging.info(f"Strategy for attempt {attempt_num} (effective {effective_attempt}): {strategy['name']}")
 
                 # Perform initial fill with this strategy
-                success = self._perform_initial_fill_with_strategy(strategy)
+                success = self._perform_initial_fill_with_strategy(strategy, fill_attempts=fill_attempts)
+                fill_stats = getattr(self, "_last_initial_fill_stats", {})
 
                 # Log state after fill
                 empty_after = sum(
@@ -660,7 +651,15 @@ class SchedulerCore:
                 if not success:
                     logging.warning(f"Attempt {attempt_num} failed to fill schedule")
                     attempts_results.append(
-                        {"attempt": attempt_num, "strategy": strategy["name"], "success": False, "score": 0}
+                        {
+                            "attempt": attempt_num,
+                            "strategy": strategy["name"],
+                            "success": False,
+                            "score": 0,
+                            "duration_sec": perf_counter() - attempt_start,
+                            "fill_duration_sec": fill_stats.get("duration_sec", 0.0),
+                            "fill_attempts": fill_stats.get("fill_attempts", fill_attempts),
+                        }
                     )
                     continue
 
@@ -688,11 +687,14 @@ class SchedulerCore:
                         "empty_shifts": empty_shifts,
                         "workload_imbalance": workload_imbalance,
                         "weekend_imbalance": weekend_imbalance,
+                        "duration_sec": perf_counter() - attempt_start,
+                        "fill_duration_sec": fill_stats.get("duration_sec", 0.0),
+                        "fill_attempts": fill_stats.get("fill_attempts", fill_attempts),
                     }
                 )
 
                 # Check if this is the best so far
-                if score > best_score:
+                if self._is_meaningful_score_improvement(score, best_score):
                     best_score = score
                     best_attempt = attempt_num
                     no_improve_count = 0  # Reset early-stop counter on improvement
@@ -703,8 +705,8 @@ class SchedulerCore:
                 else:
                     no_improve_count += 1
 
-                # Early stop: if no improvement for 8 consecutive attempts, stop
-                if no_improve_count >= 8 and attempt_num >= 10:
+                # Early stop: require fewer non-improving attempts to cut wasted cycles.
+                if no_improve_count >= 6 and attempt_num >= 8:
                     logging.info(
                         f"⏩ Early stop: no improvement in {no_improve_count} consecutive attempts "
                         f"(best score: {best_score:.2f} from attempt #{best_attempt})"
@@ -726,9 +728,10 @@ class SchedulerCore:
 
             # Display results table
             logging.info(
-                f"\n{'Attempt':<10} {'Strategy':<25} {'Score':<10} {'Empty':<8} {'Work Imb':<10} {'Weekend Imb':<12}"
+                f"\n{'Attempt':<10} {'Strategy':<25} {'Score':<10} {'Empty':<8} "
+                f"{'Work Imb':<10} {'Weekend Imb':<12} {'Time(s)':<8} {'Fill(s)':<8} {'Fills':<6}"
             )
-            logging.info("─" * 90)
+            logging.info("─" * 122)
 
             for result in attempts_results:
                 if result["success"]:
@@ -736,10 +739,16 @@ class SchedulerCore:
                     logging.info(
                         f"{marker} {result['attempt']:<8} {result['strategy']:<25} "
                         f"{result['score']:<10.2f} {result['empty_shifts']:<8} "
-                        f"{result['workload_imbalance']:<10.2f} {result['weekend_imbalance']:<12.2f}"
+                        f"{result['workload_imbalance']:<10.2f} {result['weekend_imbalance']:<12.2f} "
+                        f"{result.get('duration_sec', 0.0):<8.2f} {result.get('fill_duration_sec', 0.0):<8.2f} "
+                        f"{result.get('fill_attempts', fill_attempts):<6}"
                     )
                 else:
-                    logging.info(f"  {result['attempt']:<8} {result['strategy']:<25} FAILED")
+                    logging.info(
+                        f"  {result['attempt']:<8} {result['strategy']:<25} FAILED "
+                        f"{result.get('duration_sec', 0.0):<8.2f} {result.get('fill_duration_sec', 0.0):<8.2f} "
+                        f"{result.get('fill_attempts', fill_attempts):<6}"
+                    )
 
             # Apply the best attempt
             logging.info(f"\n🏆 Applying best attempt #{best_attempt} with score {best_score:.2f}")
@@ -757,6 +766,14 @@ class SchedulerCore:
             # Export initial calendar PDF before optimization
             self._export_initial_calendar_pdf()
 
+            phase25_duration = perf_counter() - phase25_start
+            logging.info(
+                "⏱️ Phase 2.5 timing summary: attempts=%s, fill_attempts=%s, total_time=%.2fs, avg_attempt=%.2fs",
+                len(attempts_results),
+                fill_attempts,
+                phase25_duration,
+                (phase25_duration / len(attempts_results)) if attempts_results else 0.0,
+            )
             logging.info("=" * 80)
             logging.info("✅ Multiple initial distribution phase completed successfully")
             logging.info("=" * 80)
@@ -766,6 +783,39 @@ class SchedulerCore:
         except Exception as e:
             logging.error(f"Error during multiple initial distribution attempts: {e!s}", exc_info=True)
             return False
+
+    def _determine_initial_distribution_attempts(
+        self, *, complexity_score: float, is_simulation: bool, has_prior: bool
+    ) -> int:
+        """
+        Choose Phase 2.5 attempt count with stricter caps for complex cases.
+        """
+        if is_simulation:
+            logging.info("🧪 Simulation Mode: Capped initial distribution attempts to 5")
+            return 5
+
+        if complexity_score < 1000:
+            attempts = 8
+        elif complexity_score < 5000:
+            attempts = 14
+        elif complexity_score < 15000:
+            attempts = 20
+        else:
+            attempts = 28
+
+        # Prior-period bias lowers exploration variance: reduce attempts further.
+        if has_prior:
+            attempts = max(4, attempts // 2)
+            logging.info(f"📅 Prior calendar loaded: reduced initial attempts to {attempts}")
+
+        return attempts
+
+    @staticmethod
+    def _is_meaningful_score_improvement(score: float, best_score: float, min_delta: float = 0.25) -> bool:
+        """Return True only for meaningful score gains to avoid pseudo-improvements."""
+        if best_score < 0:
+            return True
+        return (score - best_score) >= min_delta
 
     def _iterative_improvement_phase(self, max_improvement_loops: int) -> bool:
         """
@@ -2428,7 +2478,7 @@ class SchedulerCore:
         chosen_any["attempt_num"] = attempt_num
         return chosen_any
 
-    def _perform_initial_fill_with_strategy(self, strategy: dict[str, Any]) -> bool:
+    def _perform_initial_fill_with_strategy(self, strategy: dict[str, Any], fill_attempts: int | None = None) -> bool:
         """
         Perform initial schedule fill using the specified strategy.
 
@@ -2465,17 +2515,25 @@ class SchedulerCore:
 
             logging.info(f"Filling schedule with {len(workers_list)} workers using '{strategy['name']}' strategy")
 
-            # Perform initial fill
-            # Use adaptive iteration config to determine fill attempts
-            adaptive_config = self.adaptive_manager.calculate_adaptive_iterations()
-            fill_attempts = adaptive_config.get("fill_attempts", 16)
+            # Perform initial fill (fill_attempts is now computed once per Phase 2.5)
+            if fill_attempts is None:
+                adaptive_config = self.adaptive_manager.calculate_adaptive_iterations()
+                fill_attempts = adaptive_config.get("fill_attempts", 16)
 
-            logging.info(f"Using {fill_attempts} fill attempts based on adaptive configuration")
+            logging.info(f"Using {fill_attempts} fill attempts for this strategy")
 
             # Call schedule builder's fill method with custom worker ordering
+            fill_start = perf_counter()
             success = self.scheduler.schedule_builder._try_fill_empty_shifts_with_worker_order(
                 workers_list, max_attempts=fill_attempts
             )
+            fill_duration = perf_counter() - fill_start
+            self._last_initial_fill_stats = {
+                "duration_sec": fill_duration,
+                "fill_attempts": fill_attempts,
+                "strategy": strategy["name"],
+            }
+            logging.info("⏱️ Fill attempt runtime: %.2fs", fill_duration)
 
             if success:
                 logging.info(f"✅ Initial fill successful with '{strategy['name']}' strategy")
