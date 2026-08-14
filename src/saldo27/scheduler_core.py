@@ -319,16 +319,45 @@ class SchedulerCore:
             snap["locked_mandatory"] = s.get_locked_mandatory()
         return snap
 
-    def _restore_state(self, snap: dict[str, Any], *, sync_builder: bool = True) -> None:
-        # Create fresh copies so the scheduler cannot mutate the snapshot's
-        # objects in place — corrupted snapshots would cause the optimizer to
-        # restore stale/incorrect state on subsequent attempts.
+    def _restore_state(self, snap: dict[str, Any], *, sync_builder: bool = True, consume: bool = False) -> None:
+        """Restore scheduler state from a snapshot produced by ``_snapshot_state``.
+
+        Args:
+            snap: Snapshot dict as returned by ``_snapshot_state``.
+            sync_builder: When True (default) call ``_sync_builder_references``
+                after restoring so that ``schedule_builder`` and dependent
+                objects point at the newly restored dicts.
+            consume: When True the snapshot is treated as single-use — its
+                already-copied objects are assigned directly to the scheduler
+                (O(1) per collection) instead of being copied again.  The
+                caller MUST NOT reuse the snapshot after passing consume=True.
+                Use this for per-operation rollback checkpoints and any other
+                snapshot that is discarded immediately after restoration.
+                Leave False (default) for snapshots that are restored more
+                than once (e.g. ``mandatory_snap`` in the initial-distribution
+                loop) so the template stays uncorrupted across restores.
+        """
         s = self.scheduler
-        s.schedule = {k: v[:] for k, v in snap["schedule"].items()}
-        s.worker_assignments = {k: v.copy() for k, v in snap["assignments"].items()}
-        s.worker_shift_counts = snap["counts"].copy()
-        s.worker_weekend_counts = snap["weekend_counts"].copy()
-        s.worker_posts = {k: v.copy() for k, v in snap["posts"].items()}
+        if consume:
+            # Single-use path: the snapshot already holds independent copies
+            # (created by _snapshot_state).  Assigning them directly is O(1)
+            # and safe because the caller will not restore from this snapshot
+            # again.
+            s.schedule = snap["schedule"]
+            s.worker_assignments = snap["assignments"]
+            s.worker_shift_counts = snap["counts"]
+            s.worker_weekend_counts = snap["weekend_counts"]
+            s.worker_posts = snap["posts"]
+        else:
+            # Multi-use path: create fresh copies so the scheduler cannot
+            # mutate the snapshot's objects in place — corrupted snapshots
+            # would cause the optimizer to restore stale/incorrect state on
+            # subsequent attempts.
+            s.schedule = {k: v[:] for k, v in snap["schedule"].items()}
+            s.worker_assignments = {k: v.copy() for k, v in snap["assignments"].items()}
+            s.worker_shift_counts = snap["counts"].copy()
+            s.worker_weekend_counts = snap["weekend_counts"].copy()
+            s.worker_posts = {k: v.copy() for k, v in snap["posts"].items()}
         if sync_builder:
             self._sync_builder_references()
         if "locked_mandatory" in snap:
@@ -578,11 +607,14 @@ class SchedulerCore:
                 if _prior_seeded_counts:
                     self.scheduler.worker_shift_counts.update(_prior_seeded_counts)
 
-                # CRITICAL: Sync ALL schedule_builder references to the new deep-copied objects
+                # _restore_state already called _sync_builder_references so the
+                # builder's mutable references (schedule, assignments, …) are up to
+                # date.  _build_optimization_caches() is intentionally NOT called here:
+                # all four caches it rebuilds (worker, incompatibility, mandatory-dates,
+                # date) are derived exclusively from static worker config and calendar
+                # data — they never change between attempts.  Calling it 40× per
+                # complete attempt was the main cause of the Fase-1/Fase-2 slowdown.
                 if hasattr(self.scheduler, "schedule_builder"):
-                    # _restore_state already called _sync_builder_references; just rebuild caches
-                    # CRITICAL: Rebuild caches to reflect new state (prevents cache staling between attempts)
-                    self.scheduler.schedule_builder._build_optimization_caches()
                     attempt_state_stats = self._sanitize_restored_attempt_state()
                 else:
                     attempt_state_stats = {
@@ -595,7 +627,6 @@ class SchedulerCore:
                     }
 
                 logging.info(f"Restored {len(mandatory_snap['locked_mandatory'])} locked mandatory shifts")
-                logging.info("Rebuilt schedule builder caches for fresh attempt")
                 if attempt_state_stats["stray_prefilled_slots"] > 0:
                     logging.warning(
                         "Cleared %s stray prefilled non-mandatory slots before initial fill",
@@ -713,7 +744,7 @@ class SchedulerCore:
             # Apply the best attempt
             logging.info(f"\n🏆 Applying best attempt #{best_attempt} with score {best_score:.2f}")
 
-            self._restore_state(best_snap)
+            self._restore_state(best_snap, consume=True)
 
             logging.info(f"Restored {len(best_snap['locked_mandatory'])} locked mandatory shifts from best attempt")
 
@@ -899,7 +930,7 @@ class SchedulerCore:
                                 chain_score = after_score
                                 continue
                             # Revert: SA rejected or drop too large
-                            self._restore_state(op_checkpoint)
+                            self._restore_state(op_checkpoint, consume=True)
                             logging.info(f"↩️  {operation_name}: revertido ({before_score:.2f} → {after_score:.2f})")
                             operation_results[operation_name] = {
                                 "improved": False,
@@ -1012,7 +1043,7 @@ class SchedulerCore:
                     f"🔄 Restaurando mejor checkpoint: {final_score:.2f} → {best_loop_score:.2f} "
                     f"(+{best_loop_score - final_score:.2f})"
                 )
-                self._restore_state(best_loop_state)
+                self._restore_state(best_loop_state, consume=True)
 
             # Phase 3.5: Advanced distribution engine as final push
             logging.info("\n" + "=" * 80)
@@ -1076,7 +1107,7 @@ class SchedulerCore:
                             f"⚠️ Phase 3.6 strict optimizer WORSENED score "
                             f"({score_before_strict:.2f} → {score_after_strict:.2f}). Reverting."
                         )
-                        self._restore_state(state_before_strict)
+                        self._restore_state(state_before_strict, consume=True)
                     elif balance_achieved:
                         logging.info(f"✅ Perfect balance achieved: All workers within ±{_bal_tol} shift of target")
                     else:
@@ -1240,7 +1271,7 @@ class SchedulerCore:
                 logging.warning("   RESTORING pre-finalization state...")
 
                 # Restore pre-finalization state
-                self._restore_state(pre_finalization_state)
+                self._restore_state(pre_finalization_state, consume=True)
 
                 logging.info("✅ Pre-finalization state restored successfully")
             else:
