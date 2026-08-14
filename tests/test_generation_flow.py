@@ -5,6 +5,7 @@ import time
 from datetime import date, datetime
 
 from saldo27.application import generation_flow
+from saldo27.application.contracts import GenerationProgressEvent
 from saldo27.application.generation_flow import (
     GenerationUICallbacks,
     collect_constraint_violations,
@@ -91,7 +92,7 @@ def test_execute_generation_workflow_returns_success_summary(sample_workers_data
 
     def fake_generate_schedule(request, *, prepared, progress_callback):
         progress_callback(
-            generation_flow.GenerationProgressEvent(
+            GenerationProgressEvent(
                 phase="initialize",
                 stage="started",
                 timestamp=datetime.now(),

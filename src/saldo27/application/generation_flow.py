@@ -3,13 +3,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from queue import Empty, SimpleQueue
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from saldo27.application.contracts import GenerationProgressEvent
 from saldo27.application.use_cases import (
     GenerateScheduleRequest,
     PrepareSchedulerResult,
@@ -19,7 +17,12 @@ from saldo27.application.use_cases import (
     prepare_scheduler,
     validate_generation_request,
 )
-from saldo27.scheduler import Scheduler
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
+    from saldo27.application.contracts import GenerationProgressEvent
+    from saldo27.scheduler import Scheduler
 
 StatusLevel = Literal["info", "warning", "error", "success"]
 LogKind = Literal["code", "warning"]
