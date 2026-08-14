@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from saldo27.scheduler import Scheduler
 
@@ -25,10 +25,59 @@ class GenerateScheduleResult:
     message: str
 
 
+@dataclass(frozen=True)
+class DemoLimitBreach:
+    kind: Literal["max_workers", "max_days"]
+    limit: int
+    actual: int
+
+
+@dataclass(frozen=True)
+class PrepareSchedulerResult:
+    scheduler: Scheduler
+    prior_schedule_error: str | None = None
+    prior_schedule_summary: dict[str, Any] | None = None
+
+
 def _to_datetime(value: datetime | date) -> datetime:
     if isinstance(value, datetime):
         return value
     return datetime.combine(value, datetime.min.time())
+
+
+def check_demo_limitations(
+    *,
+    limitations: dict[str, Any],
+    workers_data: list[dict[str, Any]],
+    start_date: datetime | date,
+    end_date: datetime | date,
+) -> DemoLimitBreach | None:
+    max_workers = limitations.get("max_workers")
+    if max_workers and len(workers_data) > max_workers:
+        return DemoLimitBreach(kind="max_workers", limit=max_workers, actual=len(workers_data))
+
+    max_days = limitations.get("max_days")
+    if max_days:
+        start = _to_datetime(start_date)
+        end = _to_datetime(end_date)
+        days = (end - start).days + 1
+        if days > max_days:
+            return DemoLimitBreach(kind="max_days", limit=max_days, actual=days)
+
+    return None
+
+
+def validate_generation_request(request: GenerateScheduleRequest) -> str | None:
+    start_date = _to_datetime(request.start_date)
+    end_date = _to_datetime(request.end_date)
+
+    if not request.workers_data:
+        return "❌ Error: No hay trabajadores configurados"
+
+    if start_date >= end_date:
+        return "❌ Error: La fecha final debe ser posterior a la inicial"
+
+    return None
 
 
 def build_scheduler_config(request: GenerateScheduleRequest) -> dict[str, Any]:
@@ -56,26 +105,38 @@ def build_scheduler_config(request: GenerateScheduleRequest) -> dict[str, Any]:
     }
 
 
-def generate_schedule(request: GenerateScheduleRequest) -> GenerateScheduleResult:
-    start_date = _to_datetime(request.start_date)
-    end_date = _to_datetime(request.end_date)
-
-    if not request.workers_data:
-        return GenerateScheduleResult(False, None, "❌ Error: No hay trabajadores configurados")
-
-    if start_date >= end_date:
-        return GenerateScheduleResult(False, None, "❌ Error: La fecha final debe ser posterior a la inicial")
-
+def prepare_scheduler(request: GenerateScheduleRequest) -> PrepareSchedulerResult:
     scheduler = Scheduler(build_scheduler_config(request))
+
+    prior_schedule_error: str | None = None
+    prior_schedule_summary: dict[str, Any] | None = None
 
     if request.prior_schedule_raw:
         from io import BytesIO
 
         load_result = scheduler.load_prior_schedule_data(BytesIO(request.prior_schedule_raw))
         if load_result.get("error"):
-            return GenerateScheduleResult(
-                False, scheduler, f"⚠️ Calendario anterior no pudo cargarse: {load_result['error']}"
-            )
+            prior_schedule_error = str(load_result["error"])
+        else:
+            prior_schedule_summary = load_result.get("summary", {})
+
+    return PrepareSchedulerResult(
+        scheduler=scheduler,
+        prior_schedule_error=prior_schedule_error,
+        prior_schedule_summary=prior_schedule_summary,
+    )
+
+
+def generate_schedule(request: GenerateScheduleRequest) -> GenerateScheduleResult:
+    validation_error = validate_generation_request(request)
+    if validation_error:
+        return GenerateScheduleResult(False, None, validation_error)
+
+    prepared = prepare_scheduler(request)
+    scheduler = prepared.scheduler
+
+    if prepared.prior_schedule_error:
+        return GenerateScheduleResult(False, scheduler, f"⚠️ Calendario anterior no pudo cargarse: {prepared.prior_schedule_error}")
 
     success = scheduler.generate_schedule()
     return GenerateScheduleResult(

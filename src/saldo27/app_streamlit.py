@@ -28,7 +28,12 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-from saldo27.application.use_cases import GenerateScheduleRequest, build_scheduler_config
+from saldo27.application.use_cases import (
+    GenerateScheduleRequest,
+    check_demo_limitations,
+    prepare_scheduler,
+    validate_generation_request,
+)
 from saldo27.license_manager import license_manager
 from saldo27.scheduler import Scheduler
 from saldo27.scheduler_config import SchedulerConfig, setup_logging
@@ -483,69 +488,48 @@ def load_schedule_from_json(uploaded_file):
 def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
     """Generar el horario internamente"""
     limitations = st.session_state.limitations
+    workers_data = st.session_state.workers_data
 
-    # Verificar límite de trabajadores (DEMO)
-    if limitations["max_workers"]:
-        if len(st.session_state.workers_data) > limitations["max_workers"]:
-            st.error(f"⚠️ **Limitación DEMO**:  Máximo {limitations['max_workers']} trabajadores permitidos")
+    breach = check_demo_limitations(
+        limitations=limitations,
+        workers_data=workers_data,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if breach:
+        if breach.kind == "max_workers":
+            st.error(f"⚠️ **Limitación DEMO**:  Máximo {breach.limit} trabajadores permitidos")
             st.info("💡 Activa la licencia completa para trabajadores ilimitados")
-            return False, f"Límite de {limitations['max_workers']} trabajadores excedido"
-
-    # Verificar límite de días (DEMO)
-    if limitations["max_days"]:
-        days = (end_date - start_date).days + 1
-        if isinstance(days, timedelta):
-            days = days.days
-        if days > limitations["max_days"]:
-            st.error(f"⚠️ **Limitación DEMO**: Máximo {limitations['max_days']} días de horario permitidos")
-            st.info("💡 Activa la licencia completa para períodos ilimitados")
-            return False, f"Límite de {limitations['max_days']} días excedido"
-    # ===== FIN VALIDACIONES =====
+            return False, f"Límite de {breach.limit} trabajadores excedido"
+        st.error(f"⚠️ **Limitación DEMO**: Máximo {breach.limit} días de horario permitidos")
+        st.info("💡 Activa la licencia completa para períodos ilimitados")
+        return False, f"Límite de {breach.limit} días excedido"
 
     try:
-        # Validar datos de entrada
-        if not st.session_state.workers_data:
-            return False, "❌ Error: No hay trabajadores configurados"
-
-        if start_date >= end_date:
-            return False, "❌ Error: La fecha final debe ser posterior a la inicial"
-
-        # Convertir date a datetime si es necesario
-        if not isinstance(start_date, datetime):
-            start_date = datetime.combine(start_date, datetime.min.time())
-        if not isinstance(end_date, datetime):
-            end_date = datetime.combine(end_date, datetime.min.time())
-
-        # Prepare config for Scheduler
-        # Note: We pass the workers data directly. The Scheduler class handles
-        # target_shifts calculation internally using its sophisticated logic
-        # (including largest-remainder rounding, work periods, etc.)
-
         request = GenerateScheduleRequest(
             start_date=start_date,
             end_date=end_date,
             holidays=holidays,
             variable_shifts=variable_shifts,
-            workers_data=st.session_state.workers_data,
+            workers_data=workers_data,
             config=st.session_state.config,
             prior_schedule_raw=st.session_state.get("prior_schedule_raw"),
         )
-        config = build_scheduler_config(request)
+
+        validation_error = validate_generation_request(request)
+        if validation_error:
+            return False, validation_error
 
         # Crear scheduler
-        scheduler = Scheduler(config)
+        prepared_scheduler = prepare_scheduler(request)
+        scheduler = prepared_scheduler.scheduler
         st.session_state.scheduler = scheduler
 
         # Aplicar calendario anterior si fue cargado previamente
-        _prior_raw = request.prior_schedule_raw
-        if _prior_raw:
-            from io import BytesIO
-
-            _result = scheduler.load_prior_schedule_data(BytesIO(_prior_raw))
-            if _result.get("error"):
-                st.warning(f"⚠️ Calendario anterior no pudo cargarse: {_result['error']}")
-            else:
-                st.session_state.prior_schedule_data = _result.get("summary", {})
+        if prepared_scheduler.prior_schedule_error:
+            st.warning(f"⚠️ Calendario anterior no pudo cargarse: {prepared_scheduler.prior_schedule_error}")
+        elif prepared_scheduler.prior_schedule_summary is not None:
+            st.session_state.prior_schedule_data = prepared_scheduler.prior_schedule_summary
 
         # Generación con soporte de cancelación
         import threading
