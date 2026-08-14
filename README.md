@@ -139,9 +139,9 @@ uv run pytest
 
 ## Documentación adicional
 
-- `/home/runner/work/2.0/2.0/docs/README_STREAMLIT.md` — descripción funcional ampliada de la interfaz
-- `/home/runner/work/2.0/2.0/docs/README.txt` — documentación orientada a distribución de escritorio
-- `/home/runner/work/2.0/2.0/docs/ejecutar.md` — notas de ejecución
+- `docs/README_STREAMLIT.md` — descripción funcional ampliada de la interfaz
+- `docs/README.txt` — documentación orientada a distribución de escritorio
+- `docs/ejecutar.md` — notas de ejecución
 
 ## Notas importantes
 
