@@ -1,12 +1,10 @@
+import types
+
 from saldo27.infrastructure.optional_engines import load_optional_engines
 
 
-class _SchedulerStub:
-    pass
-
-
 def test_optional_loader_disables_unavailable_engines(monkeypatch):
-    scheduler = _SchedulerStub()
+    scheduler = types.SimpleNamespace()
 
     def _raise_import_error(_module):
         raise ModuleNotFoundError("missing")

@@ -80,9 +80,41 @@ def validate_generation_request(request: GenerateScheduleRequest) -> str | None:
     return None
 
 
+_VALID_PIPELINE_PHASES: frozenset[str] = frozenset({"initialize", "mandatory", "distribution", "finalize"})
+_REQUIRED_PIPELINE_PHASES: frozenset[str] = frozenset({"initialize", "finalize"})
+
+
+def _validate_pipeline_phases(phases: Any) -> list[str]:
+    """Validate the ``pipeline_phases`` config value and return a clean list.
+
+    Raises ``ValueError`` with a descriptive message if the value is not a
+    non-empty list of known phase names or if mandatory phases are missing.
+    """
+    if not isinstance(phases, list) or not phases:
+        raise ValueError(
+            f"'pipeline_phases' debe ser una lista no vacía. "
+            f"Fases válidas: {sorted(_VALID_PIPELINE_PHASES)}"
+        )
+    unknown = [p for p in phases if p not in _VALID_PIPELINE_PHASES]
+    if unknown:
+        raise ValueError(
+            f"Fases desconocidas en 'pipeline_phases': {unknown}. "
+            f"Fases válidas: {sorted(_VALID_PIPELINE_PHASES)}"
+        )
+    missing = _REQUIRED_PIPELINE_PHASES - set(phases)
+    if missing:
+        raise ValueError(
+            f"'pipeline_phases' debe incluir las fases requeridas: {sorted(missing)}"
+        )
+    return list(phases)
+
+
 def build_scheduler_config(request: GenerateScheduleRequest) -> dict[str, Any]:
     start_date = _to_datetime(request.start_date)
     end_date = _to_datetime(request.end_date)
+
+    raw_phases = request.config.get("pipeline_phases")
+    pipeline_phases = _validate_pipeline_phases(raw_phases) if raw_phases is not None else None
 
     return {
         "start_date": start_date,
@@ -101,7 +133,7 @@ def build_scheduler_config(request: GenerateScheduleRequest) -> dict[str, Any]:
         "max_improvement_loops": request.config.get("max_improvement_loops", 150),
         "last_post_adjustment_max_iterations": request.config.get("last_post_adjustment_max_iterations", 10),
         "max_complete_attempts": request.config.get("max_complete_attempts", 5),
-        "pipeline_phases": request.config.get("pipeline_phases"),
+        "pipeline_phases": pipeline_phases,
     }
 
 
@@ -127,14 +159,21 @@ def prepare_scheduler(request: GenerateScheduleRequest) -> PrepareSchedulerResul
     )
 
 
-def generate_schedule(request: GenerateScheduleRequest) -> GenerateScheduleResult:
+def generate_schedule(
+    request: GenerateScheduleRequest,
+    *,
+    prepared: PrepareSchedulerResult | None = None,
+) -> GenerateScheduleResult:
     validation_error = validate_generation_request(request)
     if validation_error:
         return GenerateScheduleResult(False, None, validation_error)
 
-    prepared = prepare_scheduler(request)
+    if prepared is None:
+        prepared = prepare_scheduler(request)
     scheduler = prepared.scheduler
 
+    # Ensure the cancel flag is clean before starting a new generation.
+    scheduler._cancelled = False
     success = scheduler.generate_schedule()
     if prepared.prior_schedule_error:
         message = (
@@ -147,6 +186,11 @@ def generate_schedule(request: GenerateScheduleRequest) -> GenerateScheduleResul
     return GenerateScheduleResult(
         success, scheduler, "✅ Horario generado" if success else "❌ No se pudo generar horario"
     )
+
+
+def cancel_scheduler(scheduler: Scheduler) -> None:
+    """Signal the scheduler to stop generation at the next cancellation checkpoint."""
+    scheduler._cancelled = True
 
 
 def validate_schedule(scheduler: Scheduler) -> dict[str, Any]:

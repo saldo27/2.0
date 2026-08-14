@@ -14,6 +14,7 @@ class OptionalEngineSpec:
     scheduler_attr: str
     extra_args_config_key: str | None = None
     default_enabled: bool = False
+    required: bool = False
 
 
 OPTIONAL_ENGINE_SPECS: tuple[OptionalEngineSpec, ...] = (
@@ -44,6 +45,13 @@ def load_optional_engines(scheduler: Any, config: dict[str, Any]) -> dict[str, A
 
         try:
             module = import_module(spec.module_path)
+        except ImportError as exc:
+            if spec.required:
+                raise
+            logging.warning("%s no disponible (módulo no instalado) — deshabilitado: %s", spec.class_name, exc)
+            continue
+
+        try:
             engine_cls = getattr(module, spec.class_name)
             if spec.extra_args_config_key:
                 engine = engine_cls(scheduler, config.get(spec.extra_args_config_key, {}))
@@ -53,6 +61,13 @@ def load_optional_engines(scheduler: Any, config: dict[str, Any]) -> dict[str, A
             loaded[spec.scheduler_attr] = engine
             logging.info("%s initialized", spec.class_name)
         except Exception as exc:
-            logging.warning("%s not available - disabled: %s", spec.class_name, exc)
+            logging.error(
+                "Fallo al inicializar %s — el motor quedará deshabilitado. Error: %s",
+                spec.class_name,
+                exc,
+                exc_info=True,
+            )
+            if spec.required:
+                raise
 
     return loaded

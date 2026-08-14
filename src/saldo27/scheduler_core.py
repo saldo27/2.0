@@ -118,7 +118,7 @@ class SchedulerCore:
     ) -> OptimizationPipeline:
         configured = self.config.get("pipeline_phases")
         default_order = ["initialize", "mandatory", "distribution", "finalize"]
-        enabled = configured if isinstance(configured, list) and configured else default_order
+        enabled: list[str] = configured if isinstance(configured, list) and configured else default_order
 
         phases_catalog = {
             "initialize": CoreMethodPhase("initialize", lambda core: core._initialize_schedule_phase()),
@@ -131,7 +131,22 @@ class SchedulerCore:
             ),
             "finalize": CoreMethodPhase("finalize", lambda core: core._finalization_phase()),
         }
-        return OptimizationPipeline([phases_catalog[name] for name in enabled if name in phases_catalog])
+
+        unknown = [name for name in enabled if name not in phases_catalog]
+        if unknown:
+            raise ValueError(
+                f"Fases de pipeline desconocidas: {unknown}. "
+                f"Fases válidas: {sorted(phases_catalog)}"
+            )
+        required = {"initialize", "finalize"}
+        missing = required - set(enabled)
+        if missing:
+            raise ValueError(
+                f"El pipeline debe incluir las fases requeridas: {sorted(missing)}"
+            )
+
+        return OptimizationPipeline([phases_catalog[name] for name in enabled])
+
 
     def _log_pipeline_trace(self, phase_trace) -> None:
         if not phase_trace:
@@ -236,8 +251,8 @@ class SchedulerCore:
         self.scheduler.worker_shift_counts = best_attempt["counts"]
         self.scheduler.worker_weekend_counts = best_attempt["weekend_counts"]
         self.scheduler.worker_posts = best_attempt["posts"]
-        self._sync_builder_references()
         if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
+            self._sync_builder_references()
             self.scheduler.schedule_builder._locked_mandatory = best_attempt["locked_mandatory"]
         return True
 

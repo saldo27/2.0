@@ -30,8 +30,11 @@ import streamlit.components.v1 as components
 
 from saldo27.application.use_cases import (
     GenerateScheduleRequest,
+    cancel_scheduler,
     check_demo_limitations,
+    generate_schedule,
     prepare_scheduler,
+    run_simulation,
     validate_generation_request,
 )
 from saldo27.license_manager import license_manager
@@ -538,7 +541,6 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
         status_text = st.empty()
         cancel_placeholder = st.empty()
         st.session_state.generation_cancelled = False
-        scheduler._cancelled = False
 
         generation_result: dict[str, bool | Exception | None] = {"success": False, "error": None}
 
@@ -552,7 +554,8 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
 
             def _run_generation():
                 try:
-                    generation_result["success"] = scheduler.generate_schedule()
+                    result = generate_schedule(request, prepared=prepared_scheduler)
+                    generation_result["success"] = result.success
                 except Exception as exc:
                     generation_result["error"] = exc
 
@@ -581,7 +584,7 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             # Polling loop: mostrar progreso real y permitir cancelación
             while thread.is_alive():
                 if st.session_state.get("_cancel_requested"):
-                    scheduler._cancelled = True
+                    cancel_scheduler(scheduler)
                     st.session_state.generation_cancelled = True
                     st.session_state._cancel_requested = False
                     status_text.warning("⏳ Cancelando... esperando a que el motor se detenga")
@@ -3033,9 +3036,17 @@ with tab5:
                     sim_config["is_simulation"] = True
 
                     # 3. Generar horario simulado (sin guardar en session_state)
-                    # Deshabilitar logs o UI updates para velocidad
-                    sim_scheduler = Scheduler(sim_config)
-                    success = sim_scheduler.generate_schedule(max_improvement_loops=150)  # Menos loops para velocidad
+                    sim_request = GenerateScheduleRequest(
+                        start_date=sim_config["start_date"],
+                        end_date=sim_config["end_date"],
+                        holidays=sim_config.get("holidays", []),
+                        variable_shifts=sim_config.get("variable_shifts", []),
+                        workers_data=sim_workers,
+                        config=sim_config,
+                    )
+                    sim_result = run_simulation(sim_request)
+                    success = sim_result.success
+                    sim_scheduler = sim_result.scheduler
 
                     if success:
                         st.success("✅ Simulación completada")
