@@ -3822,6 +3822,10 @@ class ScheduleBuilder:
                 elapsed_days = max(0, (date_val - self.start_date).days)
                 elapsed_frac = max(0.01, elapsed_days / total_days)
 
+                others_now = [
+                    w for i, w in enumerate(self.schedule.get(date_val, [])) if i != post_val and w is not None
+                ]
+
                 for worker_data in workers_list:
                     worker_id = worker_data["id"]
 
@@ -3829,6 +3833,25 @@ class ScheduleBuilder:
                     score = self._calculate_worker_score(worker_data, date_val, post_val, relaxation_level=0)
 
                     if score > float("-inf"):
+                        # Incompatibility check with co-workers on the same day
+                        if not self._check_incompatibility_with_list(worker_id, others_now):
+                            continue
+
+                        if not self._can_assign_worker(worker_id, date_val, post_val):
+                            continue
+
+                        # Workload tolerance guard (±8%)
+                        if self._would_violate_tolerance(worker_id, date_val, allow_relaxation=False):
+                            continue
+
+                        # Ensure the slot is not protected by a mandatory assignment
+                        if self.schedule[date_val][post_val] is not None:
+                            existing = self.schedule[date_val][post_val]
+                            if (existing, date_val) in self._locked_mandatory or self._is_mandatory(
+                                existing, date_val
+                            ):
+                                continue
+
                         # Temporal pacing adjustment: penalise workers ahead of their
                         # scheduled pace and reward those behind. This prevents
                         # front-loading by naturally spreading assignments across the
@@ -3844,10 +3867,8 @@ class ScheduleBuilder:
                         # Valid candidate - add to list
                         valid_candidates.append((worker_id, score, worker_data))
 
-                # Select best worker using score + tiebreaker strategy.
-                # Final tolerance guard is evaluated only on shortlisted candidates
-                # instead of every candidate in the hot path.
-                shortlisted_candidates: list[tuple[str, float, dict]] = []
+                # Select best worker using score + tiebreaker strategy
+                best_worker = None
                 if valid_candidates:
                     if self.tiebreaker_strategy == "random":
                         # ── GRASP: Restricted Candidate List ─────────────────────────────
@@ -3865,7 +3886,7 @@ class ScheduleBuilder:
                         else:
                             rcl = valid_candidates  # All tied – pure random
                         random.shuffle(rcl)
-                        shortlisted_candidates = rcl
+                        best_worker = rcl[0][0]
                         if attempt == 1 and filled_this_attempt == 0:
                             pass
                     else:
@@ -3875,13 +3896,13 @@ class ScheduleBuilder:
                         tied_candidates = [c for c in valid_candidates if abs(c[1] - max_score) <= tolerance]
 
                         if len(tied_candidates) == 1:
-                            shortlisted_candidates = tied_candidates
+                            best_worker = tied_candidates[0][0]
                         elif self.tiebreaker_strategy == "alphabetical_asc":
                             tied_candidates.sort(key=lambda c: c[0])
-                            shortlisted_candidates = tied_candidates
+                            best_worker = tied_candidates[0][0]
                         elif self.tiebreaker_strategy == "alphabetical_desc":
                             tied_candidates.sort(key=lambda c: c[0], reverse=True)
-                            shortlisted_candidates = tied_candidates
+                            best_worker = tied_candidates[0][0]
                         elif self.tiebreaker_strategy == "list_position":
                             # Sort tied candidates by their position in the pre-ordered
                             # workers_list.  This makes the worker_order (sequential,
@@ -3889,18 +3910,10 @@ class ScheduleBuilder:
                             # which worker wins equal-score slots, producing distinct
                             # schedules across different ordering strategies.
                             tied_candidates.sort(key=lambda c: worker_positions.get(c[0], len(worker_positions)))
-                            shortlisted_candidates = tied_candidates
+                            best_worker = tied_candidates[0][0]
                         else:
                             # Fallback: first in list
-                            shortlisted_candidates = tied_candidates
-
-                # Assign the selected worker
-                best_worker = None
-                for candidate_id, _candidate_score, _candidate_worker_data in shortlisted_candidates:
-                    if self._would_violate_tolerance(candidate_id, date_val, allow_relaxation=False):
-                        continue
-                    best_worker = candidate_id
-                    break
+                            best_worker = tied_candidates[0][0]
 
                 if best_worker is not None:
                     self.schedule[date_val][post_val] = best_worker
