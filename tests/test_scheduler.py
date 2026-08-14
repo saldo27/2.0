@@ -1,4 +1,6 @@
+import json
 from datetime import datetime
+from math import isclose
 
 from saldo27.scheduler import Scheduler
 
@@ -73,3 +75,28 @@ def test_validate_and_fix_final_schedule_uses_canonical_weekly_pattern_violation
     assert fixes_made == 1
     assert scheduler.schedule[second_date][0] is None
     assert scheduler.worker_assignments["DOC001"] == {first_date}
+
+
+def test_calculate_score_returns_filled_percentage(sample_workers_data):
+    scheduler = _build_scheduler(sample_workers_data)
+    first_date = datetime(2026, 3, 1)
+
+    scheduler.schedule[first_date][0] = "DOC001"
+
+    assert isclose(scheduler.calculate_score(), 100 / 12)
+
+
+def test_export_schedule_json_serializes_schedule_and_assignments(sample_workers_data, tmp_path):
+    scheduler = _build_scheduler(sample_workers_data)
+    first_date = datetime(2026, 3, 1)
+    output_file = tmp_path / "schedule.json"
+
+    scheduler.schedule[first_date][0] = "DOC001"
+    scheduler._synchronize_tracking_data()
+
+    exported_path = scheduler.export_schedule_json(str(output_file))
+    exported = json.loads(output_file.read_text(encoding="utf-8"))
+
+    assert exported_path == str(output_file)
+    assert exported["schedule"]["2026-03-01"][0] == "DOC001"
+    assert exported["worker_assignments"]["DOC001"] == ["2026-03-01"]

@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from saldo27.exceptions import SchedulerError
-from saldo27.scheduler_initializer import SchedulerInitializer
 from saldo27.scheduler_config import SchedulerConfig, setup_logging
+from saldo27.scheduler_initializer import SchedulerInitializer
 from saldo27.scheduler_reporting import SchedulerReportingService
 from saldo27.scheduler_tracking import SchedulerTrackingState
 from saldo27.scheduler_validation import SchedulerValidationService
