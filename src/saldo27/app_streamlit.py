@@ -28,14 +28,15 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
+from saldo27.application.generation_flow import (
+    GenerationUICallbacks,
+    collect_constraint_violations,
+    execute_generation_workflow,
+    prepare_generation_workflow,
+)
 from saldo27.application.use_cases import (
     GenerateScheduleRequest,
-    cancel_scheduler,
-    check_demo_limitations,
-    generate_schedule,
-    prepare_scheduler,
     run_simulation,
-    validate_generation_request,
 )
 from saldo27.license_manager import license_manager
 from saldo27.scheduler import Scheduler
@@ -45,38 +46,6 @@ from saldo27.scheduler_config import SchedulerConfig, setup_logging
 logging.getLogger("pdfplumber").setLevel(logging.WARNING)
 logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
-
-# Handler de logging para capturar mensajes de progreso en el sidebar
-import threading
-
-
-class SidebarLogHandler(logging.Handler):
-    """Captura mensajes de logging para mostrar en el sidebar de Streamlit"""
-
-    def __init__(self, max_messages=50):
-        super().__init__()
-        self.messages = []
-        self.max_messages = max_messages
-        self._lock = threading.Lock()
-
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            with self._lock:
-                self.messages.append(msg)
-                if len(self.messages) > self.max_messages:
-                    self.messages = self.messages[-self.max_messages :]
-        except (AttributeError, RuntimeError, TypeError, ValueError):
-            self.handleError(record)
-
-    def get_messages(self, last_n=15):
-        with self._lock:
-            return list(self.messages[-last_n:])
-
-    def clear(self):
-        with self._lock:
-            self.messages.clear()
-
 
 # Constante de versión
 APP_VERSION = "2.9"
@@ -490,228 +459,71 @@ def load_schedule_from_json(uploaded_file):
 
 def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
     """Generar el horario internamente"""
-    limitations = st.session_state.limitations
-    workers_data = st.session_state.workers_data
-
-    breach = check_demo_limitations(
-        limitations=limitations,
-        workers_data=workers_data,
-        start_date=start_date,
-        end_date=end_date,
-    )
-    if breach:
-        if breach.kind == "max_workers":
-            st.error(f"⚠️ **Limitación DEMO**:  Máximo {breach.limit} trabajadores permitidos")
-            st.info("💡 Activa la licencia completa para trabajadores ilimitados")
-            return False, f"Límite de {breach.limit} trabajadores excedido"
-        st.error(f"⚠️ **Limitación DEMO**: Máximo {breach.limit} días de horario permitidos")
-        st.info("💡 Activa la licencia completa para períodos ilimitados")
-        return False, f"Límite de {breach.limit} días excedido"
-
     try:
         request = GenerateScheduleRequest(
             start_date=start_date,
             end_date=end_date,
             holidays=holidays,
             variable_shifts=variable_shifts,
-            workers_data=workers_data,
+            workers_data=st.session_state.workers_data,
             config=st.session_state.config,
             prior_schedule_raw=st.session_state.get("prior_schedule_raw"),
         )
 
-        validation_error = validate_generation_request(request)
-        if validation_error:
-            return False, validation_error
+        preparation = prepare_generation_workflow(request, limitations=st.session_state.limitations)
+        for user_message in preparation.user_messages:
+            getattr(st, user_message.level)(user_message.text)
+        if not preparation.success or preparation.workflow is None:
+            return False, preparation.message
 
-        # Crear scheduler
-        prepared_scheduler = prepare_scheduler(request)
-        scheduler = prepared_scheduler.scheduler
+        workflow = preparation.workflow
+        scheduler = workflow.scheduler
         st.session_state.scheduler = scheduler
 
-        # Aplicar calendario anterior si fue cargado previamente
-        if prepared_scheduler.prior_schedule_error:
-            st.warning(f"⚠️ Calendario anterior no pudo cargarse: {prepared_scheduler.prior_schedule_error}")
-        elif prepared_scheduler.prior_schedule_summary is not None:
-            st.session_state.prior_schedule_data = prepared_scheduler.prior_schedule_summary
-
-        # Generación con soporte de cancelación
-        import threading
-        import time
-        from queue import Empty, SimpleQueue
+        if preparation.prior_schedule_summary is not None:
+            st.session_state.prior_schedule_data = preparation.prior_schedule_summary
 
         status_text = st.empty()
         cancel_placeholder = st.empty()
         st.session_state.generation_cancelled = False
+        st.session_state._cancel_requested = False
 
-        generation_result: dict[str, bool | Exception | None] = {"success": False, "error": None}
-        progress_events: SimpleQueue = SimpleQueue()
+        if cancel_placeholder.button("⛔ Cancelar generación", key="cancel_generation"):
+            st.session_state._cancel_requested = True
 
-        # Instalar handler de logging para capturar progreso
-        sidebar_handler = SidebarLogHandler(max_messages=80)
-        sidebar_handler.setLevel(logging.INFO)
-        sidebar_handler.setFormatter(logging.Formatter("%(message)s"))
-        root_logger = logging.getLogger()
-        root_logger.addHandler(sidebar_handler)
+        def _show_status(message: str, level: str) -> None:
+            getattr(status_text, level)(message)
+
+        def _show_log(messages: list[str]) -> None:
+            log_placeholder = st.session_state.get("_sidebar_log_placeholder")
+            if log_placeholder and messages:
+                log_placeholder.code("\n".join(messages), language=None)
+
+        callbacks = GenerationUICallbacks(
+            show_status=_show_status,
+            show_log=_show_log,
+            is_cancel_requested=lambda: bool(st.session_state.get("_cancel_requested")),
+            clear_cancel_request=lambda: st.session_state.__setitem__("_cancel_requested", False),
+        )
         try:
-
-            def _run_generation():
-                try:
-                    result = generate_schedule(
-                        request,
-                        prepared=prepared_scheduler,
-                        progress_callback=lambda event: progress_events.put(event),
-                    )
-                    generation_result["success"] = result.success
-                except Exception as exc:
-                    generation_result["error"] = exc
-
-            # Structured phase detection through progress events emitted by the pipeline.
-            _phase_labels = {
-                "initialize": "⚙️ Fase 1 · Inicializando estructura del calendario",
-                "mandatory": "⚙️ Fase 2 · Asignando guardias obligatorias",
-                "distribution": "⚙️ Fase 3 · Distribución y optimización",
-                "finalize": "⚙️ Fase 4 · Finalización y validación",
-            }
-            _current_phase_msg = "⚙️ Iniciando generación del calendario..."
-
-            status_text.info(_current_phase_msg)
-            thread = threading.Thread(target=_run_generation, daemon=True)
-            thread.start()
-
-            # Render cancel button once before the polling loop to avoid duplicate-key errors.
-            # The button click sets session_state; the loop reads it on the next iteration.
-            if cancel_placeholder.button("⛔ Cancelar generación", key="cancel_generation"):
-                st.session_state._cancel_requested = True
-
-            # Polling loop: mostrar progreso real y permitir cancelación
-            while thread.is_alive():
-                if st.session_state.get("_cancel_requested"):
-                    cancel_scheduler(scheduler)
-                    st.session_state.generation_cancelled = True
-                    st.session_state._cancel_requested = False
-                    status_text.warning("⏳ Cancelando... esperando a que el motor se detenga")
-                while True:
-                    try:
-                        event = progress_events.get_nowait()
-                    except Empty:
-                        break
-                    phase_label = _phase_labels.get(event.phase)
-                    if not phase_label:
-                        continue
-                    if event.stage == "completed" and event.success is False:
-                        status_text.error(f"{phase_label} ❌")
-                        _current_phase_msg = f"{phase_label} ❌"
-                        continue
-                    if phase_label != _current_phase_msg:
-                        _current_phase_msg = phase_label
-                        status_text.info(_current_phase_msg)
-                # Actualizar log de progreso en el sidebar
-                _log_ph = st.session_state.get("_sidebar_log_placeholder")
-                if _log_ph:
-                    _msgs = sidebar_handler.get_messages(last_n=15)
-                    if _msgs:
-                        _log_ph.code("\n".join(_msgs), language=None)
-                time.sleep(0.5)
-
-            thread.join()
-            cancel_placeholder.empty()
+            result = execute_generation_workflow(workflow, callbacks)
+            st.session_state.generation_cancelled = result.cancelled
         finally:
-            # Garantizar que el handler se elimina aunque ocurra una excepción
-            root_logger.removeHandler(sidebar_handler)
+            cancel_placeholder.empty()
+        scheduler = workflow.scheduler
 
-        if st.session_state.generation_cancelled:
-            # Mostrar log parcial en sidebar
-            _log_ph = st.session_state.get("_sidebar_log_placeholder")
-            if _log_ph:
-                _log_ph.warning("🛑 Generación cancelada")
-            status_text.warning("🛑 Generación cancelada por el usuario")
-            return False, "🛑 Generación cancelada"
+        log_placeholder = st.session_state.get("_sidebar_log_placeholder")
+        if log_placeholder and result.final_log_text and result.final_log_kind == "code":
+            log_placeholder.code(result.final_log_text, language=None)
+            st.session_state._sidebar_log_content = ("code", result.final_log_text)
+        elif log_placeholder and result.final_log_text and result.final_log_kind == "warning":
+            log_placeholder.warning(result.final_log_text)
+            st.session_state._sidebar_log_content = ("warning", result.final_log_text)
 
-        if generation_result["error"]:
-            exc = generation_result["error"]
-            if isinstance(exc, BaseException):
-                raise exc
+        getattr(status_text, result.final_status_level)(result.final_status_text)
 
-        success = generation_result["success"]
-
-        # Construir resumen final para el sidebar
-        _log_ph = st.session_state.get("_sidebar_log_placeholder")
-        if _log_ph and success:
-            summary_lines = []
-            # Obtener datos del progress_monitor si existe
-            _core = getattr(scheduler, "_scheduler_core", None)
-            _pm = getattr(_core, "progress_monitor", None) if _core else None
-
-            if _pm and _pm.iteration_data:
-                final_iter = len(_pm.iteration_data)
-                total_iter = _pm.total_iterations
-
-                # Calcular el score REAL del estado final del reparto, no el del
-                # último loop del optimizador iterativo (que es mid-proceso, antes
-                # de las fases de finalización).
-                final_score = 0.0
-                try:
-                    _metrics = getattr(_core, "metrics", None)
-                    if _metrics:
-                        final_score = _metrics.calculate_overall_schedule_score()
-                    else:
-                        final_score = _pm.iteration_data[-1].get("current_score", 0)
-                except (AttributeError, IndexError, TypeError, ValueError) as exc:
-                    logging.debug(f"No se pudo calcular el score final real; usando el score de iteración: {exc}")
-                    final_score = _pm.iteration_data[-1].get("current_score", 0)
-
-                summary_lines.append("📊 Resumen de ejecución:")
-                summary_lines.append(f"   • Iteraciones: {final_iter}/{total_iter}")
-                summary_lines.append(f"   • Score final: {final_score:.2f}")
-
-                # Evaluación
-                if final_score >= 95:
-                    summary_lines.append("🌟 EXCELENTE: Score objetivo alcanzado!")
-                elif final_score >= 85:
-                    summary_lines.append("👍 BUENO: Score satisfactorio")
-                elif final_score >= 70:
-                    summary_lines.append("⚠️  REGULAR: Puede requerir ajustes adicionales")
-                else:
-                    summary_lines.append("❌ BAJO: Requiere revisión de restricciones")
-
-                # Tiempo total
-                if _pm.start_time:
-                    total_time = datetime.now() - _pm.start_time
-                    summary_lines.append(f"   • Tiempo total: {str(total_time).split('.')[0]}")
-
-            # Violaciones
-            try:
-                core_violations = scheduler._check_schedule_constraints()
-                n_violations = len(core_violations)
-                if n_violations == 0:
-                    summary_lines.append("✅ Sin violaciones de restricciones")
-                else:
-                    summary_lines.append(f"⚠️ Violaciones: {n_violations}")
-                    for v in core_violations[:5]:
-                        v_type = v.get("type", "")
-                        if v_type == "incompatibility":
-                            summary_lines.append(
-                                f"   • Incomp: {v['worker_id']} ↔ {v['incompatible_id']} ({v['date'].strftime('%d-%m')})"
-                            )
-                        elif v_type == "weekly_pattern":
-                            summary_lines.append(
-                                f"   • Patrón: {v['worker_id']} {v['date1'].strftime('%d-%m')}→{v['date2'].strftime('%d-%m')}"
-                            )
-                    if n_violations > 5:
-                        summary_lines.append(f"   ... y {n_violations - 5} más")
-            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
-                logging.debug(f"No se pudo generar el resumen de violaciones para el sidebar: {exc}")
-
-            if summary_lines:
-                log_text = "\n".join(summary_lines)
-                _log_ph.code(log_text, language=None)
-                st.session_state._sidebar_log_content = ("code", log_text)
-        elif _log_ph and not success:
-            _log_ph.warning("❌ Fallo en la generación")
-            st.session_state._sidebar_log_content = ("warning", "❌ Fallo en la generación")
-
-        if success:
-            if limitations["mode"] == "DEMO":
+        if result.success:
+            if st.session_state.limitations["mode"] == "DEMO":
                 uses = license_manager.increment_usage()
                 st.session_state.uses_remaining = license_manager.DEMO_MAX_USES - uses
 
@@ -720,12 +532,10 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
 
                 st.info(f"✅ Generación #{uses} completada.  Quedan {st.session_state.uses_remaining} usos.")
 
-            status_text.success("✅ ¡Calendario generado y optimizado!")
             st.session_state.schedule = scheduler.schedule
-            return True, "✅ Calendario generado exitosamente"
-        else:
-            status_text.error("Fallo en la generación - Revise restricciones")
-            return False, "❌ Error: No se pudo generar el calendario"
+            return True, result.message
+
+        return False, result.message
 
     except Exception as e:
         error_msg = f"Error en generación: {e!s}"
@@ -1007,34 +817,7 @@ def check_violations():
     if st.session_state.scheduler is None:
         return {}
 
-    scheduler = st.session_state.scheduler
-
-    # Usar el verificador de restricciones del núcleo (Single Source of Truth)
-    # create a fresh check instead of relying on cached state
-    core_violations = scheduler._check_schedule_constraints()
-
-    violations = {"incompatibilidades": [], "patron_7_14": [], "mandatory": []}
-
-    # Mapear las violaciones del núcleo al formato de la UI
-    for v in core_violations:
-        v_type = v.get("type")
-
-        if v_type == "incompatibility":
-            violations["incompatibilidades"].append(
-                f"{v['date'].strftime('%d-%m-%Y')}: {v['worker_id']} ↔ {v['incompatible_id']}"
-            )
-
-        elif v_type == "weekly_pattern":
-            violations["patron_7_14"].append(
-                f"{v['worker_id']}: {v['date1'].strftime('%d-%m-%Y')} → {v['date2'].strftime('%d-%m-%Y')} ({v['days_between']} días)"
-            )
-
-        # Nota: El núcleo no reporta 'mandatory' como violación estándar porque
-        # considera que las asignaciones obligatorias son sagradas, pero podemos
-        # mantener la categoría vacía si queremos soportarlo en el futuro o
-        # si queremos implementar una comprobación específica.
-
-    return violations
+    return collect_constraint_violations(st.session_state.scheduler)
 
 
 # ==================== PREDICTIVE ANALYTICS ====================
