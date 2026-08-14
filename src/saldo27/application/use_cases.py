@@ -135,10 +135,15 @@ def generate_schedule(request: GenerateScheduleRequest) -> GenerateScheduleResul
     prepared = prepare_scheduler(request)
     scheduler = prepared.scheduler
 
-    if prepared.prior_schedule_error:
-        return GenerateScheduleResult(False, scheduler, f"⚠️ Calendario anterior no pudo cargarse: {prepared.prior_schedule_error}")
-
     success = scheduler.generate_schedule()
+    if prepared.prior_schedule_error:
+        message = (
+            f"⚠️ Calendario anterior no pudo cargarse: {prepared.prior_schedule_error}"
+            if not success
+            else f"⚠️ Calendario anterior no pudo cargarse: {prepared.prior_schedule_error}\n✅ Horario generado"
+        )
+        return GenerateScheduleResult(success, scheduler, message)
+
     return GenerateScheduleResult(
         success, scheduler, "✅ Horario generado" if success else "❌ No se pudo generar horario"
     )
