@@ -94,13 +94,13 @@ class SchedulerCore:
             pipeline = self._build_optimization_pipeline(max_improvement_loops, max_complete_attempts)
             success, final_state, phase_trace = pipeline.run(self, initial_state)
             self.scheduler._phase_trace = phase_trace
-            final_state.apply_to_scheduler(self.scheduler)
-            if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
-                self._sync_builder_references()
             self._log_pipeline_trace(phase_trace)
             if not success:
                 failed_phase = next((phase.name for phase in phase_trace if not phase.success), "unknown")
                 raise ConstraintViolationError(f"Failed during phase: {failed_phase}")
+            final_state.apply_to_scheduler(self.scheduler)
+            if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
+                self._sync_builder_references()
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
             logging.info(f"Schedule generation orchestration completed successfully in {duration:.2f} seconds.")
@@ -125,7 +125,9 @@ class SchedulerCore:
             "mandatory": CoreMethodPhase("mandatory", lambda core: core._assign_mandatory_phase()),
             "distribution": CoreMethodPhase(
                 "distribution",
-                lambda core: core._run_distribution_and_optimization_phase(max_improvement_loops, max_complete_attempts),
+                lambda core: core._run_distribution_and_optimization_phase(
+                    max_improvement_loops, max_complete_attempts
+                ),
             ),
             "finalize": CoreMethodPhase("finalize", lambda core: core._finalization_phase()),
         }
@@ -146,9 +148,7 @@ class SchedulerCore:
                 metrics.get("empty_slots", 0),
             )
 
-    def _run_distribution_and_optimization_phase(
-        self, max_improvement_loops: int, max_complete_attempts: int
-    ) -> bool:
+    def _run_distribution_and_optimization_phase(self, max_improvement_loops: int, max_complete_attempts: int) -> bool:
         # Save mandatory state (preserved across all attempts)
         mandatory_snap = self._snapshot_state()
 
@@ -237,7 +237,8 @@ class SchedulerCore:
         self.scheduler.worker_weekend_counts = best_attempt["weekend_counts"]
         self.scheduler.worker_posts = best_attempt["posts"]
         self._sync_builder_references()
-        self.scheduler.schedule_builder._locked_mandatory = best_attempt["locked_mandatory"]
+        if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
+            self.scheduler.schedule_builder._locked_mandatory = best_attempt["locked_mandatory"]
         return True
 
     def _sync_builder_references(self):

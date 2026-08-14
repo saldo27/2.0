@@ -537,7 +537,7 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
         st.session_state.scheduler = scheduler
 
         # Aplicar calendario anterior si fue cargado previamente
-        _prior_raw = st.session_state.get("prior_schedule_raw")
+        _prior_raw = request.prior_schedule_raw
         if _prior_raw:
             from io import BytesIO
 

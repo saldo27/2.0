@@ -73,10 +73,14 @@ def generate_schedule(request: GenerateScheduleRequest) -> GenerateScheduleResul
 
         load_result = scheduler.load_prior_schedule_data(BytesIO(request.prior_schedule_raw))
         if load_result.get("error"):
-            return GenerateScheduleResult(False, scheduler, f"⚠️ Calendario anterior no pudo cargarse: {load_result['error']}")
+            return GenerateScheduleResult(
+                False, scheduler, f"⚠️ Calendario anterior no pudo cargarse: {load_result['error']}"
+            )
 
     success = scheduler.generate_schedule()
-    return GenerateScheduleResult(success, scheduler, "✅ Horario generado" if success else "❌ No se pudo generar horario")
+    return GenerateScheduleResult(
+        success, scheduler, "✅ Horario generado" if success else "❌ No se pudo generar horario"
+    )
 
 
 def validate_schedule(scheduler: Scheduler) -> dict[str, Any]:

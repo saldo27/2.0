@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from saldo27.domain.schedule_state import ScheduleState
+if TYPE_CHECKING:
+    from saldo27.domain.schedule_state import ScheduleState
 
 
 class BuildEngine(Protocol):

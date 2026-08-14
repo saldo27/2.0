@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -14,25 +16,18 @@ class ScheduleState:
     worker_shift_counts: tuple[tuple[str, int], ...]
     worker_weekend_counts: tuple[tuple[str, int], ...]
     worker_posts: tuple[tuple[str, tuple[int, ...]], ...]
-    locked_mandatory: tuple[tuple[Any, ...], ...] = ()
+    locked_mandatory: tuple[Any, ...] = ()
 
     @classmethod
     def from_scheduler(cls, scheduler: Any, include_locked: bool = True) -> ScheduleState:
-        locked_mandatory: tuple[tuple[Any, ...], ...] = ()
+        locked_mandatory: tuple[Any, ...] = ()
         if include_locked and hasattr(scheduler, "schedule_builder") and scheduler.schedule_builder:
             raw_locked = getattr(scheduler.schedule_builder, "_locked_mandatory", set())
-            normalized: list[tuple[Any, ...]] = []
-            for item in raw_locked:
-                if isinstance(item, tuple):
-                    normalized.append(item)
-                else:
-                    normalized.append((item,))
-            locked_mandatory = tuple(sorted(normalized, key=lambda value: repr(value)))
+            locked_mandatory = tuple(sorted(raw_locked, key=repr))
 
         return cls(
             schedule=tuple(
-                (date, tuple(shifts))
-                for date, shifts in sorted(scheduler.schedule.items(), key=lambda item: item[0])
+                (date, tuple(shifts)) for date, shifts in sorted(scheduler.schedule.items(), key=lambda item: item[0])
             ),
             worker_assignments=tuple(
                 (worker_id, tuple(sorted(dates)))

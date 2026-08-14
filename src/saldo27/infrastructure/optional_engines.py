@@ -13,6 +13,7 @@ class OptionalEngineSpec:
     class_name: str
     scheduler_attr: str
     extra_args_config_key: str | None = None
+    default_enabled: bool = False
 
 
 OPTIONAL_ENGINE_SPECS: tuple[OptionalEngineSpec, ...] = (
@@ -28,6 +29,7 @@ OPTIONAL_ENGINE_SPECS: tuple[OptionalEngineSpec, ...] = (
         class_name="PredictiveAnalyticsEngine",
         scheduler_attr="predictive_analytics",
         extra_args_config_key="predictive_analytics_config",
+        default_enabled=True,
     ),
 )
 
@@ -37,7 +39,7 @@ def load_optional_engines(scheduler: Any, config: dict[str, Any]) -> dict[str, A
 
     for spec in OPTIONAL_ENGINE_SPECS:
         setattr(scheduler, spec.scheduler_attr, None)
-        if not config.get(spec.config_flag, spec.config_flag == "enable_predictive_analytics"):
+        if not config.get(spec.config_flag, spec.default_enabled):
             continue
 
         try:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Protocol
+from typing import Protocol
 
 from saldo27.domain.schedule_state import ScheduleState
 
@@ -25,7 +26,7 @@ class CoreMethodPhase:
         success = self.runner(core)
         if not success:
             return False, state
-        scheduler = getattr(core, "scheduler")
+        scheduler = core.scheduler
         return True, ScheduleState.from_scheduler(scheduler)
 
 
