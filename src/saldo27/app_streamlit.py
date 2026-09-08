@@ -445,6 +445,9 @@ def load_schedule_from_json(uploaded_file):
 
                     st.session_state.scheduler = scheduler
                     st.session_state.schedule = schedule
+                    # A freshly imported schedule invalidates any Ajuste Final
+                    # result computed against the previous one.
+                    st.session_state.fa_pending_result = None
 
                     return True, "✅ Calendario y configuración importados correctamente"
             except Exception as e:
@@ -538,6 +541,9 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
                 st.info(f"✅ Generación #{uses} completada.  Quedan {st.session_state.uses_remaining} usos.")
 
             st.session_state.schedule = scheduler.schedule
+            # A freshly generated schedule invalidates any Ajuste Final
+            # result computed against the previous one.
+            st.session_state.fa_pending_result = None
             return True, result.message
 
         return False, result.message
@@ -576,6 +582,40 @@ def get_schedule_dataframe():
     # visually distinguishable from real empty slots ('-') and are never counted as
     # real guard slots in any coverage calculation.
     return df.fillna("---")
+
+
+def compute_schedule_changes(
+    schedule_before: dict[datetime, list],
+    schedule_after: dict[datetime, list],
+) -> list[dict[str, Any]]:
+    """
+    Compara dos snapshots de ``schedule`` ({fecha: [worker_por_puesto]}) y
+    devuelve la lista de slots (fecha, puesto) cuyo trabajador asignado
+    cambió, con el valor anterior y el nuevo.
+
+    Usada para mostrar al usuario exactamente qué cambió tras ejecutar el
+    ⚖️ Ajuste Final, independientemente de en qué sub-fase (balance de
+    turnos, fines de semana, puentes u OR-Tools) se produjo el cambio.
+    """
+    changes: list[dict[str, Any]] = []
+    all_dates = set(schedule_before.keys()) | set(schedule_after.keys())
+    for date_val in sorted(all_dates):
+        posts_before = schedule_before.get(date_val, [])
+        posts_after = schedule_after.get(date_val, [])
+        max_posts = max(len(posts_before), len(posts_after))
+        for post in range(max_posts):
+            old_worker = posts_before[post] if post < len(posts_before) else None
+            new_worker = posts_after[post] if post < len(posts_after) else None
+            if old_worker != new_worker:
+                changes.append(
+                    {
+                        "Fecha": date_val.strftime("%d-%m-%Y"),
+                        "Puesto": post + 1,
+                        "Trabajador (Antes)": old_worker or "-",
+                        "Trabajador (Después)": new_worker or "-",
+                    }
+                )
+    return changes
 
 
 def get_worker_statistics():
@@ -826,6 +866,12 @@ def render_final_adjustment_result(result: dict[str, Any]) -> None:
     rerun de Streamlit (ANTES de volver a pulsar el botón), evitando que el
     ``st.rerun()`` posterior a la ejecución del motor descarte los mensajes
     de éxito/estadísticas antes de que el usuario llegue a verlos.
+
+    A diferencia de otros mensajes efímeros, este bloque incluye un botón
+    interactivo (exportar PDF), por lo que NO se limpia tras un único
+    render: permanece en session_state hasta que una nueva ejecución del
+    Ajuste Final lo sobrescriba o se genere/importe un calendario nuevo
+    (ver limpieza de ``fa_pending_result`` en esos puntos).
     """
     total_swaps = result["total_swaps"]
     fa_stats = result["fa_stats"]
@@ -875,6 +921,53 @@ def render_final_adjustment_result(result: dict[str, Any]) -> None:
     if rows:
         with st.expander("📊 Detalle por médico (antes → después del ajuste)", expanded=False):
             st.dataframe(pd.DataFrame(rows), hide_index=True)
+
+    # Show the specific slot-level changes made (regardless of which sub-phase
+    # produced them: shift/weekend/bridge balance or the OR-Tools refinement).
+    changes = result.get("changes") or []
+    if changes:
+        with st.expander(f"🔄 Cambios realizados ({len(changes)})", expanded=True):
+            st.dataframe(pd.DataFrame(changes), hide_index=True, width="stretch")
+
+    # Show the updated calendar with an option to export it to PDF, so the
+    # user doesn't have to scroll back up to the general "Calendario
+    # Detallado" section to see the effect of the adjustment.
+    st.markdown("##### 📅 Calendario actualizado (tras el ajuste)")
+    _fa_df = get_schedule_dataframe()
+    if _fa_df is not None:
+        st.dataframe(_fa_df, width="stretch", height=400, hide_index=True)
+
+        if st.button("📄 Exportar calendario actualizado (PDF)", key="btn_export_fa_calendar"):
+            _fa_scheduler = st.session_state.scheduler
+            if _fa_scheduler is None:
+                st.warning("⚠️ No hay un calendario activo para exportar.")
+            else:
+                try:
+                    from saldo27.pdf_exporter import PDFExporter
+
+                    _fa_pdf_config = {
+                        "schedule": _fa_scheduler.schedule,
+                        "workers_data": _fa_scheduler.workers_data,
+                        "num_shifts": _fa_scheduler.num_shifts,
+                        "holidays": _fa_scheduler.holidays,
+                    }
+                    _fa_exporter = PDFExporter(_fa_pdf_config)
+                    _fa_period_str = (
+                        f"{_fa_scheduler.start_date.strftime('%Y%m%d')}_{_fa_scheduler.end_date.strftime('%Y%m%d')}"
+                    )
+                    _fa_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    _fa_filename = f"calendario_ajuste_final_{_fa_period_str}_{_fa_ts}.pdf"
+                    _fa_generated = _fa_exporter.export_all_months_calendar(filename=_fa_filename)
+                    if _fa_generated:
+                        st.success(f"✅ PDF generado: {_fa_generated}")
+                        st.rerun()
+                    else:
+                        st.error("No se pudo generar el archivo (nombre de archivo vacío)")
+                except Exception as _fa_pdf_exc:
+                    st.error(f"Error al generar PDF: {_fa_pdf_exc}")
+                    logging.error("FinalAdjustmentEngine PDF export error", exc_info=True)
+    else:
+        st.info("ℹ️ No hay calendario disponible para mostrar.")
 
 
 def check_violations():
@@ -2253,13 +2346,14 @@ with tab2:
             )
 
             # Render any pending result from a previous run BEFORE the button.
-            # This is required because a successful run below ends with
-            # st.rerun() to refresh the calendar table — if the result were
-            # rendered only in that same script run, the rerun would discard
-            # it before the user ever saw it.
+            # This block stays visible across reruns (e.g. the PDF export
+            # button below triggers its own rerun) until it is replaced by a
+            # new Ajuste Final run or cleared when a new schedule is
+            # generated/imported — it is intentionally NOT a one-shot render,
+            # otherwise interacting with any button inside it (like the PDF
+            # export) would immediately wipe it on the very next rerun.
             _fa_pending_result = st.session_state.get("fa_pending_result")
             if _fa_pending_result is not None:
-                st.session_state.fa_pending_result = None
                 render_final_adjustment_result(_fa_pending_result)
 
             if st.button("⚖️ Ejecutar Ajuste Final", type="secondary", key="btn_final_adjustment"):
@@ -2273,6 +2367,8 @@ with tab2:
                         try:
                             from saldo27.final_adjustment_engine import FinalAdjustmentEngine
 
+                            _schedule_before_fa = copy.deepcopy(_sched_fa.schedule)
+
                             engine = FinalAdjustmentEngine(_sched_fa)
                             _before_metrics = engine.compute_metrics()
                             _fa_results = engine.run(max_iterations=300)
@@ -2284,6 +2380,7 @@ with tab2:
                                 + _fa_stats["bridge_swaps"]
                                 + _fa_stats.get("ortools_reassignments", 0)
                             )
+                            _fa_changes = compute_schedule_changes(_schedule_before_fa, _sched_fa.schedule)
 
                             if _total_swaps > 0:
                                 try:
@@ -2315,6 +2412,7 @@ with tab2:
                             "pdf_refresh_errors": _pdf_refresh_errors,
                             "before_metrics": _before_metrics,
                             "after_metrics": _after_metrics,
+                            "changes": _fa_changes,
                         }
                         st.rerun()
 
