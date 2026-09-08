@@ -1948,22 +1948,30 @@ with tab1:
                         st.write("**Puesto Rosell:** 🎯 Solo Rosell")
 
                     # Días obligatorios
-                    if worker.get("mandatory_dates"):
-                        mandatory_count = len(worker["mandatory_dates"])
+                    mandatory_days_str = worker.get("mandatory_days", "")
+                    if mandatory_days_str:
+                        mandatory_list_display = [d.strip() for d in mandatory_days_str.split(";") if d.strip()]
+                        mandatory_count = len(mandatory_list_display)
                         st.write(f"**✅ Días obligatorios:** {mandatory_count} día(s)")
                         if mandatory_count <= 5:
-                            st.write(f"   {', '.join(worker['mandatory_dates'])}")
+                            st.write(f"   {', '.join(mandatory_list_display)}")
                         else:
-                            st.write(f"   {', '.join(worker['mandatory_dates'][:5])} ... y {mandatory_count - 5} más")
+                            st.write(
+                                f"   {', '.join(mandatory_list_display[:5])} ... y {mandatory_count - 5} más"
+                            )
 
                     # Días fuera
-                    if worker.get("days_off"):
-                        days_off_count = len(worker["days_off"])
+                    days_off_str = worker.get("days_off", "")
+                    if days_off_str:
+                        days_off_list_display = [d.strip() for d in days_off_str.split(";") if d.strip()]
+                        days_off_count = len(days_off_list_display)
                         st.write(f"**❌ Días fuera:** {days_off_count} día(s)")
                         if days_off_count <= 5:
-                            st.write(f"   {', '.join(worker['days_off'])}")
+                            st.write(f"   {', '.join(days_off_list_display)}")
                         else:
-                            st.write(f"   {', '.join(worker['days_off'][:5])} ... y {days_off_count - 5} más")
+                            st.write(
+                                f"   {', '.join(days_off_list_display[:5])} ... y {days_off_count - 5} más"
+                            )
 
                 with col_actions:
                     col_edit, col_del = st.columns(2)
