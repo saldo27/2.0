@@ -491,6 +491,22 @@ class ConstraintChecker:
         try:
             worker = next(w for w in self.workers_data if w["id"] == worker_id)
 
+            # Cadence ("cadencia") workers: only work on their fixed cadence
+            # dates (stored in mandatory_days by SchedulerInitializer). They
+            # must never receive more or fewer shifts than the cadence
+            # dictates, so any other date is unavailable for them.
+            if worker.get("has_cadence"):
+                mandatory_str = worker.get("mandatory_days", "")
+                try:
+                    cadence_dates = set(self.date_utils.parse_dates(mandatory_str)) if mandatory_str else set()
+                except Exception as exc:
+                    logging.debug(f"Could not parse cadence mandatory_days for worker {worker_id}: {exc}")
+                    cadence_dates = set()
+                if date not in cadence_dates:
+                    if _debug_enabled():
+                        logging.debug(f"Worker {worker_id} has cadencia; {date} is not a cadence date")
+                    return True
+
             # Check days off
             if worker.get("days_off"):
                 off_periods = self.date_utils.parse_date_ranges(worker["days_off"])

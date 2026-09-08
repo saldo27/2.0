@@ -101,6 +101,19 @@ class WorkerEligibilityTracker:
         if worker_id in assigned_workers:
             return False
 
+        # Cadence ("cadencia") workers only work on their fixed cadence dates
+        # (stored in mandatory_days by SchedulerInitializer).
+        worker_data = next((w for w in self.workers_data if w["id"] == worker_id), None)
+        if worker_data and worker_data.get("has_cadence"):
+            mandatory_str = worker_data.get("mandatory_days", "")
+            try:
+                cadence_dates = set(self.date_utils.parse_dates(mandatory_str)) if mandatory_str and self.date_utils else set()
+            except Exception as exc:
+                logging.debug(f"Could not parse cadence mandatory_days for worker {worker_id}: {exc}")
+                cadence_dates = set()
+            if date not in cadence_dates:
+                return False
+
         # Check minimum gap based on the configurable parameter
         last_worked = self.last_worked_date[worker_id]
         if last_worked:

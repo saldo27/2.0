@@ -1489,6 +1489,13 @@ with tab1:
                 # Inicializar guardias_mes_input con buffer
                 if "guardias_mes_buffer" in st.session_state:
                     st.session_state.guardias_mes_input = st.session_state.guardias_mes_buffer
+                # Inicializar campos de cadencia con buffer
+                if "has_cadence_buffer" in st.session_state:
+                    st.session_state.has_cadence_checkbox = st.session_state.has_cadence_buffer
+                if "cadence_days_buffer" in st.session_state:
+                    st.session_state.cadence_days_input = st.session_state.cadence_days_buffer
+                if "cadence_start_date_buffer" in st.session_state and st.session_state.cadence_start_date_buffer:
+                    st.session_state.cadence_start_date_input = st.session_state.cadence_start_date_buffer
                 # Marcar que ya se cargaron los buffers
                 st.session_state.buffers_loaded = True
 
@@ -1517,6 +1524,36 @@ with tab1:
             else:
                 st.info("ℹ️ Se calcularán automáticamente")
                 guardias_per_month = 0
+
+        col_cad_a, col_cad_b, col_cad_c = st.columns(3)
+        with col_cad_a:
+            has_cadence = st.checkbox(
+                "Cadencia",
+                key="has_cadence_checkbox",
+                help=(
+                    "Guardias asignadas cada X días desde una fecha de inicio. "
+                    "Esta asignación es obligatoria, inamovible y exclusiva: el médico "
+                    "solo tendrá las guardias propias de la cadencia (ningún cambio "
+                    "salvo puesto de last post el mismo día de cadencia)."
+                ),
+            )
+        with col_cad_b:
+            cadence_days = st.number_input(
+                "días",
+                min_value=1,
+                key="cadence_days_input",
+                disabled=not has_cadence,
+                help="Número de días entre guardias consecutivas de la cadencia",
+            )
+        with col_cad_c:
+            cadence_start_date = st.date_input(
+                "Fecha de inicio",
+                key="cadence_start_date_input",
+                disabled=not has_cadence,
+                format="DD/MM/YYYY",
+                help="Fecha en la que comienza la cadencia (primera guardia)",
+            )
+
 
         # IMPORTANTE: Inicializar los valores del form con los buffers ANTES de renderizar el form
         if st.session_state.get("editing_worker"):
@@ -1609,12 +1646,18 @@ with tab1:
 
             # Días obligatorios
             st.markdown("**✅ Guardias Obligatorias (Mandatory)**")
+            if has_cadence:
+                st.caption(
+                    "🔁 Este médico tiene Cadencia activa: las fechas obligatorias se calculan "
+                    "automáticamente a partir de la cadencia y este campo se ignora."
+                )
             mandatory_dates = st.text_area(
                 "Fechas obligatorias (una por línea o separadas por punto y coma)",
                 placeholder="01-12-2026; 15-12-2026; 25-12-2026",
                 height=80,
                 help="Días en los que DEBE trabajar obligatoriamente",
                 key="form_mandatory_dates_area",
+                disabled=has_cadence,
             )
 
             # Días fuera (nueva funcionalidad)
@@ -1688,6 +1731,23 @@ with tab1:
                         # Será calculado automáticamente
                         target_shifts_value = 0
 
+                    # Obtener datos de cadencia (FUERA DEL FORM)
+                    has_cadence_flag = st.session_state.get("has_cadence_checkbox", False)
+                    cadence_days_value = st.session_state.get("cadence_days_input", 1)
+                    cadence_start_date_value = st.session_state.get("cadence_start_date_input")
+                    cadence_start_date_str = (
+                        cadence_start_date_value.strftime("%d-%m-%Y") if cadence_start_date_value else ""
+                    )
+                    if has_cadence_flag and not cadence_start_date_str:
+                        st.error("❌ Debe indicar una Fecha de inicio para la cadencia")
+                        st.stop()
+
+                    # La cadencia es obligatoria y exclusiva: sobreescribe el
+                    # cálculo automático/manual y los días obligatorios manuales
+                    if has_cadence_flag:
+                        auto_calculate_flag = False
+                        target_shifts_value = 0
+
                     # Crear/actualizar trabajador
                     worker_data = {
                         "id": form_worker_id,
@@ -1701,6 +1761,9 @@ with tab1:
                         "days_off": worker_data_days_off,  # New field
                         "work_periods": worker_data_work_periods,  # New field
                         "auto_calculate_shifts": auto_calculate_flag,
+                        "has_cadence": has_cadence_flag,
+                        "cadence_days": int(cadence_days_value) if has_cadence_flag else 0,
+                        "cadence_start_date": cadence_start_date_str if has_cadence_flag else "",
                     }
 
                     # Verificar si ya existe
@@ -1732,6 +1795,9 @@ with tab1:
                     st.session_state.only_last_post_buffer = False
                     st.session_state.mandatory_dates_buffer = ""
                     st.session_state.days_off_buffer = ""
+                    st.session_state.has_cadence_buffer = False
+                    st.session_state.cadence_days_buffer = 1
+                    st.session_state.cadence_start_date_buffer = None
 
                     st.rerun()
 
@@ -1751,6 +1817,9 @@ with tab1:
                 st.session_state.only_last_post_buffer = False
                 st.session_state.mandatory_dates_buffer = ""
                 st.session_state.days_off_buffer = ""
+                st.session_state.has_cadence_buffer = False
+                st.session_state.cadence_days_buffer = 1
+                st.session_state.cadence_start_date_buffer = None
                 st.success("✅ Formulario limpiado")
                 st.rerun()
 
@@ -1794,7 +1863,12 @@ with tab1:
     if len(st.session_state.workers_data) > 0:
         for idx, worker in enumerate(st.session_state.workers_data):
             # Título del trabajador
-            if worker.get("auto_calculate_shifts", True):
+            if worker.get("has_cadence"):
+                title = (
+                    f"👤 {worker['id']} - 🔁 Cadencia: cada {worker.get('cadence_days', 0)} días "
+                    f"desde {worker.get('cadence_start_date', '?')}"
+                )
+            elif worker.get("auto_calculate_shifts", True):
                 title = f"👤 {worker['id']} - Objetivo: 🔄 Automático ({worker.get('work_percentage', 1):.0f}%)"
             else:
                 guardias_mes = worker.get("target_shifts", 0)
@@ -1808,7 +1882,13 @@ with tab1:
                     st.write(f"**Porcentaje jornada:** {worker.get('work_percentage', 1):.0f}%")
 
                     # Mostrar objetivo de turnos claramente
-                    if worker.get("auto_calculate_shifts", True):
+                    if worker.get("has_cadence"):
+                        st.write(
+                            f"**🔁 Cadencia:** guardia cada {worker.get('cadence_days', 0)} días, "
+                            f"empezando el {worker.get('cadence_start_date', '?')} "
+                            "(obligatoria e inamovible; sin guardias adicionales)"
+                        )
+                    elif worker.get("auto_calculate_shifts", True):
                         st.write("**🔄 Guardias objetivo:** Se calculará automáticamente según el período")
                     else:
                         st.write(
@@ -1862,6 +1942,20 @@ with tab1:
                             # Guardias/mes si no es automático
                             if not worker.get("auto_calculate_shifts", True):
                                 st.session_state.guardias_mes_buffer = worker.get("target_shifts", 4)
+
+                            # Cadencia
+                            st.session_state.has_cadence_buffer = worker.get("has_cadence", False)
+                            st.session_state.cadence_days_buffer = worker.get("cadence_days", 1) or 1
+                            cadence_start_str = worker.get("cadence_start_date", "")
+                            if cadence_start_str:
+                                try:
+                                    st.session_state.cadence_start_date_buffer = datetime.strptime(
+                                        cadence_start_str, "%d-%m-%Y"
+                                    ).date()
+                                except ValueError:
+                                    st.session_state.cadence_start_date_buffer = None
+                            else:
+                                st.session_state.cadence_start_date_buffer = None
 
                             # Parsear work_periods de string a formato normal
                             work_periods_str = worker.get("work_periods", "")

@@ -1,5 +1,6 @@
 # Imports
 import logging
+import math
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -152,6 +153,52 @@ class DateTimeUtils:
             except ValueError as e:
                 logging.warning(f"Invalid date range format '{date_range}' - {e!s}")
         return ranges
+
+    def compute_cadence_dates(
+        self,
+        cadence_start_date: datetime,
+        cadence_days: int,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> list[datetime]:
+        """
+        Compute the list of dates on which a "cadencia" (fixed-cadence) worker
+        must be assigned a shift, within the given schedule period.
+
+        The worker is assigned every ``cadence_days`` days starting from
+        ``cadence_start_date`` (e.g. every 6 days starting 02-Jul → 02, 08,
+        14, 20-Jul, ...), clipped to ``[period_start, period_end]``.
+
+        Args:
+            cadence_start_date: First date of the cadence pattern.
+            cadence_days: Number of days between consecutive cadence shifts (>= 1).
+            period_start: Start of the schedule period.
+            period_end: End of the schedule period.
+
+        Returns:
+            Sorted list of datetime objects (dates within the period).
+        """
+        if not cadence_start_date or not cadence_days or cadence_days < 1:
+            return []
+        if period_end < period_start:
+            return []
+
+        dates: list[datetime] = []
+
+        if cadence_start_date < period_start:
+            # Advance to the first occurrence within (or after) period_start
+            days_diff = (period_start - cadence_start_date).days
+            steps = math.ceil(days_diff / cadence_days)
+            current = cadence_start_date + timedelta(days=steps * cadence_days)
+        else:
+            current = cadence_start_date
+
+        while current <= period_end:
+            if current >= period_start:
+                dates.append(current)
+            current += timedelta(days=cadence_days)
+
+        return dates
 
     def is_holiday(self, date: datetime, holidays_list: list[datetime] | None = None) -> bool:
         """
