@@ -1517,6 +1517,8 @@ with tab1:
                     st.session_state.incompatible_with_multiselect = st.session_state.incompatible_with_buffer
                 if "no_last_post_buffer" in st.session_state:
                     st.session_state.no_last_post_checkbox = st.session_state.no_last_post_buffer
+                if "only_last_post_buffer" in st.session_state:
+                    st.session_state.only_last_post_checkbox = st.session_state.only_last_post_buffer
                 # Marcar que ya se cargaron los buffers
                 st.session_state.buffers_loaded = True
 
@@ -1624,7 +1626,6 @@ with tab1:
                     "Solo Rosell",
                     help="Este médico SOLO puede ser asignado en el Rosell.",
                     key="only_last_post_checkbox",
-                    value=st.session_state.get("only_last_post_buffer", False),
                     disabled=no_last_post,
                 )
             with col_inc4:
@@ -1800,6 +1801,22 @@ with tab1:
                     st.session_state.cadence_days_buffer = 1
                     st.session_state.cadence_start_date_buffer = None
 
+                    # Limpiar también los valores actuales de los widgets del formulario
+                    # para que no se arrastren al siguiente médico que se cree/edite.
+                    st.session_state.worker_id_input = ""
+                    st.session_state.slider_work_percentage_form = 100
+                    st.session_state.auto_calc_checkbox = True
+                    st.session_state.guardias_mes_input = 4
+                    st.session_state.work_periods_textarea = ""
+                    st.session_state.is_incompatible_checkbox = False
+                    st.session_state.no_last_post_checkbox = False
+                    st.session_state.only_last_post_checkbox = False
+                    st.session_state.form_mandatory_dates_area = ""
+                    st.session_state.form_days_off_area = ""
+                    st.session_state.has_cadence_checkbox = False
+                    st.session_state.cadence_days_input = 1
+                    st.session_state.cadence_start_date_input = None
+
                     st.rerun()
 
             if clear:
@@ -1821,6 +1838,23 @@ with tab1:
                 st.session_state.has_cadence_buffer = False
                 st.session_state.cadence_days_buffer = 1
                 st.session_state.cadence_start_date_buffer = None
+
+                # Limpiar también los valores actuales de los widgets del formulario
+                # para que no se arrastren al siguiente médico que se cree/edite.
+                st.session_state.worker_id_input = ""
+                st.session_state.slider_work_percentage_form = 100
+                st.session_state.auto_calc_checkbox = True
+                st.session_state.guardias_mes_input = 4
+                st.session_state.work_periods_textarea = ""
+                st.session_state.is_incompatible_checkbox = False
+                st.session_state.no_last_post_checkbox = False
+                st.session_state.only_last_post_checkbox = False
+                st.session_state.form_mandatory_dates_area = ""
+                st.session_state.form_days_off_area = ""
+                st.session_state.has_cadence_checkbox = False
+                st.session_state.cadence_days_input = 1
+                st.session_state.cadence_start_date_input = None
+
                 st.success("✅ Formulario limpiado")
                 st.rerun()
 
