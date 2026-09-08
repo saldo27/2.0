@@ -1575,9 +1575,7 @@ with tab1:
                 help="Fecha en la que comienza la cadencia (primera guardia)",
             )
 
-
-
-
+        with st.form("worker_form"):
             # El ID lo pasamos desde session_state
             # Porcentaje de Jornada
             st.markdown("**📋 Información Básica**")
