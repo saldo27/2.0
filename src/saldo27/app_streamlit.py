@@ -291,6 +291,9 @@ def load_workers_from_file(uploaded_file):
                 "auto_calculate_shifts": bool(item.get("auto_calculate_shifts", True)),
                 "no_last_post": bool(item.get("no_last_post", False)),
                 "only_last_post": bool(item.get("only_last_post", False)),
+                "has_cadence": bool(item.get("has_cadence", False)),
+                "cadence_days": int(item.get("cadence_days", 0) or 0),
+                "cadence_start_date": str(item.get("cadence_start_date", "") or ""),
             }
 
             # Compatibilidad con formato antiguo (mandatory_dates lista)
