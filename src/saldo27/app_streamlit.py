@@ -214,6 +214,8 @@ if "generation_log" not in st.session_state:
     st.session_state.generation_log = []
 if "config" not in st.session_state:
     st.session_state.config = SchedulerConfig.get_default_config()
+if "fa_pending_result" not in st.session_state:
+    st.session_state.fa_pending_result = None
 
 if "license_checked" not in st.session_state:
     st.session_state.license_checked = True
@@ -813,6 +815,66 @@ def refresh_generated_report_pdfs(scheduler: Scheduler, pdf_exporter_cls: type) 
             errors.append(f"Estadísticas y Desglose Detallado: {exc}")
 
     return refreshed_files, errors
+
+
+def render_final_adjustment_result(result: dict[str, Any]) -> None:
+    """
+    Renderiza el resultado del ⚖️ Ajuste Final (FinalAdjustmentEngine).
+
+    Se extrae en una función independiente porque el resultado se persiste en
+    ``st.session_state.fa_pending_result`` y se renderiza en el siguiente
+    rerun de Streamlit (ANTES de volver a pulsar el botón), evitando que el
+    ``st.rerun()`` posterior a la ejecución del motor descarte los mensajes
+    de éxito/estadísticas antes de que el usuario llegue a verlos.
+    """
+    total_swaps = result["total_swaps"]
+    fa_stats = result["fa_stats"]
+    refreshed_pdfs = result["refreshed_pdfs"]
+    pdf_refresh_errors = result["pdf_refresh_errors"]
+    before_metrics = result["before_metrics"]
+    after_metrics = result["after_metrics"]
+
+    if total_swaps > 0:
+        ortools_n = fa_stats.get("ortools_reassignments", 0)
+        ortools_msg = f", {ortools_n} reasignación(es) OR-Tools" if ortools_n else ""
+        st.success(
+            f"✅ Ajuste completado: {fa_stats['shift_swaps']} swap(s) de turno, "
+            f"{fa_stats['weekend_swaps']} swap(s) de fin-de-semana, "
+            f"{fa_stats['bridge_swaps']} swap(s) de puente"
+            f"{ortools_msg}."
+        )
+        if refreshed_pdfs:
+            st.info(f"🔄 PDFs actualizados: {', '.join(refreshed_pdfs)}")
+        if pdf_refresh_errors:
+            for pdf_err in pdf_refresh_errors:
+                st.warning(f"⚠️ No se pudo actualizar un PDF: {pdf_err}")
+    else:
+        st.info("ℹ️ El calendario ya estaba bien equilibrado. No se realizaron cambios.")
+
+    # Show before/after comparison table
+    rows = []
+    for wid, bef in before_metrics.items():
+        aft = after_metrics.get(wid, bef)
+        rows.append(
+            {
+                "Médico": bef["name"],
+                "Turnos Obj.": bef["shift_target"],
+                "Turnos (Antes)": bef["shift_assigned"],
+                "Turnos (Después)": aft["shift_assigned"],
+                "Desv. Turnos": f"{aft['shift_deviation']:+d}",
+                "Wknd Obj.": bef["weekend_target"],
+                "Wknd (Antes)": bef["weekend_assigned"],
+                "Wknd (Después)": aft["weekend_assigned"],
+                "Desv. Wknd": f"{aft['weekend_deviation']:+d}",
+                "Puente Obj.": bef["bridge_target"],
+                "Puente (Antes)": bef["bridge_assigned"],
+                "Puente (Después)": aft["bridge_assigned"],
+                "Desv. Puente": f"{aft['bridge_deviation']:+d}",
+            }
+        )
+    if rows:
+        with st.expander("📊 Detalle por médico (antes → después del ajuste)", expanded=False):
+            st.dataframe(pd.DataFrame(rows), hide_index=True)
 
 
 def check_violations():
@@ -2190,6 +2252,16 @@ with tab2:
                 "fines de semana y puentes respetando todas las restricciones."
             )
 
+            # Render any pending result from a previous run BEFORE the button.
+            # This is required because a successful run below ends with
+            # st.rerun() to refresh the calendar table — if the result were
+            # rendered only in that same script run, the rerun would discard
+            # it before the user ever saw it.
+            _fa_pending_result = st.session_state.get("fa_pending_result")
+            if _fa_pending_result is not None:
+                st.session_state.fa_pending_result = None
+                render_final_adjustment_result(_fa_pending_result)
+
             if st.button("⚖️ Ejecutar Ajuste Final", type="secondary", key="btn_final_adjustment"):
                 _sched_fa = st.session_state.scheduler
                 _refreshed_pdfs: list[str] = []
@@ -2232,50 +2304,19 @@ with tab2:
                             st.session_state.schedule = _sched_fa.schedule
 
                     if _fa_results is not None:
-                        if _total_swaps > 0:
-                            _ortools_n = _fa_stats.get("ortools_reassignments", 0)
-                            _ortools_msg = f", {_ortools_n} reasignación(es) OR-Tools" if _ortools_n else ""
-                            st.success(
-                                f"✅ Ajuste completado: {_fa_stats['shift_swaps']} swap(s) de turno, "
-                                f"{_fa_stats['weekend_swaps']} swap(s) de fin-de-semana, "
-                                f"{_fa_stats['bridge_swaps']} swap(s) de puente"
-                                f"{_ortools_msg}."
-                            )
-                            if _refreshed_pdfs:
-                                st.info(f"🔄 PDFs actualizados: {', '.join(_refreshed_pdfs)}")
-                            if _pdf_refresh_errors:
-                                for _pdf_err in _pdf_refresh_errors:
-                                    st.warning(f"⚠️ No se pudo actualizar un PDF: {_pdf_err}")
-                        else:
-                            st.info("ℹ️ El calendario ya estaba bien equilibrado. No se realizaron cambios.")
-
-                        # Show before/after comparison table
-                        _rows = []
-                        for _wid, _bef in _before_metrics.items():
-                            _aft = _after_metrics.get(_wid, _bef)
-                            _rows.append(
-                                {
-                                    "Médico": _bef["name"],
-                                    "Turnos Obj.": _bef["shift_target"],
-                                    "Turnos (Antes)": _bef["shift_assigned"],
-                                    "Turnos (Después)": _aft["shift_assigned"],
-                                    "Desv. Turnos": f"{_aft['shift_deviation']:+d}",
-                                    "Wknd Obj.": _bef["weekend_target"],
-                                    "Wknd (Antes)": _bef["weekend_assigned"],
-                                    "Wknd (Después)": _aft["weekend_assigned"],
-                                    "Desv. Wknd": f"{_aft['weekend_deviation']:+d}",
-                                    "Puente Obj.": _bef["bridge_target"],
-                                    "Puente (Antes)": _bef["bridge_assigned"],
-                                    "Puente (Después)": _aft["bridge_assigned"],
-                                    "Desv. Puente": f"{_aft['bridge_deviation']:+d}",
-                                }
-                            )
-                        if _rows:
-                            with st.expander("📊 Detalle por médico (antes → después del ajuste)", expanded=False):
-                                st.dataframe(pd.DataFrame(_rows), hide_index=True)
-
-                        if _total_swaps > 0:
-                            st.rerun()
+                        # Persist the result so it survives the st.rerun() below and
+                        # is rendered (via the pending-result block above) on the
+                        # next script run — otherwise the immediate rerun discards
+                        # the success/info messages and table before they're shown.
+                        st.session_state.fa_pending_result = {
+                            "total_swaps": _total_swaps,
+                            "fa_stats": _fa_stats,
+                            "refreshed_pdfs": _refreshed_pdfs,
+                            "pdf_refresh_errors": _pdf_refresh_errors,
+                            "before_metrics": _before_metrics,
+                            "after_metrics": _after_metrics,
+                        }
+                        st.rerun()
 
 # ==================== TAB 3: ESTADÍSTICAS ====================
 with tab3:
