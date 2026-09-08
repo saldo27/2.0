@@ -323,6 +323,17 @@ class FinalAdjustmentEngine(EngineStateMixin):
         if sb._is_worker_unavailable(worker_id, date_gain):
             return False
 
+        # 1b. CRITICAL: worker must not already hold another slot on date_gain.
+        #     Without this check a paired swap could give worker_id a second
+        #     shift on the same day, violating the "one shift per worker per
+        #     day" invariant (the slot being vacated, if any, is on date_lose —
+        #     a different date — so worker_id must be entirely absent here).
+        existing_on_gain_date = [
+            w for idx, w in enumerate(self.schedule.get(date_gain, [])) if idx != post_gain and w is not None
+        ]
+        if worker_id in existing_on_gain_date:
+            return False
+
         # 2. Post constraints
         worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
         if worker_config:
