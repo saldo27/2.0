@@ -1460,6 +1460,16 @@ class SchedulerCore:
             except Exception as _re:
                 logging.warning(f"714-relaxed fill skipped: {_re}")
 
+            # Final safety-net validation: catches and repairs any constraint
+            # violations (rest gaps, Friday-Monday, incompatibilities, and
+            # unintentional 7/14 patterns) that slipped through the passes above.
+            # Deliberately budgeted 7/14 exceptions are left untouched (see
+            # Scheduler._fix_constraint_violations).
+            try:
+                self.scheduler._run_final_validation_and_fix()
+            except Exception as _ve:
+                logging.warning(f"Final validation/fix pass skipped: {_ve}")
+
             logging.info("Schedule finalization phase completed successfully.")
             return True
 

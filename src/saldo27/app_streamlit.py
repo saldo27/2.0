@@ -2,7 +2,7 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 3.2 (Agosto 2026)
+Versión: 3.4 (Septiembre 2026)
 """
 
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
@@ -48,7 +48,7 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # Constante de versión
-APP_VERSION = "3.2"
+APP_VERSION = "3.4"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -214,6 +214,8 @@ if "generation_log" not in st.session_state:
     st.session_state.generation_log = []
 if "config" not in st.session_state:
     st.session_state.config = SchedulerConfig.get_default_config()
+if "fa_pending_result" not in st.session_state:
+    st.session_state.fa_pending_result = None
 
 if "license_checked" not in st.session_state:
     st.session_state.license_checked = True
@@ -291,6 +293,9 @@ def load_workers_from_file(uploaded_file):
                 "auto_calculate_shifts": bool(item.get("auto_calculate_shifts", True)),
                 "no_last_post": bool(item.get("no_last_post", False)),
                 "only_last_post": bool(item.get("only_last_post", False)),
+                "has_cadence": bool(item.get("has_cadence", False)),
+                "cadence_days": int(item.get("cadence_days", 0) or 0),
+                "cadence_start_date": str(item.get("cadence_start_date", "") or ""),
             }
 
             # Compatibilidad con formato antiguo (mandatory_dates lista)
@@ -440,6 +445,9 @@ def load_schedule_from_json(uploaded_file):
 
                     st.session_state.scheduler = scheduler
                     st.session_state.schedule = schedule
+                    # A freshly imported schedule invalidates any Ajuste Final
+                    # result computed against the previous one.
+                    st.session_state.fa_pending_result = None
 
                     return True, "✅ Calendario y configuración importados correctamente"
             except Exception as e:
@@ -533,6 +541,9 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
                 st.info(f"✅ Generación #{uses} completada.  Quedan {st.session_state.uses_remaining} usos.")
 
             st.session_state.schedule = scheduler.schedule
+            # A freshly generated schedule invalidates any Ajuste Final
+            # result computed against the previous one.
+            st.session_state.fa_pending_result = None
             return True, result.message
 
         return False, result.message
@@ -571,6 +582,40 @@ def get_schedule_dataframe():
     # visually distinguishable from real empty slots ('-') and are never counted as
     # real guard slots in any coverage calculation.
     return df.fillna("---")
+
+
+def compute_schedule_changes(
+    schedule_before: dict[datetime, list],
+    schedule_after: dict[datetime, list],
+) -> list[dict[str, Any]]:
+    """
+    Compara dos snapshots de ``schedule`` ({fecha: [worker_por_puesto]}) y
+    devuelve la lista de slots (fecha, puesto) cuyo trabajador asignado
+    cambió, con el valor anterior y el nuevo.
+
+    Usada para mostrar al usuario exactamente qué cambió tras ejecutar el
+    ⚖️ Ajuste Final, independientemente de en qué sub-fase (balance de
+    turnos, fines de semana, puentes u OR-Tools) se produjo el cambio.
+    """
+    changes: list[dict[str, Any]] = []
+    all_dates = set(schedule_before.keys()) | set(schedule_after.keys())
+    for date_val in sorted(all_dates):
+        posts_before = schedule_before.get(date_val, [])
+        posts_after = schedule_after.get(date_val, [])
+        max_posts = max(len(posts_before), len(posts_after))
+        for post in range(max_posts):
+            old_worker = posts_before[post] if post < len(posts_before) else None
+            new_worker = posts_after[post] if post < len(posts_after) else None
+            if old_worker != new_worker:
+                changes.append(
+                    {
+                        "Fecha": date_val.strftime("%d-%m-%Y"),
+                        "Puesto": post + 1,
+                        "Trabajador (Antes)": old_worker or "-",
+                        "Trabajador (Después)": new_worker or "-",
+                    }
+                )
+    return changes
 
 
 def get_worker_statistics():
@@ -810,6 +855,119 @@ def refresh_generated_report_pdfs(scheduler: Scheduler, pdf_exporter_cls: type) 
             errors.append(f"Estadísticas y Desglose Detallado: {exc}")
 
     return refreshed_files, errors
+
+
+def render_final_adjustment_result(result: dict[str, Any]) -> None:
+    """
+    Renderiza el resultado del ⚖️ Ajuste Final (FinalAdjustmentEngine).
+
+    Se extrae en una función independiente porque el resultado se persiste en
+    ``st.session_state.fa_pending_result`` y se renderiza en el siguiente
+    rerun de Streamlit (ANTES de volver a pulsar el botón), evitando que el
+    ``st.rerun()`` posterior a la ejecución del motor descarte los mensajes
+    de éxito/estadísticas antes de que el usuario llegue a verlos.
+
+    A diferencia de otros mensajes efímeros, este bloque incluye un botón
+    interactivo (exportar PDF), por lo que NO se limpia tras un único
+    render: permanece en session_state hasta que una nueva ejecución del
+    Ajuste Final lo sobrescriba o se genere/importe un calendario nuevo
+    (ver limpieza de ``fa_pending_result`` en esos puntos).
+    """
+    total_swaps = result["total_swaps"]
+    fa_stats = result["fa_stats"]
+    refreshed_pdfs = result["refreshed_pdfs"]
+    pdf_refresh_errors = result["pdf_refresh_errors"]
+    before_metrics = result["before_metrics"]
+    after_metrics = result["after_metrics"]
+
+    if total_swaps > 0:
+        ortools_n = fa_stats.get("ortools_reassignments", 0)
+        ortools_msg = f", {ortools_n} reasignación(es) OR-Tools" if ortools_n else ""
+        st.success(
+            f"✅ Ajuste completado: {fa_stats['shift_swaps']} swap(s) de turno, "
+            f"{fa_stats['weekend_swaps']} swap(s) de fin-de-semana, "
+            f"{fa_stats['bridge_swaps']} swap(s) de puente"
+            f"{ortools_msg}."
+        )
+        if refreshed_pdfs:
+            st.info(f"🔄 PDFs actualizados: {', '.join(refreshed_pdfs)}")
+        if pdf_refresh_errors:
+            for pdf_err in pdf_refresh_errors:
+                st.warning(f"⚠️ No se pudo actualizar un PDF: {pdf_err}")
+    else:
+        st.info("ℹ️ El calendario ya estaba bien equilibrado. No se realizaron cambios.")
+
+    # Show before/after comparison table
+    rows = []
+    for wid, bef in before_metrics.items():
+        aft = after_metrics.get(wid, bef)
+        rows.append(
+            {
+                "Médico": bef["name"],
+                "Turnos Obj.": bef["shift_target"],
+                "Turnos (Antes)": bef["shift_assigned"],
+                "Turnos (Después)": aft["shift_assigned"],
+                "Desv. Turnos": f"{aft['shift_deviation']:+d}",
+                "Wknd Obj.": bef["weekend_target"],
+                "Wknd (Antes)": bef["weekend_assigned"],
+                "Wknd (Después)": aft["weekend_assigned"],
+                "Desv. Wknd": f"{aft['weekend_deviation']:+d}",
+                "Puente Obj.": bef["bridge_target"],
+                "Puente (Antes)": bef["bridge_assigned"],
+                "Puente (Después)": aft["bridge_assigned"],
+                "Desv. Puente": f"{aft['bridge_deviation']:+d}",
+            }
+        )
+    if rows:
+        with st.expander("📊 Detalle por médico (antes → después del ajuste)", expanded=False):
+            st.dataframe(pd.DataFrame(rows), hide_index=True)
+
+    # Show the specific slot-level changes made (regardless of which sub-phase
+    # produced them: shift/weekend/bridge balance or the OR-Tools refinement).
+    changes = result.get("changes") or []
+    if changes:
+        with st.expander(f"🔄 Cambios realizados ({len(changes)})", expanded=True):
+            st.dataframe(pd.DataFrame(changes), hide_index=True, width="stretch")
+
+    # Show the updated calendar with an option to export it to PDF, so the
+    # user doesn't have to scroll back up to the general "Calendario
+    # Detallado" section to see the effect of the adjustment.
+    st.markdown("##### 📅 Calendario actualizado (tras el ajuste)")
+    _fa_df = get_schedule_dataframe()
+    if _fa_df is not None:
+        st.dataframe(_fa_df, width="stretch", height=400, hide_index=True)
+
+        if st.button("📄 Exportar calendario actualizado (PDF)", key="btn_export_fa_calendar"):
+            _fa_scheduler = st.session_state.scheduler
+            if _fa_scheduler is None:
+                st.warning("⚠️ No hay un calendario activo para exportar.")
+            else:
+                try:
+                    from saldo27.pdf_exporter import PDFExporter
+
+                    _fa_pdf_config = {
+                        "schedule": _fa_scheduler.schedule,
+                        "workers_data": _fa_scheduler.workers_data,
+                        "num_shifts": _fa_scheduler.num_shifts,
+                        "holidays": _fa_scheduler.holidays,
+                    }
+                    _fa_exporter = PDFExporter(_fa_pdf_config)
+                    _fa_period_str = (
+                        f"{_fa_scheduler.start_date.strftime('%Y%m%d')}_{_fa_scheduler.end_date.strftime('%Y%m%d')}"
+                    )
+                    _fa_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    _fa_filename = f"calendario_ajuste_final_{_fa_period_str}_{_fa_ts}.pdf"
+                    _fa_generated = _fa_exporter.export_all_months_calendar(filename=_fa_filename)
+                    if _fa_generated:
+                        st.success(f"✅ PDF generado: {_fa_generated}")
+                        st.rerun()
+                    else:
+                        st.error("No se pudo generar el archivo (nombre de archivo vacío)")
+                except Exception as _fa_pdf_exc:
+                    st.error(f"Error al generar PDF: {_fa_pdf_exc}")
+                    logging.error("FinalAdjustmentEngine PDF export error", exc_info=True)
+    else:
+        st.info("ℹ️ No hay calendario disponible para mostrar.")
 
 
 def check_violations():
@@ -1474,6 +1632,28 @@ with tab1:
         if "days_off_buffer" not in st.session_state:
             st.session_state.days_off_buffer = ""
 
+        # Si el formulario se guardó/limpió en el rerun anterior, resetear aquí los
+        # valores de los widgets (ANTES de que se instancien más abajo en este mismo
+        # run). Modificar st.session_state[key] de un widget DESPUÉS de haber sido
+        # instanciado en el mismo run lanza StreamlitAPIException, por eso el reset
+        # no puede hacerse en el propio manejador de submit/clear.
+        if st.session_state.get("pending_form_reset", False):
+            st.session_state.worker_id_input = ""
+            st.session_state.slider_work_percentage_form = 100
+            st.session_state.auto_calc_checkbox = True
+            st.session_state.guardias_mes_input = 4
+            st.session_state.work_periods_textarea = ""
+            st.session_state.is_incompatible_checkbox = False
+            st.session_state.no_last_post_checkbox = False
+            st.session_state.only_last_post_checkbox = False
+            st.session_state.form_mandatory_dates_area = ""
+            st.session_state.form_days_off_area = ""
+            st.session_state.has_cadence_checkbox = False
+            st.session_state.cadence_days_input = 1
+            st.session_state.cadence_start_date_input = None
+            st.session_state.incompatible_with_multiselect = []
+            st.session_state.pending_form_reset = False
+
         # Mostrar indicador si estamos en modo edición
         if st.session_state.get("editing_worker"):
             st.info(f"✏️ **Modo edición:** Editando a {st.session_state.get('editing_worker')}")
@@ -1489,6 +1669,36 @@ with tab1:
                 # Inicializar guardias_mes_input con buffer
                 if "guardias_mes_buffer" in st.session_state:
                     st.session_state.guardias_mes_input = st.session_state.guardias_mes_buffer
+                # Inicializar campos de cadencia con buffer
+                if "has_cadence_buffer" in st.session_state:
+                    st.session_state.has_cadence_checkbox = st.session_state.has_cadence_buffer
+                if "cadence_days_buffer" in st.session_state:
+                    st.session_state.cadence_days_input = st.session_state.cadence_days_buffer
+                if "cadence_start_date_buffer" in st.session_state and st.session_state.cadence_start_date_buffer:
+                    st.session_state.cadence_start_date_input = st.session_state.cadence_start_date_buffer
+                # Cargar el resto de buffers correspondientes a widgets DENTRO del form
+                # (porcentaje de jornada, periodos, mandatory, days off, incompatibilidades).
+                # CRÍTICO: esto debe ejecutarse SOLO una vez (al entrar en modo edición),
+                # nunca en el rerun que dispara el propio submit del form, o de lo
+                # contrario el valor recién introducido por el usuario (p.ej. el slider
+                # de Porcentaje de Jornada) sería sobreescrito por el valor antiguo del
+                # buffer justo antes de guardarse.
+                if "work_percentage_buffer" in st.session_state and st.session_state.work_percentage_buffer:
+                    st.session_state.slider_work_percentage_form = int(st.session_state.work_percentage_buffer)
+                if "work_periods_buffer" in st.session_state and st.session_state.work_periods_buffer:
+                    st.session_state.work_periods_textarea = st.session_state.work_periods_buffer
+                if "mandatory_dates_buffer" in st.session_state and st.session_state.mandatory_dates_buffer:
+                    st.session_state.form_mandatory_dates_area = st.session_state.mandatory_dates_buffer
+                if "days_off_buffer" in st.session_state and st.session_state.days_off_buffer:
+                    st.session_state.form_days_off_area = st.session_state.days_off_buffer
+                if "incompatible_buffer" in st.session_state:
+                    st.session_state.is_incompatible_checkbox = st.session_state.incompatible_buffer
+                if "incompatible_with_buffer" in st.session_state and st.session_state.incompatible_with_buffer:
+                    st.session_state.incompatible_with_multiselect = st.session_state.incompatible_with_buffer
+                if "no_last_post_buffer" in st.session_state:
+                    st.session_state.no_last_post_checkbox = st.session_state.no_last_post_buffer
+                if "only_last_post_buffer" in st.session_state:
+                    st.session_state.only_last_post_checkbox = st.session_state.only_last_post_buffer
                 # Marcar que ya se cargaron los buffers
                 st.session_state.buffers_loaded = True
 
@@ -1518,23 +1728,34 @@ with tab1:
                 st.info("ℹ️ Se calcularán automáticamente")
                 guardias_per_month = 0
 
-        # IMPORTANTE: Inicializar los valores del form con los buffers ANTES de renderizar el form
-        if st.session_state.get("editing_worker"):
-            # Si estamos editando, cargar los buffers en las keys del form
-            if "work_percentage_buffer" in st.session_state and st.session_state.work_percentage_buffer:
-                st.session_state.slider_work_percentage_form = int(st.session_state.work_percentage_buffer)
-            if "work_periods_buffer" in st.session_state and st.session_state.work_periods_buffer:
-                st.session_state.work_periods_textarea = st.session_state.work_periods_buffer
-            if "mandatory_dates_buffer" in st.session_state and st.session_state.mandatory_dates_buffer:
-                st.session_state.form_mandatory_dates_area = st.session_state.mandatory_dates_buffer
-            if "days_off_buffer" in st.session_state and st.session_state.days_off_buffer:
-                st.session_state.form_days_off_area = st.session_state.days_off_buffer
-            if "incompatible_buffer" in st.session_state:
-                st.session_state.is_incompatible_checkbox = st.session_state.incompatible_buffer
-            if "incompatible_with_buffer" in st.session_state and st.session_state.incompatible_with_buffer:
-                st.session_state.incompatible_with_multiselect = st.session_state.incompatible_with_buffer
-            if "no_last_post_buffer" in st.session_state:
-                st.session_state.no_last_post_checkbox = st.session_state.no_last_post_buffer
+        col_cad_a, col_cad_b, col_cad_c = st.columns(3)
+        with col_cad_a:
+            has_cadence = st.checkbox(
+                "Cadencia",
+                key="has_cadence_checkbox",
+                help=(
+                    "Guardias asignadas cada X días desde una fecha de inicio. "
+                    "Esta asignación es obligatoria, inamovible y exclusiva: el médico "
+                    "solo tendrá las guardias propias de la cadencia (ningún cambio "
+                    "salvo puesto de last post el mismo día de cadencia)."
+                ),
+            )
+        with col_cad_b:
+            cadence_days = st.number_input(
+                "días",
+                min_value=1,
+                key="cadence_days_input",
+                disabled=not has_cadence,
+                help="Número de días entre guardias consecutivas de la cadencia",
+            )
+        with col_cad_c:
+            cadence_start_date = st.date_input(
+                "Fecha de inicio",
+                key="cadence_start_date_input",
+                disabled=not has_cadence,
+                format="DD/MM/YYYY",
+                help="Fecha en la que comienza la cadencia (primera guardia)",
+            )
 
         with st.form("worker_form"):
             # El ID lo pasamos desde session_state
@@ -1577,7 +1798,6 @@ with tab1:
                     "No asignar Rosell",
                     help="Este médico no puede tener last posts (último puesto) asignados",
                     key="no_last_post_checkbox",
-                    value=st.session_state.get("no_last_post_buffer", False),
                 )
             # Fila 2: Solo Rosell y multiselect de IDs incompatibles
             col_inc3, col_inc4 = st.columns(2)
@@ -1586,22 +1806,15 @@ with tab1:
                     "Solo Rosell",
                     help="Este médico SOLO puede ser asignado en el Rosell.",
                     key="only_last_post_checkbox",
-                    value=st.session_state.get("only_last_post_buffer", False),
                     disabled=no_last_post,
                 )
             with col_inc4:
                 # Obtener lista de otros médicos para el multiselect
                 existing_ids = [w["id"] for w in st.session_state.workers_data if w["id"] != worker_id]
 
-                # Cargar valores previos si están en edición
-                default_incomp = st.session_state.get(
-                    "incompatible_with_buffer", st.session_state.get("incompatible_with", [])
-                )
-
                 incompatible_with = st.multiselect(
                     "Incompatible con IDs específicos",
                     options=existing_ids,
-                    default=default_incomp,
                     disabled=is_incompatible,
                     help="Seleccione los médicos con los que NO puede coincidir",
                     key="incompatible_with_multiselect",
@@ -1609,12 +1822,18 @@ with tab1:
 
             # Días obligatorios
             st.markdown("**✅ Guardias Obligatorias (Mandatory)**")
+            if has_cadence:
+                st.caption(
+                    "🔁 Este médico tiene Cadencia activa: las fechas obligatorias se calculan "
+                    "automáticamente a partir de la cadencia y este campo se ignora."
+                )
             mandatory_dates = st.text_area(
                 "Fechas obligatorias (una por línea o separadas por punto y coma)",
                 placeholder="01-12-2026; 15-12-2026; 25-12-2026",
                 height=80,
                 help="Días en los que DEBE trabajar obligatoriamente",
                 key="form_mandatory_dates_area",
+                disabled=has_cadence,
             )
 
             # Días fuera (nueva funcionalidad)
@@ -1688,6 +1907,23 @@ with tab1:
                         # Será calculado automáticamente
                         target_shifts_value = 0
 
+                    # Obtener datos de cadencia (FUERA DEL FORM)
+                    has_cadence_flag = st.session_state.get("has_cadence_checkbox", False)
+                    cadence_days_value = st.session_state.get("cadence_days_input", 1)
+                    cadence_start_date_value = st.session_state.get("cadence_start_date_input")
+                    cadence_start_date_str = (
+                        cadence_start_date_value.strftime("%d-%m-%Y") if cadence_start_date_value else ""
+                    )
+                    if has_cadence_flag and not cadence_start_date_str:
+                        st.error("❌ Debe indicar una Fecha de inicio para la cadencia")
+                        st.stop()
+
+                    # La cadencia es obligatoria y exclusiva: sobreescribe el
+                    # cálculo automático/manual y los días obligatorios manuales
+                    if has_cadence_flag:
+                        auto_calculate_flag = False
+                        target_shifts_value = 0
+
                     # Crear/actualizar trabajador
                     worker_data = {
                         "id": form_worker_id,
@@ -1701,6 +1937,9 @@ with tab1:
                         "days_off": worker_data_days_off,  # New field
                         "work_periods": worker_data_work_periods,  # New field
                         "auto_calculate_shifts": auto_calculate_flag,
+                        "has_cadence": has_cadence_flag,
+                        "cadence_days": int(cadence_days_value) if has_cadence_flag else 0,
+                        "cadence_start_date": cadence_start_date_str if has_cadence_flag else "",
                     }
 
                     # Verificar si ya existe
@@ -1732,6 +1971,16 @@ with tab1:
                     st.session_state.only_last_post_buffer = False
                     st.session_state.mandatory_dates_buffer = ""
                     st.session_state.days_off_buffer = ""
+                    st.session_state.has_cadence_buffer = False
+                    st.session_state.cadence_days_buffer = 1
+                    st.session_state.cadence_start_date_buffer = None
+
+                    # Marcar que hay que resetear los widgets del formulario en el
+                    # próximo run, ANTES de que se instancien (ver bloque al inicio
+                    # de esta pestaña). No se puede modificar aquí directamente el
+                    # session_state de estos widgets porque ya fueron instanciados
+                    # en este mismo run.
+                    st.session_state.pending_form_reset = True
 
                     st.rerun()
 
@@ -1751,6 +2000,17 @@ with tab1:
                 st.session_state.only_last_post_buffer = False
                 st.session_state.mandatory_dates_buffer = ""
                 st.session_state.days_off_buffer = ""
+                st.session_state.has_cadence_buffer = False
+                st.session_state.cadence_days_buffer = 1
+                st.session_state.cadence_start_date_buffer = None
+
+                # Marcar que hay que resetear los widgets del formulario en el
+                # próximo run, ANTES de que se instancien (ver bloque al inicio
+                # de esta pestaña). No se puede modificar aquí directamente el
+                # session_state de estos widgets porque ya fueron instanciados
+                # en este mismo run.
+                st.session_state.pending_form_reset = True
+
                 st.success("✅ Formulario limpiado")
                 st.rerun()
 
@@ -1794,7 +2054,12 @@ with tab1:
     if len(st.session_state.workers_data) > 0:
         for idx, worker in enumerate(st.session_state.workers_data):
             # Título del trabajador
-            if worker.get("auto_calculate_shifts", True):
+            if worker.get("has_cadence"):
+                title = (
+                    f"👤 {worker['id']} - 🔁 Cadencia: cada {worker.get('cadence_days', 0)} días "
+                    f"desde {worker.get('cadence_start_date', '?')}"
+                )
+            elif worker.get("auto_calculate_shifts", True):
                 title = f"👤 {worker['id']} - Objetivo: 🔄 Automático ({worker.get('work_percentage', 1):.0f}%)"
             else:
                 guardias_mes = worker.get("target_shifts", 0)
@@ -1808,7 +2073,13 @@ with tab1:
                     st.write(f"**Porcentaje jornada:** {worker.get('work_percentage', 1):.0f}%")
 
                     # Mostrar objetivo de turnos claramente
-                    if worker.get("auto_calculate_shifts", True):
+                    if worker.get("has_cadence"):
+                        st.write(
+                            f"**🔁 Cadencia:** guardia cada {worker.get('cadence_days', 0)} días, "
+                            f"empezando el {worker.get('cadence_start_date', '?')} "
+                            "(obligatoria e inamovible; sin guardias adicionales)"
+                        )
+                    elif worker.get("auto_calculate_shifts", True):
                         st.write("**🔄 Guardias objetivo:** Se calculará automáticamente según el período")
                     else:
                         st.write(
@@ -1832,22 +2103,26 @@ with tab1:
                         st.write("**Puesto Rosell:** 🎯 Solo Rosell")
 
                     # Días obligatorios
-                    if worker.get("mandatory_dates"):
-                        mandatory_count = len(worker["mandatory_dates"])
+                    mandatory_days_str = worker.get("mandatory_days", "")
+                    if mandatory_days_str:
+                        mandatory_list_display = [d.strip() for d in mandatory_days_str.split(";") if d.strip()]
+                        mandatory_count = len(mandatory_list_display)
                         st.write(f"**✅ Días obligatorios:** {mandatory_count} día(s)")
                         if mandatory_count <= 5:
-                            st.write(f"   {', '.join(worker['mandatory_dates'])}")
+                            st.write(f"   {', '.join(mandatory_list_display)}")
                         else:
-                            st.write(f"   {', '.join(worker['mandatory_dates'][:5])} ... y {mandatory_count - 5} más")
+                            st.write(f"   {', '.join(mandatory_list_display[:5])} ... y {mandatory_count - 5} más")
 
                     # Días fuera
-                    if worker.get("days_off"):
-                        days_off_count = len(worker["days_off"])
+                    days_off_str = worker.get("days_off", "")
+                    if days_off_str:
+                        days_off_list_display = [d.strip() for d in days_off_str.split(";") if d.strip()]
+                        days_off_count = len(days_off_list_display)
                         st.write(f"**❌ Días fuera:** {days_off_count} día(s)")
                         if days_off_count <= 5:
-                            st.write(f"   {', '.join(worker['days_off'])}")
+                            st.write(f"   {', '.join(days_off_list_display)}")
                         else:
-                            st.write(f"   {', '.join(worker['days_off'][:5])} ... y {days_off_count - 5} más")
+                            st.write(f"   {', '.join(days_off_list_display[:5])} ... y {days_off_count - 5} más")
 
                 with col_actions:
                     col_edit, col_del = st.columns(2)
@@ -1862,6 +2137,20 @@ with tab1:
                             # Guardias/mes si no es automático
                             if not worker.get("auto_calculate_shifts", True):
                                 st.session_state.guardias_mes_buffer = worker.get("target_shifts", 4)
+
+                            # Cadencia
+                            st.session_state.has_cadence_buffer = worker.get("has_cadence", False)
+                            st.session_state.cadence_days_buffer = worker.get("cadence_days", 1) or 1
+                            cadence_start_str = worker.get("cadence_start_date", "")
+                            if cadence_start_str:
+                                try:
+                                    st.session_state.cadence_start_date_buffer = datetime.strptime(
+                                        cadence_start_str, "%d-%m-%Y"
+                                    ).date()
+                                except ValueError:
+                                    st.session_state.cadence_start_date_buffer = None
+                            else:
+                                st.session_state.cadence_start_date_buffer = None
 
                             # Parsear work_periods de string a formato normal
                             work_periods_str = worker.get("work_periods", "")
@@ -2052,6 +2341,17 @@ with tab2:
                 "fines de semana y puentes respetando todas las restricciones."
             )
 
+            # Render any pending result from a previous run BEFORE the button.
+            # This block stays visible across reruns (e.g. the PDF export
+            # button below triggers its own rerun) until it is replaced by a
+            # new Ajuste Final run or cleared when a new schedule is
+            # generated/imported — it is intentionally NOT a one-shot render,
+            # otherwise interacting with any button inside it (like the PDF
+            # export) would immediately wipe it on the very next rerun.
+            _fa_pending_result = st.session_state.get("fa_pending_result")
+            if _fa_pending_result is not None:
+                render_final_adjustment_result(_fa_pending_result)
+
             if st.button("⚖️ Ejecutar Ajuste Final", type="secondary", key="btn_final_adjustment"):
                 _sched_fa = st.session_state.scheduler
                 _refreshed_pdfs: list[str] = []
@@ -2062,6 +2362,8 @@ with tab2:
                     with st.spinner("Ejecutando ajuste final… esto puede tardar unos segundos."):
                         try:
                             from saldo27.final_adjustment_engine import FinalAdjustmentEngine
+
+                            _schedule_before_fa = copy.deepcopy(_sched_fa.schedule)
 
                             engine = FinalAdjustmentEngine(_sched_fa)
                             _before_metrics = engine.compute_metrics()
@@ -2074,6 +2376,7 @@ with tab2:
                                 + _fa_stats["bridge_swaps"]
                                 + _fa_stats.get("ortools_reassignments", 0)
                             )
+                            _fa_changes = compute_schedule_changes(_schedule_before_fa, _sched_fa.schedule)
 
                             if _total_swaps > 0:
                                 try:
@@ -2094,50 +2397,20 @@ with tab2:
                             st.session_state.schedule = _sched_fa.schedule
 
                     if _fa_results is not None:
-                        if _total_swaps > 0:
-                            _ortools_n = _fa_stats.get("ortools_reassignments", 0)
-                            _ortools_msg = f", {_ortools_n} reasignación(es) OR-Tools" if _ortools_n else ""
-                            st.success(
-                                f"✅ Ajuste completado: {_fa_stats['shift_swaps']} swap(s) de turno, "
-                                f"{_fa_stats['weekend_swaps']} swap(s) de fin-de-semana, "
-                                f"{_fa_stats['bridge_swaps']} swap(s) de puente"
-                                f"{_ortools_msg}."
-                            )
-                            if _refreshed_pdfs:
-                                st.info(f"🔄 PDFs actualizados: {', '.join(_refreshed_pdfs)}")
-                            if _pdf_refresh_errors:
-                                for _pdf_err in _pdf_refresh_errors:
-                                    st.warning(f"⚠️ No se pudo actualizar un PDF: {_pdf_err}")
-                        else:
-                            st.info("ℹ️ El calendario ya estaba bien equilibrado. No se realizaron cambios.")
-
-                        # Show before/after comparison table
-                        _rows = []
-                        for _wid, _bef in _before_metrics.items():
-                            _aft = _after_metrics.get(_wid, _bef)
-                            _rows.append(
-                                {
-                                    "Médico": _bef["name"],
-                                    "Turnos Obj.": _bef["shift_target"],
-                                    "Turnos (Antes)": _bef["shift_assigned"],
-                                    "Turnos (Después)": _aft["shift_assigned"],
-                                    "Desv. Turnos": f"{_aft['shift_deviation']:+d}",
-                                    "Wknd Obj.": _bef["weekend_target"],
-                                    "Wknd (Antes)": _bef["weekend_assigned"],
-                                    "Wknd (Después)": _aft["weekend_assigned"],
-                                    "Desv. Wknd": f"{_aft['weekend_deviation']:+d}",
-                                    "Puente Obj.": _bef["bridge_target"],
-                                    "Puente (Antes)": _bef["bridge_assigned"],
-                                    "Puente (Después)": _aft["bridge_assigned"],
-                                    "Desv. Puente": f"{_aft['bridge_deviation']:+d}",
-                                }
-                            )
-                        if _rows:
-                            with st.expander("📊 Detalle por médico (antes → después del ajuste)", expanded=False):
-                                st.dataframe(pd.DataFrame(_rows), hide_index=True)
-
-                        if _total_swaps > 0:
-                            st.rerun()
+                        # Persist the result so it survives the st.rerun() below and
+                        # is rendered (via the pending-result block above) on the
+                        # next script run — otherwise the immediate rerun discards
+                        # the success/info messages and table before they're shown.
+                        st.session_state.fa_pending_result = {
+                            "total_swaps": _total_swaps,
+                            "fa_stats": _fa_stats,
+                            "refreshed_pdfs": _refreshed_pdfs,
+                            "pdf_refresh_errors": _pdf_refresh_errors,
+                            "before_metrics": _before_metrics,
+                            "after_metrics": _after_metrics,
+                            "changes": _fa_changes,
+                        }
+                        st.rerun()
 
 # ==================== TAB 3: ESTADÍSTICAS ====================
 with tab3:
@@ -3354,7 +3627,7 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "Sistema de Generación de Guardias v3.2 | "
+    "Sistema de Generación de Guardias v3.4 | "
     "Interfaz Streamlit | "
     f"© {datetime.now().year}"
     "</div>",

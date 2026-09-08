@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 from math import isclose
+from typing import ClassVar
 
 from saldo27.scheduler import Scheduler
 
@@ -73,6 +74,152 @@ def test_validate_and_fix_final_schedule_uses_canonical_weekly_pattern_violation
     fixes_made = scheduler.validate_and_fix_final_schedule()
 
     assert fixes_made == 1
+    assert scheduler.schedule[second_date][0] is None
+    assert scheduler.worker_assignments["DOC001"] == {first_date}
+
+
+def test_mandatory_assignment_places_only_last_post_worker_in_last_post(sample_workers_data):
+    """A worker with only_last_post=True and a mandatory_days assignment must be
+    placed directly in the LAST post slot, never in an earlier post, even
+    though earlier posts remain free that day."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    workers = [dict(w) for w in sample_workers_data]
+    workers[0]["mandatory_days"] = "01-03-2026"
+    workers[0]["only_last_post"] = True
+
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 10),
+            "num_shifts": 4,
+            "workers_data": workers,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+
+    mandatory_date = datetime(2026, 3, 1)
+    scheduler.schedule_builder._assign_mandatory_guards()
+
+    # Must be in the LAST post (index num_shifts - 1), all earlier posts free.
+    assert scheduler.schedule[mandatory_date][3] == "DOC001"
+    assert scheduler.schedule[mandatory_date][:3] == [None, None, None]
+    assert ("DOC001", mandatory_date) in scheduler.schedule_builder.get_locked_mandatory()
+
+
+def test_mandatory_assignment_never_places_no_last_post_worker_in_last_post(sample_workers_data):
+    """A worker with no_last_post=True and a mandatory_days assignment must
+    never be placed in the last post slot, even if it's the only free one
+    tried first in iteration order."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    workers = [dict(w) for w in sample_workers_data]
+    workers[0]["mandatory_days"] = "01-03-2026"
+    workers[0]["no_last_post"] = True
+
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 10),
+            "num_shifts": 4,
+            "workers_data": workers,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+
+    mandatory_date = datetime(2026, 3, 1)
+    scheduler.schedule_builder._assign_mandatory_guards()
+
+    assert "DOC001" in scheduler.schedule[mandatory_date][:3]
+    assert scheduler.schedule[mandatory_date][3] is None
+
+
+def test_fix_constraint_violations_preserves_budgeted_weekly_pattern_exception(sample_workers_data):
+    """A weekly_pattern violation whose 7/14 budget is already spent (0) is an
+    intentional, sanctioned exception (see schedule_builder._violations_714_budget)
+    and must be left untouched by the final validation/fix pass, instead of being
+    undone as if it were an accidental bug."""
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 10),
+            "num_shifts": 4,
+            "workers_data": sample_workers_data,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    first_date = datetime(2026, 3, 2)
+    second_date = datetime(2026, 3, 9)
+
+    scheduler.schedule[first_date][0] = "DOC001"
+    scheduler.schedule[second_date][0] = "DOC001"
+    scheduler._synchronize_tracking_data()
+
+    class _StubBuilder:
+        _violations_714_budget: ClassVar[dict[str, int]] = {"DOC001": 0}
+
+    scheduler.schedule_builder = _StubBuilder()
+
+    fixes_made = scheduler.validate_and_fix_final_schedule()
+
+    assert fixes_made == 0
+    assert scheduler.schedule[first_date][0] == "DOC001"
+    assert scheduler.schedule[second_date][0] == "DOC001"
+    assert scheduler.worker_assignments["DOC001"] == {first_date, second_date}
+
+
+def test_finalization_phase_runs_final_validation_and_fix(sample_workers_data):
+    """The finalization phase must invoke the (previously dead) final
+    validation/fix safety net so genuine constraint violations left over from
+    earlier repair passes get caught and repaired."""
+    from saldo27.schedule_builder import ScheduleBuilder
+    from saldo27.scheduler_core import SchedulerCore
+
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 10),
+            "num_shifts": 4,
+            "workers_data": sample_workers_data,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    first_date = datetime(2026, 3, 2)
+    second_date = datetime(2026, 3, 9)
+
+    scheduler.schedule[first_date][0] = "DOC001"
+    scheduler.schedule[second_date][0] = "DOC001"
+    scheduler._synchronize_tracking_data()
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+
+    scheduler.best_schedule_data = {
+        "schedule": scheduler.schedule,
+        "worker_assignments": scheduler.worker_assignments,
+        "worker_shift_counts": scheduler.worker_shift_counts,
+        "worker_weekend_counts": scheduler.worker_weekend_counts,
+        "worker_posts": scheduler.worker_posts,
+        "last_assignment_date": scheduler.last_assignment_date,
+        "consecutive_shifts": scheduler.consecutive_shifts,
+        "score": scheduler.calculate_score(),
+    }
+
+    core = SchedulerCore(scheduler)
+    assert core._finalization_phase() is True
+
     assert scheduler.schedule[second_date][0] is None
     assert scheduler.worker_assignments["DOC001"] == {first_date}
 

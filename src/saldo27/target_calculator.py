@@ -52,10 +52,23 @@ class TargetCalculator:
         try:
             logging.info("Calculating target shifts based on availability and percentage")
 
-            auto_calc_workers = [w for w in s.workers_data if w.get("auto_calculate_shifts", True)]
-            manual_workers = [w for w in s.workers_data if not w.get("auto_calculate_shifts", True)]
+            cadence_workers = [w for w in s.workers_data if w.get("has_cadence")]
+            auto_calc_workers = [
+                w for w in s.workers_data if w.get("auto_calculate_shifts", True) and not w.get("has_cadence")
+            ]
+            manual_workers = [
+                w for w in s.workers_data if not w.get("auto_calculate_shifts", True) and not w.get("has_cadence")
+            ]
 
-            # 1) MANUAL CALCULATION FIRST — reserve their slots before auto distribution
+            # 0) CADENCE WORKERS FIRST — their shifts are fixed by the cadence
+            #    pattern (see scheduler_initializer._apply_cadence_assignments)
+            #    and must be excluded entirely from the pool distributed among
+            #    the rest of the workers.
+            cadence_slots_reserved = 0
+            if cadence_workers:
+                cadence_slots_reserved = self._calculate_cadence_targets(cadence_workers)
+
+            # 1) MANUAL CALCULATION — reserve their slots before auto distribution
             manual_slots_reserved = 0
             if manual_workers:
                 manual_slots_reserved = self._calculate_manual_targets(manual_workers)
@@ -66,16 +79,17 @@ class TargetCalculator:
                 if total_slots <= 0:
                     logging.warning("No slots in schedule; skipping allocation")
                 else:
-                    slots_for_auto = total_slots - manual_slots_reserved
+                    slots_for_auto = total_slots - manual_slots_reserved - cadence_slots_reserved
                     if slots_for_auto < 0:
                         logging.error(
-                            f"Manual targets ({manual_slots_reserved}) exceed total slots ({total_slots})! "
-                            f"Clamping to 0 for auto workers."
+                            f"Manual+cadence targets ({manual_slots_reserved + cadence_slots_reserved}) "
+                            f"exceed total slots ({total_slots})! Clamping to 0 for auto workers."
                         )
                         slots_for_auto = 0
-                    elif manual_slots_reserved > 0:
+                    elif manual_slots_reserved > 0 or cadence_slots_reserved > 0:
                         logging.info(
-                            f"Reserving {manual_slots_reserved} slots for manual workers. "
+                            f"Reserving {manual_slots_reserved} slots for manual workers and "
+                            f"{cadence_slots_reserved} slots for cadence workers. "
                             f"Auto workers share {slots_for_auto}/{total_slots} slots."
                         )
 
@@ -154,6 +168,47 @@ class TargetCalculator:
         except Exception as e:
             logging.error(f"Error calculating target shifts: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Cadence ("cadencia") targets
+    # ------------------------------------------------------------------
+
+    def _calculate_cadence_targets(self, cadence_workers: list) -> int:
+        """
+        Calculate targets for fixed-cadence workers.
+
+        Their ``mandatory_days`` was already overwritten with the computed
+        cadence dates (see ``SchedulerInitializer._apply_cadence_assignments``),
+        so all of their assigned shifts are mandatory. ``target_shifts`` (the
+        non-mandatory budget used by the assignment algorithms to hand out
+        *additional* shifts) is therefore always 0 — a cadence worker must
+        never receive more or fewer shifts than dictated by their cadence.
+
+        Returns:
+            Total number of cadence-mandated slots reserved (to subtract from
+            the pool distributed among the rest of the workers).
+        """
+        s = self.scheduler
+        total_cadence_slots = 0
+        for w in cadence_workers:
+            wid = w["id"]
+            mand_count = 0
+            mand_str = w.get("mandatory_days", "").strip()
+            if mand_str:
+                try:
+                    mand_dates = s.date_utils.parse_dates(mand_str)
+                    mand_count = sum(1 for d in mand_dates if s.start_date <= d <= s.end_date)
+                except Exception as e:
+                    logging.error(f"Failed to parse cadence mandatory_days for {wid}: {e}")
+
+            w["target_shifts"] = 0
+            w["_raw_target"] = mand_count
+            w["_mandatory_count"] = mand_count
+            total_cadence_slots += mand_count
+
+            logging.info(f"Worker {wid} (CADENCIA): {mand_count} shift(s) fixed by cadence pattern, target_shifts=0")
+
+        return total_cadence_slots
 
     # ------------------------------------------------------------------
     # Manual targets

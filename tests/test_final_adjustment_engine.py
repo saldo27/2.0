@@ -237,6 +237,54 @@ def test_can_take_in_swap_blocked_by_availability():
     assert result is False
 
 
+def test_can_take_in_swap_blocked_when_worker_already_on_gain_date():
+    """
+    CRITICAL regression test: a worker must never be allowed to gain a shift
+    on a date where they already hold a DIFFERENT post that same day.
+
+    Without this check, a paired swap (weekend/bridge balance) could give a
+    worker two shifts on the same calendar day — violating the "at most one
+    shift per worker per day" invariant.
+
+    Scenario: Worker B already occupies post 0 on date_gain (e.g. from an
+    unrelated mandatory/prior assignment).  Post 1 on date_gain is empty and
+    is being offered to B as part of a swap.  This must be rejected.
+    """
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+
+    date_gain = datetime(2026, 3, 12)
+    date_lose = datetime(2026, 3, 7)
+
+    # B already has a shift on date_gain at a different post than the one
+    # being offered.
+    scheduler.schedule[date_gain] = ["B", None]
+    scheduler.worker_assignments.setdefault("B", set()).add(date_gain)
+
+    engine = _build_engine(scheduler)
+    engine.schedule_builder = _make_stub_builder(scheduler)
+
+    result = engine._can_take_in_swap("B", date_gain, 1, date_lose)
+    assert result is False
+
+
+def test_can_take_in_swap_allows_when_worker_not_already_on_gain_date():
+    """Sanity check: the new guard must not block legitimate swaps."""
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+
+    date_gain = datetime(2026, 3, 12)
+    date_lose = datetime(2026, 3, 7)
+
+    scheduler.schedule[date_gain] = ["A", None]
+
+    engine = _build_engine(scheduler)
+    engine.schedule_builder = _make_stub_builder(scheduler)
+
+    result = engine._can_take_in_swap("B", date_gain, 1, date_lose)
+    assert result is True
+
+
 def test_can_take_in_swap_does_not_check_target_tolerance():
     """
     Workers already at their target shift count must NOT be blocked when

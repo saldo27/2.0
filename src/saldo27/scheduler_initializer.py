@@ -121,6 +121,61 @@ class SchedulerInitializer:
         scheduler.current_datetime = scheduler.date_utils.get_spain_time()
         scheduler.current_user = "saldo27"
 
+        self._apply_cadence_assignments()
+
+    def _apply_cadence_assignments(self) -> None:
+        """
+        Expand "cadencia" (fixed-cadence) workers into concrete mandatory dates.
+
+        A worker with ``has_cadence`` is assigned a shift every ``cadence_days``
+        days starting from ``cadence_start_date``. This assignment is mandatory
+        and exclusive: the worker's ``mandatory_days`` is overwritten with the
+        computed cadence dates (any manually-entered mandatory dates are
+        ignored), ``auto_calculate_shifts`` is forced to False so the target
+        calculator does not try to allocate additional shifts to them, and
+        ``target_shifts``/``_raw_target`` reflect only the cadence dates.
+        """
+        scheduler = self.scheduler
+        for worker in scheduler.workers_data:
+            if not worker.get("has_cadence"):
+                continue
+
+            cadence_days = worker.get("cadence_days")
+            cadence_start_str = worker.get("cadence_start_date")
+            try:
+                cadence_days = int(cadence_days)
+            except (TypeError, ValueError):
+                cadence_days = 0
+
+            if cadence_days < 1 or not cadence_start_str:
+                logging.warning(
+                    f"Worker {worker.get('id')} has_cadence=True but cadence_days/cadence_start_date "
+                    "are invalid; ignoring cadence."
+                )
+                continue
+
+            try:
+                cadence_start = datetime.strptime(cadence_start_str, "%d-%m-%Y")
+            except (TypeError, ValueError):
+                logging.error(
+                    f"Worker {worker.get('id')}: invalid cadence_start_date '{cadence_start_str}'; ignoring cadence."
+                )
+                continue
+
+            cadence_dates = scheduler.date_utils.compute_cadence_dates(
+                cadence_start, cadence_days, scheduler.start_date, scheduler.end_date
+            )
+
+            # Cadence assignment is mandatory and exclusive: it overrides any
+            # manually-entered mandatory dates for this worker.
+            worker["mandatory_days"] = ";".join(d.strftime("%d-%m-%Y") for d in cadence_dates)
+            worker["auto_calculate_shifts"] = False
+
+            logging.info(
+                f"Worker {worker.get('id')}: cadencia every {cadence_days} days from "
+                f"{cadence_start_str} → {len(cadence_dates)} mandatory shift(s) in period."
+            )
+
     def initialize_incompatibilities(self) -> None:
         scheduler = self.scheduler
         incompatible_worker_ids = {

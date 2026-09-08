@@ -1,6 +1,6 @@
 # Sistema de Generación de Horarios - Interfaz Streamlit
 
-**Versión actual: 3.2 (Agosto 2026)**
+**Versión actual: 3.4 (Septiembre 2026)**
 
 ## 🚀 Inicio Rápido
 
@@ -192,6 +192,13 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 - ✅ **Continuidad entre períodos**: Gap respetado en el cambio de mes (vía horario previo)
 
 ## 🆕 Historial de Versiones
+
+### v3.4 (Septiembre 2026)
+- ⚖️ **Ajuste Final ampliado**: tras ejecutarlo se muestra ahora el listado de **cambios realizados** (fecha, puesto, trabajador antes/después), el **calendario actualizado** y un botón de **exportación a PDF** del resultado
+- El resultado del Ajuste Final ya no desaparece tras el `rerun()` posterior a su ejecución (persiste en la sesión hasta la siguiente ejecución o un calendario nuevo)
+- Corrección: un trabajador ya no puede quedar con dos turnos el mismo día tras un intercambio del Ajuste Final
+- Corrección: el campo **Porcentaje de Jornada** se guarda ahora correctamente en el JSON exportado
+- **Cadencia obligatoria**: un médico puede configurarse con turnos fijos cada X días desde una fecha de inicio (asignación obligatoria e inamovible, salvo cambios de last post el mismo día); estos turnos y los de médicos con número fijo de guardias/mes se excluyen del reparto automático entre el resto de la plantilla
 
 ### v3.2 (Agosto 2026)
 - Tab **🔍 Revisión**: análisis de archivos PDF, Excel y CSV de horarios existentes
