@@ -1496,6 +1496,27 @@ with tab1:
                     st.session_state.cadence_days_input = st.session_state.cadence_days_buffer
                 if "cadence_start_date_buffer" in st.session_state and st.session_state.cadence_start_date_buffer:
                     st.session_state.cadence_start_date_input = st.session_state.cadence_start_date_buffer
+                # Cargar el resto de buffers correspondientes a widgets DENTRO del form
+                # (porcentaje de jornada, periodos, mandatory, days off, incompatibilidades).
+                # CRÍTICO: esto debe ejecutarse SOLO una vez (al entrar en modo edición),
+                # nunca en el rerun que dispara el propio submit del form, o de lo
+                # contrario el valor recién introducido por el usuario (p.ej. el slider
+                # de Porcentaje de Jornada) sería sobreescrito por el valor antiguo del
+                # buffer justo antes de guardarse.
+                if "work_percentage_buffer" in st.session_state and st.session_state.work_percentage_buffer:
+                    st.session_state.slider_work_percentage_form = int(st.session_state.work_percentage_buffer)
+                if "work_periods_buffer" in st.session_state and st.session_state.work_periods_buffer:
+                    st.session_state.work_periods_textarea = st.session_state.work_periods_buffer
+                if "mandatory_dates_buffer" in st.session_state and st.session_state.mandatory_dates_buffer:
+                    st.session_state.form_mandatory_dates_area = st.session_state.mandatory_dates_buffer
+                if "days_off_buffer" in st.session_state and st.session_state.days_off_buffer:
+                    st.session_state.form_days_off_area = st.session_state.days_off_buffer
+                if "incompatible_buffer" in st.session_state:
+                    st.session_state.is_incompatible_checkbox = st.session_state.incompatible_buffer
+                if "incompatible_with_buffer" in st.session_state and st.session_state.incompatible_with_buffer:
+                    st.session_state.incompatible_with_multiselect = st.session_state.incompatible_with_buffer
+                if "no_last_post_buffer" in st.session_state:
+                    st.session_state.no_last_post_checkbox = st.session_state.no_last_post_buffer
                 # Marcar que ya se cargaron los buffers
                 st.session_state.buffers_loaded = True
 
@@ -1555,25 +1576,8 @@ with tab1:
             )
 
 
-        # IMPORTANTE: Inicializar los valores del form con los buffers ANTES de renderizar el form
-        if st.session_state.get("editing_worker"):
-            # Si estamos editando, cargar los buffers en las keys del form
-            if "work_percentage_buffer" in st.session_state and st.session_state.work_percentage_buffer:
-                st.session_state.slider_work_percentage_form = int(st.session_state.work_percentage_buffer)
-            if "work_periods_buffer" in st.session_state and st.session_state.work_periods_buffer:
-                st.session_state.work_periods_textarea = st.session_state.work_periods_buffer
-            if "mandatory_dates_buffer" in st.session_state and st.session_state.mandatory_dates_buffer:
-                st.session_state.form_mandatory_dates_area = st.session_state.mandatory_dates_buffer
-            if "days_off_buffer" in st.session_state and st.session_state.days_off_buffer:
-                st.session_state.form_days_off_area = st.session_state.days_off_buffer
-            if "incompatible_buffer" in st.session_state:
-                st.session_state.is_incompatible_checkbox = st.session_state.incompatible_buffer
-            if "incompatible_with_buffer" in st.session_state and st.session_state.incompatible_with_buffer:
-                st.session_state.incompatible_with_multiselect = st.session_state.incompatible_with_buffer
-            if "no_last_post_buffer" in st.session_state:
-                st.session_state.no_last_post_checkbox = st.session_state.no_last_post_buffer
 
-        with st.form("worker_form"):
+
             # El ID lo pasamos desde session_state
             # Porcentaje de Jornada
             st.markdown("**📋 Información Básica**")
