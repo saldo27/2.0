@@ -1477,6 +1477,28 @@ with tab1:
         if "days_off_buffer" not in st.session_state:
             st.session_state.days_off_buffer = ""
 
+        # Si el formulario se guardó/limpió en el rerun anterior, resetear aquí los
+        # valores de los widgets (ANTES de que se instancien más abajo en este mismo
+        # run). Modificar st.session_state[key] de un widget DESPUÉS de haber sido
+        # instanciado en el mismo run lanza StreamlitAPIException, por eso el reset
+        # no puede hacerse en el propio manejador de submit/clear.
+        if st.session_state.get("pending_form_reset", False):
+            st.session_state.worker_id_input = ""
+            st.session_state.slider_work_percentage_form = 100
+            st.session_state.auto_calc_checkbox = True
+            st.session_state.guardias_mes_input = 4
+            st.session_state.work_periods_textarea = ""
+            st.session_state.is_incompatible_checkbox = False
+            st.session_state.no_last_post_checkbox = False
+            st.session_state.only_last_post_checkbox = False
+            st.session_state.form_mandatory_dates_area = ""
+            st.session_state.form_days_off_area = ""
+            st.session_state.has_cadence_checkbox = False
+            st.session_state.cadence_days_input = 1
+            st.session_state.cadence_start_date_input = None
+            st.session_state.incompatible_with_multiselect = []
+            st.session_state.pending_form_reset = False
+
         # Mostrar indicador si estamos en modo edición
         if st.session_state.get("editing_worker"):
             st.info(f"✏️ **Modo edición:** Editando a {st.session_state.get('editing_worker')}")
@@ -1635,15 +1657,9 @@ with tab1:
                 # Obtener lista de otros médicos para el multiselect
                 existing_ids = [w["id"] for w in st.session_state.workers_data if w["id"] != worker_id]
 
-                # Cargar valores previos si están en edición
-                default_incomp = st.session_state.get(
-                    "incompatible_with_buffer", st.session_state.get("incompatible_with", [])
-                )
-
                 incompatible_with = st.multiselect(
                     "Incompatible con IDs específicos",
                     options=existing_ids,
-                    default=default_incomp,
                     disabled=is_incompatible,
                     help="Seleccione los médicos con los que NO puede coincidir",
                     key="incompatible_with_multiselect",
@@ -1804,21 +1820,12 @@ with tab1:
                     st.session_state.cadence_days_buffer = 1
                     st.session_state.cadence_start_date_buffer = None
 
-                    # Limpiar también los valores actuales de los widgets del formulario
-                    # para que no se arrastren al siguiente médico que se cree/edite.
-                    st.session_state.worker_id_input = ""
-                    st.session_state.slider_work_percentage_form = 100
-                    st.session_state.auto_calc_checkbox = True
-                    st.session_state.guardias_mes_input = 4
-                    st.session_state.work_periods_textarea = ""
-                    st.session_state.is_incompatible_checkbox = False
-                    st.session_state.no_last_post_checkbox = False
-                    st.session_state.only_last_post_checkbox = False
-                    st.session_state.form_mandatory_dates_area = ""
-                    st.session_state.form_days_off_area = ""
-                    st.session_state.has_cadence_checkbox = False
-                    st.session_state.cadence_days_input = 1
-                    st.session_state.cadence_start_date_input = None
+                    # Marcar que hay que resetear los widgets del formulario en el
+                    # próximo run, ANTES de que se instancien (ver bloque al inicio
+                    # de esta pestaña). No se puede modificar aquí directamente el
+                    # session_state de estos widgets porque ya fueron instanciados
+                    # en este mismo run.
+                    st.session_state.pending_form_reset = True
 
                     st.rerun()
 
@@ -1842,21 +1849,12 @@ with tab1:
                 st.session_state.cadence_days_buffer = 1
                 st.session_state.cadence_start_date_buffer = None
 
-                # Limpiar también los valores actuales de los widgets del formulario
-                # para que no se arrastren al siguiente médico que se cree/edite.
-                st.session_state.worker_id_input = ""
-                st.session_state.slider_work_percentage_form = 100
-                st.session_state.auto_calc_checkbox = True
-                st.session_state.guardias_mes_input = 4
-                st.session_state.work_periods_textarea = ""
-                st.session_state.is_incompatible_checkbox = False
-                st.session_state.no_last_post_checkbox = False
-                st.session_state.only_last_post_checkbox = False
-                st.session_state.form_mandatory_dates_area = ""
-                st.session_state.form_days_off_area = ""
-                st.session_state.has_cadence_checkbox = False
-                st.session_state.cadence_days_input = 1
-                st.session_state.cadence_start_date_input = None
+                # Marcar que hay que resetear los widgets del formulario en el
+                # próximo run, ANTES de que se instancien (ver bloque al inicio
+                # de esta pestaña). No se puede modificar aquí directamente el
+                # session_state de estos widgets porque ya fueron instanciados
+                # en este mismo run.
+                st.session_state.pending_form_reset = True
 
                 st.success("✅ Formulario limpiado")
                 st.rerun()
