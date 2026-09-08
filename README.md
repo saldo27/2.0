@@ -152,4 +152,5 @@ uv run pytest
 
 ## Estado del proyecto
 
+Versión de la aplicación (Streamlit): `3.4`.
 Versión del paquete en `pyproject.toml`: `2.5.0`.

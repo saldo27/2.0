@@ -2,7 +2,7 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 3.2 (Agosto 2026)
+Versión: 3.4 (Septiembre 2026)
 """
 
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
@@ -48,7 +48,7 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # Constante de versión
-APP_VERSION = "3.2"
+APP_VERSION = "3.4"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -3631,7 +3631,7 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "Sistema de Generación de Guardias v3.2 | "
+    "Sistema de Generación de Guardias v3.4 | "
     "Interfaz Streamlit | "
     f"© {datetime.now().year}"
     "</div>",
