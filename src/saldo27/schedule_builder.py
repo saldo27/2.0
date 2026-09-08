@@ -2750,6 +2750,19 @@ class ScheduleBuilder:
                 logging.error(f"Error parsing mandatory_days for worker {worker_id}: {e}")
                 continue
 
+            # Determine which posts this worker is allowed to occupy when placing
+            # mandatory shifts, honoring the same last-post constraints enforced
+            # everywhere else in the scheduler:
+            # - only_last_post: worker must ALWAYS occupy the last post, even if
+            #   earlier posts are free that day — never any other post.
+            # - no_last_post: worker must NEVER occupy the last post.
+            if worker.get("only_last_post", False):
+                allowed_posts = [self.num_shifts - 1]
+            elif worker.get("no_last_post", False):
+                allowed_posts = list(range(self.num_shifts - 1))
+            else:
+                allowed_posts = list(range(self.num_shifts))
+
             for date in dates:
                 if not (self.start_date <= date <= self.end_date):
                     continue
@@ -2757,9 +2770,9 @@ class ScheduleBuilder:
                 if date not in self.schedule:  # self.schedule is scheduler.schedule
                     self.schedule[date] = [None] * self.num_shifts
 
-                # Try to place in any available post for that date
+                # Try to place in an allowed post for that date
                 placed_mandatory = False
-                for post in range(self.num_shifts):
+                for post in allowed_posts:
                     if len(self.schedule[date]) <= post:
                         self.schedule[date].extend([None] * (post + 1 - len(self.schedule[date])))
 
