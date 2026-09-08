@@ -50,6 +50,12 @@ class ScheduleBuilder:
         self.best_schedule_data: dict[str, Any] | None = None  # Initialize the attribute to store the best state found
         self._locked_mandatory: set[tuple[str, datetime]] = set()
         # Keep track of which (worker_id, date) pairs are truly mandatory
+        # Per-worker budget of 7/14-day same-weekday pattern violations that may be
+        # tolerated as a last resort (monthly target enforcement, final coverage fill).
+        # Shared across the WHOLE generation run (not reset per call) so a worker
+        # never accumulates more than 1 violation total, regardless of how many
+        # times these repair passes run.
+        self._violations_714_budget: dict[str, int] = {w["id"]: 1 for w in self.workers_data}
         self.start_date = scheduler.start_date
         self.end_date = scheduler.end_date
         self.date_utils = scheduler.date_utils
@@ -5053,10 +5059,11 @@ class ScheduleBuilder:
         changes = 0
         max_changes = 200
 
-        # Per-worker 7/14 violation budget for this enforcement pass.
-        # Each worker may commit at most 1 constraint relaxation (shared across Step A and B).
-        # Budget resets on every call, so repeated passes each grant one new opportunity.
-        violations_714_budget: dict = {w["id"]: 1 for w in self.workers_data}
+        # Per-worker 7/14 violation budget, shared for the ENTIRE generation run
+        # (persisted on self, not recreated here) so a worker never accumulates
+        # more than 1 tolerated violation total, even though this enforcement
+        # pass may run multiple times during finalization.
+        violations_714_budget = self._violations_714_budget
 
         all_months = set()
         for d in self.schedule:
@@ -5625,10 +5632,16 @@ class ScheduleBuilder:
         return False
 
     def _fill_empty_slots_714_relaxed(self) -> int:
-        """Final coverage pass: fill remaining empty slots by relaxing the 7/14 pattern constraint.
+        """Final coverage pass: fill remaining empty slots, using the shared 7/14
+        pattern violation budget only as an absolute last resort.
 
         Only acts on non-special weekdays (Mon–Thu, not a holiday or eve-of-holiday).
-        Workers are tried in order of target deficit to keep distribution balanced.
+        Workers are tried in order of target deficit to keep distribution proportional.
+        Each candidate is tried strictly first (no pattern relaxation, no budget
+        spent); the 7/14 relaxation is only used — and the shared per-worker budget
+        (``self._violations_714_budget``, capped at 1 for the whole generation run)
+        consumed — when the strict check fails and no other candidate can fill the
+        slot without it.
         Returns the number of new fills made.
         """
         empty_slots = [
@@ -5659,20 +5672,44 @@ class ScheduleBuilder:
                 reverse=True,
             )
 
+            assigned_wid = None
+            relaxed_candidate = None
             for worker_data in candidates:
                 wid = worker_data["id"]
                 if not self._check_incompatibility_with_list(wid, others):
                     continue
-                if not self._can_assign_worker(wid, date_val, post_val, allow_714_violation=True):
-                    continue
+                # Strict check first: never spend the 7/14 budget if a compliant
+                # candidate is available for this slot.
+                if self._can_assign_worker(wid, date_val, post_val):
+                    assigned_wid = wid
+                    break
+                # Remember the first candidate that only works with the pattern
+                # relaxed, in case no strictly-compliant candidate is found at all.
+                if (
+                    relaxed_candidate is None
+                    and self._violations_714_budget.get(wid, 0) > 0
+                    and self._can_assign_worker(wid, date_val, post_val, allow_714_violation=True)
+                ):
+                    relaxed_candidate = wid
 
-                # Assign
-                self.schedule[date_val][post_val] = wid
-                self.worker_assignments.setdefault(wid, set()).add(date_val)
-                self.scheduler._update_tracking_data(wid, date_val, post_val, removing=False)
-                logging.info(f"🔧 714-relaxed fill: {wid} → {date_val.strftime('%d-%b')} P{post_val}")
-                filled_count += 1
-                break
+            used_budget = False
+            if assigned_wid is None and relaxed_candidate is not None:
+                assigned_wid = relaxed_candidate
+                self._violations_714_budget[assigned_wid] -= 1
+                used_budget = True
+
+            if assigned_wid is None:
+                continue
+
+            # Assign
+            self.schedule[date_val][post_val] = assigned_wid
+            self.worker_assignments.setdefault(assigned_wid, set()).add(date_val)
+            self.scheduler._update_tracking_data(assigned_wid, date_val, post_val, removing=False)
+            if used_budget:
+                logging.info(f"🔧 714-relaxed fill (budget used): {assigned_wid} → {date_val.strftime('%d-%b')} P{post_val}")
+            else:
+                logging.info(f"🔧 714-relaxed pass fill: {assigned_wid} → {date_val.strftime('%d-%b')} P{post_val}")
+            filled_count += 1
 
         if filled_count:
             logging.info(f"✅ 714-relaxed coverage fill: {filled_count} slot(s) filled")

@@ -64,7 +64,7 @@ Escalada de 7 estrategias en orden creciente de agresividad:
 | `work_periods` / `days_off` | `_is_worker_unavailable()` — sin parámetro de relajación     |
 | `incompatible_with`      | Comentario explícito: "Never relax incompatibility constraint"   |
 | `mandatory_days`         | `_locked_mandatory` — nunca modificable                         |
-| Patrón 7/14              | Sin condicional de relajación en código real                     |
+| Patrón 7/14              | **Excepción limitada**: `schedule_builder._violations_714_budget` permite como máximo 1 violación por trabajador para TODA la generación (no por pasada), usada solo como último recurso en `_enforce_manual_monthly_targets` (rebalanceo mensual) y `_fill_empty_slots_714_relaxed` (relleno final de huecos), y solo tras agotar las alternativas estrictas. El presupuesto se define una vez en `ScheduleBuilder.__init__` y se comparte entre ambos mecanismos durante todo el proceso de generación. |
 | Tolerancia ±12%          | Límite absoluto, no superado por ningún nivel                   |
 | `no_last_post` / `only_last_post` | `_check_hard_constraints()`                             |
 | `max_consecutive_weekends` | Comentario: "NEVER RELAX THIS"                                |
