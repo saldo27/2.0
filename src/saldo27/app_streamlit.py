@@ -2111,9 +2111,7 @@ with tab1:
                         if mandatory_count <= 5:
                             st.write(f"   {', '.join(mandatory_list_display)}")
                         else:
-                            st.write(
-                                f"   {', '.join(mandatory_list_display[:5])} ... y {mandatory_count - 5} más"
-                            )
+                            st.write(f"   {', '.join(mandatory_list_display[:5])} ... y {mandatory_count - 5} más")
 
                     # Días fuera
                     days_off_str = worker.get("days_off", "")
@@ -2124,9 +2122,7 @@ with tab1:
                         if days_off_count <= 5:
                             st.write(f"   {', '.join(days_off_list_display)}")
                         else:
-                            st.write(
-                                f"   {', '.join(days_off_list_display[:5])} ... y {days_off_count - 5} más"
-                            )
+                            st.write(f"   {', '.join(days_off_list_display[:5])} ... y {days_off_count - 5} más")
 
                 with col_actions:
                     col_edit, col_del = st.columns(2)

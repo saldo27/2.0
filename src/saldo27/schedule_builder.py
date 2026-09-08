@@ -5719,7 +5719,9 @@ class ScheduleBuilder:
             self.worker_assignments.setdefault(assigned_wid, set()).add(date_val)
             self.scheduler._update_tracking_data(assigned_wid, date_val, post_val, removing=False)
             if used_budget:
-                logging.info(f"🔧 714-relaxed fill (budget used): {assigned_wid} → {date_val.strftime('%d-%b')} P{post_val}")
+                logging.info(
+                    f"🔧 714-relaxed fill (budget used): {assigned_wid} → {date_val.strftime('%d-%b')} P{post_val}"
+                )
             else:
                 logging.info(f"🔧 714-relaxed pass fill: {assigned_wid} → {date_val.strftime('%d-%b')} P{post_val}")
             filled_count += 1

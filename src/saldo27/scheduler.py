@@ -795,11 +795,7 @@ class Scheduler:
                     # for workers who still have budget remaining, since those indicate a
                     # genuine bug rather than a sanctioned exception.
                     budget = getattr(schedule_builder, "_violations_714_budget", None) if schedule_builder else None
-                    if (
-                        violation["type"] == "weekly_pattern"
-                        and budget is not None
-                        and budget.get(worker_id, 1) <= 0
-                    ):
+                    if violation["type"] == "weekly_pattern" and budget is not None and budget.get(worker_id, 1) <= 0:
                         continue
 
                     # CRITICAL: Check if either date is mandatory
