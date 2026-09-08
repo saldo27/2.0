@@ -1616,7 +1616,6 @@ with tab1:
                     "No asignar Rosell",
                     help="Este médico no puede tener last posts (último puesto) asignados",
                     key="no_last_post_checkbox",
-                    value=st.session_state.get("no_last_post_buffer", False),
                 )
             # Fila 2: Solo Rosell y multiselect de IDs incompatibles
             col_inc3, col_inc4 = st.columns(2)
