@@ -1465,10 +1465,44 @@ class SchedulerCore:
             # unintentional 7/14 patterns) that slipped through the passes above.
             # Deliberately budgeted 7/14 exceptions are left untouched (see
             # Scheduler._fix_constraint_violations).
-            try:
-                self.scheduler._run_final_validation_and_fix()
-            except Exception as _ve:
-                logging.warning(f"Final validation/fix pass skipped: {_ve}")
+            #
+            # CRITICAL: Fixing a violation here can unassign a shift from a worker
+            # with a fixed monthly shift count (manual/guardias-per-mes worker),
+            # leaving them short of their obligatory monthly target with no further
+            # correction afterwards. Alternate this validation/fix pass with
+            # _enforce_manual_monthly_targets() (which always re-checks constraints,
+            # including gap/7-14, via _can_assign_worker before filling a deficit)
+            # until neither makes further changes, so the monthly target is restored
+            # without reintroducing the violation that was just fixed.
+            _fix_validation_seen: set[int] = set()
+            for _vpass in range(5):
+                try:
+                    fixes_made = self.scheduler.validate_and_fix_final_schedule()
+                except Exception as _ve:
+                    logging.warning(f"Final validation/fix pass skipped: {_ve}")
+                    fixes_made = 0
+                try:
+                    reenforced = self.scheduler.schedule_builder._enforce_manual_monthly_targets()
+                except Exception as _me:
+                    logging.warning(f"Post-validation manual monthly re-enforcement skipped: {_me}")
+                    reenforced = False
+                if not fixes_made and not reenforced:
+                    logging.info(f"Validation/monthly-target reconciliation converged after {_vpass + 1} pass(es)")
+                    break
+                _vstate = hash(
+                    tuple(
+                        sorted(
+                            (w["id"], len(self.scheduler.worker_assignments.get(w["id"], set())))
+                            for w in self.scheduler.workers_data
+                        )
+                    )
+                )
+                if _vstate in _fix_validation_seen:
+                    logging.info(f"Validation/monthly-target reconciliation oscillating — stopping at pass {_vpass + 1}")
+                    break
+                _fix_validation_seen.add(_vstate)
+            else:
+                logging.warning("Validation/monthly-target reconciliation reached max passes (5)")
 
             logging.info("Schedule finalization phase completed successfully.")
             return True
