@@ -298,7 +298,7 @@ class TurnAdjustmentManager:
             return False
 
     def _check_minimum_gap(self, worker_id: str, target_date: datetime, min_gap: int) -> bool:
-        """Verifica que haya suficiente distancia entre turnos"""
+        """Verifica que haya suficiente distancia entre turnos y el patrón 7/14 días"""
         worker_shifts = []
         for date, workers in self.schedule.items():
             if worker_id in workers:
@@ -308,6 +308,15 @@ class TurnAdjustmentManager:
         for shift_date in worker_shifts:
             days_diff = abs((target_date - shift_date).days)
             if days_diff < min_gap:
+                return False
+
+            # CRITICAL: Constraint de obligado cumplimiento - prohibir que un
+            # trabajador quede asignado al mismo día de la semana con 7 o 14
+            # días de diferencia (patrón semanal). Se aplica a TODOS los días,
+            # incluidos fines de semana, sin excepciones. Debe coincidir con la
+            # implementación canónica en ConstraintChecker._check_gap_constraint(),
+            # ScheduleBuilder._check_gap_constraints() y LiveValidator._check_gap_constraints().
+            if days_diff in (7, 14) and target_date.weekday() == shift_date.weekday():
                 return False
 
         return True
