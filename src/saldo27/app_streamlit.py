@@ -1407,7 +1407,7 @@ with st.sidebar:
     st.subheader("🎉 Festivos")
     holidays_input = st.text_area(
         "Fechas festivas (una por línea, formato: DD-MM-YYYY)",
-        value="19-03-2026\n27-03-2026\n02-04-2026\n03-04-2026\n01-05-2026\n09-06-2026\n25-09-2026\n12-10-2026\n08-12-2026\n24-12-2026\n25-12-2026\n01-01-2027",
+        value="19-03-2026\n27-03-2026\n02-04-2026\n03-04-2026\n01-05-2026\n09-06-2026\n25-09-2026\n12-10-2026\n07-12-2026\n08-12-2026\n24-12-2026\n25-12-2026\n31-12-2026\n01-01-2027",
         height=100,
         help="Días festivos donde se aplicarán reglas especiales",
     )
