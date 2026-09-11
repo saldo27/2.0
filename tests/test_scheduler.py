@@ -142,11 +142,14 @@ def test_mandatory_assignment_never_places_no_last_post_worker_in_last_post(samp
     assert scheduler.schedule[mandatory_date][3] is None
 
 
-def test_fix_constraint_violations_preserves_budgeted_weekly_pattern_exception(sample_workers_data):
-    """A weekly_pattern violation whose 7/14 budget is already spent (0) is an
-    intentional, sanctioned exception (see schedule_builder._violations_714_budget)
-    and must be left untouched by the final validation/fix pass, instead of being
-    undone as if it were an accidental bug."""
+def test_fix_constraint_violations_always_fixes_non_mandatory_weekly_pattern(sample_workers_data):
+    """HARD INVARIANT: a weekly_pattern (7/14-day same-weekday) violation must
+    always be fixed by the final validation/fix pass unless BOTH colliding dates
+    are mandatory_days for that worker. A spent/absent _violations_714_budget is
+    NOT a sanctioned reason to leave the violation in place — that budget only
+    controls whether generation-time relaxation passes are allowed to *create*
+    such a violation (they never do, see schedule_builder._violations_714_budget),
+    it must never suppress the final repair."""
     scheduler = Scheduler(
         {
             "start_date": datetime(2026, 3, 1),
@@ -169,14 +172,23 @@ def test_fix_constraint_violations_preserves_budgeted_weekly_pattern_exception(s
     class _StubBuilder:
         _violations_714_budget: ClassVar[dict[str, int]] = {"DOC001": 0}
 
+        def is_mandatory(self, worker_id, date):
+            return False
+
+        def _can_modify_assignment(self, worker_id, date, reason):
+            return True
+
+        def get_locked_mandatory(self):
+            return set()
+
     scheduler.schedule_builder = _StubBuilder()
 
     fixes_made = scheduler.validate_and_fix_final_schedule()
 
-    assert fixes_made == 0
+    assert fixes_made == 1
     assert scheduler.schedule[first_date][0] == "DOC001"
-    assert scheduler.schedule[second_date][0] == "DOC001"
-    assert scheduler.worker_assignments["DOC001"] == {first_date, second_date}
+    assert scheduler.schedule[second_date][0] is None
+    assert scheduler.worker_assignments["DOC001"] == {first_date}
 
 
 def test_finalization_phase_runs_final_validation_and_fix(sample_workers_data):
