@@ -52,10 +52,12 @@ class ScheduleBuilder:
         # Keep track of which (worker_id, date) pairs are truly mandatory
         # Per-worker budget of 7/14-day same-weekday pattern violations that may be
         # tolerated as a last resort (monthly target enforcement, final coverage fill).
-        # Shared across the WHOLE generation run (not reset per call) so a worker
-        # never accumulates more than 1 violation total, regardless of how many
-        # times these repair passes run.
-        self._violations_714_budget: dict[str, int] = {w["id"]: 1 for w in self.workers_data}
+        # HARD INVARIANT: the system must never assign shifts with a 7/14-day gap
+        # unless BOTH colliding shifts are mandatory_days. This budget is therefore
+        # kept at 0 for every worker so the relaxed (allow_714_violation=True)
+        # fallback branches below are never actually exercised — a non-mandatory
+        # 7/14 violation must never be intentionally created during generation.
+        self._violations_714_budget: dict[str, int] = {w["id"]: 0 for w in self.workers_data}
         self.start_date = scheduler.start_date
         self.end_date = scheduler.end_date
         self.date_utils = scheduler.date_utils

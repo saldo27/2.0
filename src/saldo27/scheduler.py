@@ -787,16 +787,12 @@ class Scheduler:
                     date1 = violation["date1"]
                     date2 = violation["date2"]
 
-                    # weekly_pattern (7/14-day) violations may be an INTENTIONAL, budgeted
-                    # exception granted by schedule_builder (see _violations_714_budget) to
-                    # rebalance monthly targets or fill an otherwise-empty slot. Once a
-                    # worker's budget is exhausted (== 0), leave that violation alone instead
-                    # of undoing the deliberate relaxation; only fix weekly_pattern violations
-                    # for workers who still have budget remaining, since those indicate a
-                    # genuine bug rather than a sanctioned exception.
-                    budget = getattr(schedule_builder, "_violations_714_budget", None) if schedule_builder else None
-                    if violation["type"] == "weekly_pattern" and budget is not None and budget.get(worker_id, 1) <= 0:
-                        continue
+                    # HARD INVARIANT: a weekly_pattern (7/14-day same-weekday) violation may
+                    # ONLY be left in place when BOTH colliding dates are mandatory_days for
+                    # that worker (an unavoidable configuration conflict). There is no other
+                    # sanctioned exception — any other 7/14 violation (e.g. one created as a
+                    # last-resort relaxation while filling a deficit/empty slot) must always
+                    # be undone here, never silently tolerated.
 
                     # CRITICAL: Check if either date is mandatory
                     date1_is_mandatory = schedule_builder.is_mandatory(worker_id, date1) if schedule_builder else False
