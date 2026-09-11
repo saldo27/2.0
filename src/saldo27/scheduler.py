@@ -825,7 +825,10 @@ class Scheduler:
                     if shift_num is not None:
                         # CRITICAL: Verify we can modify this assignment (never remove mandatory)
                         if schedule_builder and not schedule_builder._can_modify_assignment(
-                            worker_id, date_to_unassign, "fix_constraint_rest"
+                            worker_id,
+                            date_to_unassign,
+                            "fix_constraint_rest",
+                            enforce_monthly_target_floor=False,
                         ):
                             logging.warning(
                                 f"🔒 BLOCKED: Cannot unassign MANDATORY {worker_id} from {date_to_unassign.strftime('%Y-%m-%d')}"
@@ -887,7 +890,10 @@ class Scheduler:
                     if shift_num is not None:
                         # CRITICAL: Verify we can modify this assignment (never remove mandatory)
                         if schedule_builder and not schedule_builder._can_modify_assignment(
-                            worker_to_unassign, date, "fix_constraint_incompat"
+                            worker_to_unassign,
+                            date,
+                            "fix_constraint_incompat",
+                            enforce_monthly_target_floor=False,
                         ):
                             logging.warning(
                                 f"🔒 BLOCKED: Cannot unassign MANDATORY {worker_to_unassign} from {date.strftime('%Y-%m-%d')}"

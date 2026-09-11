@@ -365,7 +365,7 @@ class ScheduleBuilder:
 
         return False, None
 
-    def _can_modify_assignment(self, worker_id, date, operation_name="unknown"):
+    def _can_modify_assignment(self, worker_id, date, operation_name="unknown", enforce_monthly_target_floor=True):
         """
         CRITICAL: Verificación CENTRALIZADA antes de modificar/eliminar una asignación.
 
@@ -379,6 +379,12 @@ class ScheduleBuilder:
             worker_id: ID del trabajador
             date: Fecha de la asignación
             operation_name: Nombre de la operación para logging
+            enforce_monthly_target_floor: If False, skip the manual-worker monthly-target
+                floor protection below. Used by hard-constraint fixes (e.g. 7/14-day
+                pattern or incompatibility repairs) that MUST be allowed to proceed even
+                if the worker is at/below their fixed monthly quota; the resulting
+                deficit is expected to be backfilled afterward by
+                `_enforce_manual_monthly_targets()` using a non-conflicting date.
 
         Returns:
             bool: True si se puede modificar, False si está protegido
@@ -401,7 +407,7 @@ class ScheduleBuilder:
         # Skip for intra-day position swaps (last_post): monthly count doesn't change
         # when two workers swap positions on the SAME date.
         _is_position_swap = "last_post" in operation_name
-        if not _is_position_swap:
+        if not _is_position_swap and enforce_monthly_target_floor:
             worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if worker_config and not worker_config.get("auto_calculate_shifts", True):
                 monthly_target = self._get_expected_monthly_target(worker_config, date.year, date.month)
