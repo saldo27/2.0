@@ -367,6 +367,84 @@ class TargetCalculator:
 
                 worker_month_avail[month_key] = avail
 
+            # MANUAL WORKERS: never distribute the overall total proportionally
+            # by available days (days-in-month varies 28-31, so a days-based
+            # split of e.g. 6 shifts over 2 months could yield 4/2 instead of
+            # the required 3/3). Manual workers have an explicit guardias/mes
+            # figure (_original_target_shifts) that must be honoured verbatim
+            # for every fully-available month, with zero tolerance.
+            is_manual = not worker.get("auto_calculate_shifts", True)
+            if is_manual:
+                guardias_mes = worker.get("_original_target_shifts", 0)
+                if guardias_mes > 0 and any(worker_month_avail.values()):
+                    mand_str = worker.get("mandatory_days", "").strip()
+                    mand_dates_by_month: dict[str, int] = {}
+                    if mand_str:
+                        try:
+                            for d in s.date_utils.parse_dates(mand_str):
+                                if s.start_date <= d <= s.end_date:
+                                    mk = f"{d.year}-{d.month:02d}"
+                                    mand_dates_by_month[mk] = mand_dates_by_month.get(mk, 0) + 1
+                        except (TypeError, ValueError) as exc:
+                            logging.debug(f"Worker {worker_id} error parsing mandatory_days for monthly split: {exc}")
+
+                    remaining_target = overall_target
+                    fully_available_months = []
+                    for month_key in month_days:
+                        avail = worker_month_avail.get(month_key, 0)
+                        year_m, month_m = int(month_key[:4]), int(month_key[5:])
+                        days_in_month = cal_mod.monthrange(year_m, month_m)[1]
+
+                        if avail == 0:
+                            worker["monthly_targets"][month_key] = 0
+                            worker["monthly_targets_ceil"][month_key] = 0
+                            continue
+
+                        month_fraction = min(1.0, avail / days_in_month)
+                        raw_month_target = round(guardias_mes * month_fraction)
+                        mand_in_month = mand_dates_by_month.get(month_key, 0)
+                        month_target = max(0, raw_month_target - mand_in_month)
+                        month_target = min(month_target, remaining_target)
+                        worker["monthly_targets"][month_key] = month_target
+                        worker["monthly_targets_ceil"][month_key] = math.ceil(guardias_mes * month_fraction)
+                        remaining_target -= month_target
+                        if month_fraction >= 0.999:
+                            fully_available_months.append(month_key)
+
+                    # Reconcile rounding drift against the overall (mandatory-adjusted)
+                    # total, preferring fully-available months so partial months
+                    # (period edges) keep their smaller, proportionally-correct share.
+                    if remaining_target > 0:
+                        candidates = fully_available_months or [k for k, v in worker_month_avail.items() if v > 0]
+                        for month_key in candidates:
+                            if remaining_target <= 0:
+                                break
+                            worker["monthly_targets"][month_key] += 1
+                            remaining_target -= 1
+                    elif remaining_target < 0:
+                        candidates = sorted(
+                            [k for k, v in worker_month_avail.items() if v > 0],
+                            key=lambda k: worker["monthly_targets"].get(k, 0),
+                            reverse=True,
+                        )
+                        for month_key in candidates:
+                            if remaining_target >= 0:
+                                break
+                            if worker["monthly_targets"].get(month_key, 0) > 0:
+                                worker["monthly_targets"][month_key] -= 1
+                                remaining_target += 1
+
+                    logging.debug(
+                        f"Worker {worker_id} (MANUAL): monthly targets from guardias/mes={guardias_mes} → "
+                        f"{worker['monthly_targets']}"
+                    )
+                    continue
+                else:
+                    for month_key in month_days:
+                        worker["monthly_targets"][month_key] = 0
+                        worker["monthly_targets_ceil"][month_key] = 0
+                    continue
+
             total_avail_days = sum(worker_month_avail.values())
             remaining_target = overall_target
 
