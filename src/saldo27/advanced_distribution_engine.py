@@ -470,8 +470,9 @@ class AdvancedDistributionEngine:
                 if check_worker is None:
                     continue
 
-                # No tocar mandatory
-                if self.builder.is_locked_mandatory(check_worker, check_date):
+                # No tocar mandatory (config-mandatory dates and manual-worker
+                # monthly floor, not just the runtime locked-mandatory set)
+                if not self.builder._can_modify_assignment(check_worker, check_date, "backtrack"):
                     continue
 
                 recent_assignments.append((check_date, check_post, check_worker))
@@ -558,8 +559,9 @@ class AdvancedDistributionEngine:
             assignments_a = list(self.scheduler.worker_assignments.get(worker_a, set()))
 
             for date_a in assignments_a:
-                # No tocar mandatory
-                if self.builder.is_locked_mandatory(worker_a, date_a):
+                # No tocar mandatory (config-mandatory dates and manual-worker
+                # monthly floor, not just the runtime locked-mandatory set)
+                if not self.builder._can_modify_assignment(worker_a, date_a, "two_worker_swap"):
                     continue
 
                 try:

@@ -123,6 +123,10 @@ class OptimizationMetrics:
         CV es incorrecto cuando existe configuración manual de objetivos distintos
         (p. ej. GABI=60, MÓNICA=24): ese spread es intencionado y no debe
         penalizarse como desequilibrio.
+
+        Desviaciones por debajo del ±10% se consideran tolerancia normal y no
+        penalizan el score (zona muerta); solo el exceso por encima del umbral
+        contribuye a la penalización.
         """
         try:
             if not self.scheduler.workers_data:
@@ -139,8 +143,12 @@ class OptimizationMetrics:
             if not deviations:
                 return 100.0
 
-            avg_deviation_pct = sum(deviations) / len(deviations)
-            # Escala: 0 % desv → 100, 10 % desv → 60, 25 % desv → 0
+            # Zona muerta: no penalizar desviaciones <= 10%.
+            deadzone = 0.10
+            effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
+
+            avg_deviation_pct = sum(effective_deviations) / len(effective_deviations)
+            # Escala (tras la zona muerta): 0 % exceso → 100, 10 % exceso → 60, 25 % exceso → 0
             return max(0.0, 100.0 - avg_deviation_pct * 400.0)
 
         except Exception as e:
@@ -155,6 +163,10 @@ class OptimizationMetrics:
         Compares each worker's actual weekend count against their proportional
         expected weekend count (target_shifts × overall_weekend_ratio), so workers
         with intentionally different targets (manual config) are scored fairly.
+
+        Desviaciones por debajo del ±15% se consideran tolerancia normal y no
+        penalizan el score (zona muerta); solo el exceso por encima del umbral
+        contribuye a la penalización.
         """
         try:
             if not self.scheduler.workers_data:
@@ -193,8 +205,12 @@ class OptimizationMetrics:
             if not deviations:
                 return 100.0
 
-            avg_deviation_pct = sum(deviations) / len(deviations)
-            # Escala: 0 % desv → 100, 10 % desv → 60, 25 % desv → 0
+            # Zona muerta: no penalizar desviaciones <= 15%.
+            deadzone = 0.15
+            effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
+
+            avg_deviation_pct = sum(effective_deviations) / len(effective_deviations)
+            # Escala (tras la zona muerta): 0 % exceso → 100, 10 % exceso → 60, 25 % exceso → 0
             return max(0.0, 100.0 - avg_deviation_pct * 400.0)
 
         except Exception as e:
@@ -210,6 +226,14 @@ class OptimizationMetrics:
 
         Uses mean absolute relative deviation so the penalty scales with the
         magnitude of imbalance instead of absolute squared differences.
+
+        Trabajadores con `no_last_post` u `only_last_post` tienen su rotación
+        de puestos condicionada por configuración (nunca pueden/deben cubrir
+        todos los puestos por igual), así que se consideran sin desviación
+        (score 100) en lugar de penalizarlos por una distribución estructural.
+
+        Para el resto de trabajadores, desviaciones por debajo del ±20% se
+        consideran tolerancia normal y no penalizan el score (zona muerta).
         """
         try:
             if not self.scheduler.workers_data or self.scheduler.num_shifts <= 1:
@@ -219,6 +243,13 @@ class OptimizationMetrics:
 
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
+
+                # Workers with a restricted/forced post assignment cannot rotate
+                # evenly by design; treat them as having no deviation.
+                if worker.get("no_last_post", False) or worker.get("only_last_post", False):
+                    post_balance_scores.append(100.0)
+                    continue
+
                 assignments = self.scheduler.worker_assignments.get(worker_id, set())
 
                 if not assignments:
@@ -250,8 +281,10 @@ class OptimizationMetrics:
                     / n_posts_used
                     / expected_per_post
                 )
-                # Scale: 0 % deviation → 100, 25 % → 75, 100 % → 0
-                worker_score = max(0.0, 100.0 - mard * 100.0)
+                # Zona muerta: no penalizar desviaciones <= 20%.
+                effective_mard = max(0.0, mard - 0.20)
+                # Escala (tras la zona muerta): 0 % exceso → 100, 25 % exceso → 75, 100 % exceso → 0
+                worker_score = max(0.0, 100.0 - effective_mard * 100.0)
                 post_balance_scores.append(worker_score)
 
             return sum(post_balance_scores) / len(post_balance_scores) if post_balance_scores else 100.0

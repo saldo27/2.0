@@ -1,5 +1,5 @@
 """
-Sistema de Generación de Horarios - Interfaz Streamlit
+Sistema de Generación de Calendario de guardias - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
 Versión: 3.5 (Septiembre 2026)
@@ -458,7 +458,7 @@ def load_schedule_from_json(uploaded_file):
                     "⚠️ Configuración cargada, pero hubo error reconstruyendo el calendario exacto. Genere nuevamente.",
                 )
 
-        return True, "✅ Configuración importada (Recuerde generar el horario nuevamente)"
+        return True, "✅ Configuración importada (Recuerde generar el reparto nuevamente)"
 
     except json.JSONDecodeError:
         return False, "❌ Error: El archivo no es un JSON válido"
@@ -1408,7 +1408,7 @@ with st.sidebar:
     st.subheader("🎉 Festivos")
     holidays_input = st.text_area(
         "Fechas festivas (una por línea, formato: DD-MM-YYYY)",
-        value="19-03-2026\n27-03-2026\n02-04-2026\n03-04-2026\n01-05-2026\n09-06-2026\n25-09-2026\n12-10-2026\n08-12-2026\n24-12-2026\n25-12-2026\n01-01-2027",
+        value="19-03-2026\n27-03-2026\n02-04-2026\n03-04-2026\n01-05-2026\n09-06-2026\n25-09-2026\n12-10-2026\n07-12-2026\n08-12-2026\n24-12-2026\n25-12-2026\n31-12-2026\n01-01-2027",
         height=100,
         help="Días festivos donde se aplicarán reglas especiales",
     )
@@ -1539,7 +1539,7 @@ with st.sidebar:
     st.markdown("---")
 
     # Botón de generación
-    st.subheader("🚀 Generar Horario")
+    st.subheader("🚀 Generar Reparto")
 
     if len(st.session_state.workers_data) == 0:
         st.warning("⚠️ Primero agregue médicos")
@@ -2429,7 +2429,7 @@ with tab3:
     st.header("📊 Estadísticas de Asignación")
 
     if st.session_state.scheduler is None:
-        st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Horario' en la barra lateral.")
+        st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Reparto' en la barra lateral.")
     else:
         # Estadísticas por trabajador
         stats_df = get_worker_statistics()
@@ -2666,7 +2666,7 @@ with tab3:
 
             if not has_bridge_support:
                 st.info(
-                    "ℹ️ El horario actual no incluye información de puentes. Genere un nuevo horario para ver estas estadísticas."
+                    "ℹ️ El reparto actual no incluye información de puentes, genere uno nuevo para ver estas estadísticas."
                 )
             else:
                 # Obtener estadísticas de puentes
@@ -2789,7 +2789,7 @@ with tab4:
     st.header("⚠️ Verificación de Restricciones")
 
     if st.session_state.scheduler is None:
-        st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Horario' en la barra lateral.")
+        st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Reparto' en la barra lateral.")
     else:
         violations = check_violations()
 
@@ -2866,7 +2866,7 @@ with tab5:
             "ℹ️ Predictive analytics is disabled. Enable it in the sidebar to access AI-powered forecasting and recommendations."
         )
     elif st.session_state.scheduler is None:
-        st.info("ℹ️ No hay horario generado. Generate a schedule first to access predictive analytics.")
+        st.info("ℹ️ No hay reparto generado. Generate a schedule first to access predictive analytics.")
     else:
         # Insights Summary
         st.subheader("💡 Key Insights")
@@ -3633,7 +3633,7 @@ with tab6:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
     else:
-        st.info("ℹ️ Cargue un archivo de horario para comenzar el análisis")
+        st.info("ℹ️ Cargue un archivo de reparto para comenzar el análisis")
 
 # Footer
 st.markdown("---")

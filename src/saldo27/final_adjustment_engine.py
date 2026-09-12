@@ -56,6 +56,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         self._total_all_slots: int = 0
         self._total_weekend_slots: int = 0
         self._total_bridge_slots: int = 0
+        self._total_last_post_slots: int = 0
         self._precompute_slot_totals()
 
         # Cache raw targets to avoid repeated O(n) scans inside hot loops
@@ -148,6 +149,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
                     "bridge_target": int,
                     "bridge_assigned": int,
                     "bridge_deviation": int,
+                    "last_post_target": int,
+                    "last_post_assigned": int,
+                    "last_post_deviation": int,
                 },
                 ...
             }
@@ -158,11 +162,13 @@ class FinalAdjustmentEngine(EngineStateMixin):
         total_by_worker: dict[str, int] = {}
         weekend_by_worker: dict[str, int] = {}
         bridge_by_worker: dict[str, int] = {}
+        last_post_by_worker: dict[str, int] = {}
 
+        num_shifts = self.scheduler.num_shifts
         for date, shifts in self.schedule.items():
             is_weekend = self.scheduler.date_utils.is_weekend_day(date, self.holidays_set)
             is_bridge = self.scheduler.date_utils.is_bridge_day(date, self.scheduler.bridge_periods)
-            for worker_id in shifts:
+            for post, worker_id in enumerate(shifts):
                 if worker_id is None:
                     continue
                 total_by_worker[worker_id] = total_by_worker.get(worker_id, 0) + 1
@@ -170,6 +176,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
                     weekend_by_worker[worker_id] = weekend_by_worker.get(worker_id, 0) + 1
                 if is_bridge:
                     bridge_by_worker[worker_id] = bridge_by_worker.get(worker_id, 0) + 1
+                if post == num_shifts - 1:
+                    last_post_by_worker[worker_id] = last_post_by_worker.get(worker_id, 0) + 1
 
         metrics: dict[str, dict[str, Any]] = {}
         for worker in self.workers_data:
@@ -179,9 +187,11 @@ class FinalAdjustmentEngine(EngineStateMixin):
             total_assigned = total_by_worker.get(wid, 0)
             weekend_assigned = weekend_by_worker.get(wid, 0)
             bridge_assigned = bridge_by_worker.get(wid, 0)
+            last_post_assigned = last_post_by_worker.get(wid, 0)
 
             weekend_target = self._weekend_target_for(raw_target)
             bridge_target = self._bridge_target_for(raw_target)
+            last_post_target = self._last_post_target_for(worker)
 
             metrics[wid] = {
                 "name": worker.get("name", wid),
@@ -194,6 +204,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
                 "bridge_target": bridge_target,
                 "bridge_assigned": bridge_assigned,
                 "bridge_deviation": bridge_assigned - bridge_target,
+                "last_post_target": last_post_target,
+                "last_post_assigned": last_post_assigned,
+                "last_post_deviation": last_post_assigned - last_post_target,
             }
         return metrics
 
@@ -213,6 +226,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
                 self._total_weekend_slots += n
             if self.scheduler.date_utils.is_bridge_day(current, self.scheduler.bridge_periods):
                 self._total_bridge_slots += n
+            if n > 0:
+                self._total_last_post_slots += 1
             current += timedelta(days=1)
 
     def _weekend_target_for(self, raw_target: int) -> int:
@@ -227,6 +242,25 @@ class FinalAdjustmentEngine(EngineStateMixin):
         if self._total_all_slots == 0 or self._total_bridge_slots == 0:
             return 0
         ratio = self._total_bridge_slots / self._total_all_slots
+        return round(raw_target * ratio)
+
+    def _last_post_target_for(self, worker: dict) -> int:
+        """Target proporcional de turnos en el último puesto (post rotation).
+
+        Alineado con ``optimization_metrics._calculate_post_rotation_score``:
+        los trabajadores ``no_last_post``/``only_last_post`` tienen su
+        rotación de puestos condicionada por configuración, así que se les
+        asigna el target "correcto" para su restricción (0 o su target total)
+        en lugar del reparto proporcional general.
+        """
+        raw_target = self._get_worker_raw_target(worker)
+        if worker.get("no_last_post", False):
+            return 0
+        if worker.get("only_last_post", False):
+            return raw_target
+        if self._total_all_slots == 0 or self._total_last_post_slots == 0:
+            return 0
+        ratio = self._total_last_post_slots / self._total_all_slots
         return round(raw_target * ratio)
 
     @staticmethod
@@ -635,7 +669,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
     # Internal: OR-Tools CP-SAT phase
     # ------------------------------------------------------------------
 
-    def _run_ortools_phase(self, time_limit_seconds: int = 30) -> int:
+    def _run_ortools_phase(self, time_limit_seconds: int | None = None) -> int:
         """
         Ejecuta la Fase 4 de refinamiento CP-SAT con OR-Tools.
 
@@ -644,6 +678,11 @@ class FinalAdjustmentEngine(EngineStateMixin):
         omite sin error.  Si el solver no mejora las métricas actuales se
         descarta la solución y se restaura el estado previo.
 
+        Args:
+            time_limit_seconds: Límite de tiempo (segundos) para el primer
+                intento del solver.  Si es ``None`` se lee de
+                ``scheduler.config["ortools_time_limit_seconds"]`` (por defecto 30).
+
         Returns:
             Número de slots reasignados por el solver (0 si no aplica).
         """
@@ -651,9 +690,16 @@ class FinalAdjustmentEngine(EngineStateMixin):
             logging.info("FinalAdjustmentEngine: OR-Tools no disponible, se omite la Fase 4 CP-SAT.")
             return 0
 
+        if time_limit_seconds is None:
+            scheduler_config = getattr(self.scheduler, "config", None) or {}
+            time_limit_seconds = scheduler_config.get("ortools_time_limit_seconds", 30)
+
         state_before = self._save_state()
         metrics_before = self.compute_metrics()
 
+        import time as _time
+
+        t0 = _time.monotonic()
         try:
             phase = ORToolsPhase(self)
             result = phase.solve(time_limit_seconds=time_limit_seconds)
@@ -661,6 +707,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
             logging.error(f"FinalAdjustmentEngine OR-Tools error: {exc}", exc_info=True)
             self._restore_state(state_before)
             return 0
+        finally:
+            logging.info(f"  OR-Tools CP-SAT: fase completada en {_time.monotonic() - t0:.2f}s")
 
         if result is None:
             # No feasible/improved solution found
@@ -704,13 +752,66 @@ class FinalAdjustmentEngine(EngineStateMixin):
         return changes
 
 
-def _deviation_score(metrics: dict[str, dict[str, Any]]) -> int:
-    """Weighted total deviation used to compare before/after OR-Tools."""
-    total = 0
+# Pesos del objetivo multi-dimensión, compartidos entre el modelo CP-SAT
+# (ORToolsPhase._build_model) y la comparación antes/después (_deviation_score)
+# para que ambos midan exactamente lo mismo — de lo contrario el solver podría
+# encontrar una solución "óptima" según su objetivo que _deviation_score
+# considere peor, provocando que se revierta sistemáticamente (ver bug donde
+# el score pasaba de 8260 a 24460 y la Fase 4 nunca aplicaba cambios).
+W_SHIFT = 1000
+W_WEEKEND = 100
+W_LAST_POST = 50
+W_BRIDGE = 10
+
+# Zonas muertas (deadzones) alineadas con optimization_metrics.py, para que
+# el solver no gaste tiempo optimizando desviaciones que el score final ya
+# no penaliza (ver _calculate_workload_balance_score / _calculate_weekend_balance_score).
+DEADZONE_SHIFT = 0.10
+DEADZONE_WEEKEND = 0.15
+# Alineada con optimization_metrics._calculate_post_rotation_score, que
+# tolera hasta un ±20% de desviación en la distribución de puestos.
+DEADZONE_LAST_POST = 0.20
+
+# Peso de "desempate" aplicado a la desviación bruta (sin zona muerta) para
+# los términos con deadzone.  Al ser mucho menor que W_BRIDGE (el peso más
+# pequeño de los términos "duros"), no revierte la prioridad turnos > weekend
+# > puentes, pero evita que el solver redistribuya desviaciones libremente
+# dentro de la zona muerta (esos movimientos tenían coste 0 en el objetivo
+# pero disparaban la desviación bruta total, haciendo que _deviation_score
+# rechazara la solución del solver).
+TIEBREAK_WEIGHT = 1
+
+
+def _deviation_score(metrics: dict[str, dict[str, Any]]) -> float:
+    """Weighted total deviation used to compare before/after OR-Tools.
+
+    Debe reflejar EXACTAMENTE la misma noción de "desviación" que el objetivo
+    CP-SAT (``ORToolsPhase._build_model``): desviaciones de turnos/weekend/
+    último-puesto dentro de la zona muerta (±10% / ±15% / ±20%) no se
+    penalizan con el peso principal, pero sí contribuyen con
+    ``TIEBREAK_WEIGHT`` para evitar que el solver redistribuya desviaciones
+    libremente dentro de la zona muerta y dispare esta métrica sin que el
+    objetivo del solver lo refleje (lo que provocaba que soluciones válidas
+    del solver fuesen revertidas siempre).
+    """
+    total = 0.0
     for m in metrics.values():
-        total += 1000 * abs(m.get("shift_deviation", 0))
-        total += 100 * abs(m.get("weekend_deviation", 0))
-        total += 10 * abs(m.get("bridge_deviation", 0))
+        shift_target = m.get("shift_target", 0)
+        shift_dev = abs(m.get("shift_deviation", 0))
+        shift_excess = max(0.0, shift_dev - DEADZONE_SHIFT * shift_target)
+        total += W_SHIFT * shift_excess + TIEBREAK_WEIGHT * shift_dev
+
+        weekend_target = m.get("weekend_target", 0)
+        weekend_dev = abs(m.get("weekend_deviation", 0))
+        weekend_excess = max(0.0, weekend_dev - DEADZONE_WEEKEND * weekend_target)
+        total += W_WEEKEND * weekend_excess + TIEBREAK_WEIGHT * weekend_dev
+
+        last_post_target = m.get("last_post_target", 0)
+        last_post_dev = abs(m.get("last_post_deviation", 0))
+        last_post_excess = max(0.0, last_post_dev - DEADZONE_LAST_POST * last_post_target)
+        total += W_LAST_POST * last_post_excess + TIEBREAK_WEIGHT * last_post_dev
+
+        total += W_BRIDGE * abs(m.get("bridge_deviation", 0))
     return total
 
 
@@ -724,10 +825,15 @@ class ORToolsPhase:
     ponderada (turnos > weekends > puentes).
     """
 
-    # Pesos del objetivo multi-dimensión
-    W_SHIFT = 1000
-    W_WEEKEND = 100
-    W_BRIDGE = 10
+    # Pesos del objetivo multi-dimensión (ver constantes de módulo más arriba).
+    W_SHIFT = W_SHIFT
+    W_WEEKEND = W_WEEKEND
+    W_LAST_POST = W_LAST_POST
+    W_BRIDGE = W_BRIDGE
+    DEADZONE_SHIFT = DEADZONE_SHIFT
+    DEADZONE_WEEKEND = DEADZONE_WEEKEND
+    DEADZONE_LAST_POST = DEADZONE_LAST_POST
+    TIEBREAK_WEIGHT = TIEBREAK_WEIGHT
 
     def __init__(self, engine: FinalAdjustmentEngine) -> None:
         self.engine = engine
@@ -746,6 +852,7 @@ class ORToolsPhase:
             propuestos, o ``None`` si no se encontró solución factible o no se
             produjo mejora.
         """
+        import bisect
         from datetime import timedelta
 
         from ortools.sat.python import cp_model
@@ -843,39 +950,59 @@ class ORToolsPhase:
                     model.add(sum(a_vars) + sum(b_vars) <= 1)
 
             # 3g. Gap and 7/14-day pattern constraints
+            #
+            # Performance note: candidate slot-pairs within the combined gap/7-14
+            # window are computed ONCE for all workers (O(n_slots * avg_window))
+            # instead of re-scanning every (idx_a, idx_b) pair for each worker
+            # (which was O(n_workers * n_slots^2) and dominated model-build time
+            # on large calendars).  Per-worker min_gap is applied when the
+            # constraint is added, using the precomputed pairs.
             gap = self.scheduler.gap_between_shifts
-            for wi, wid in enumerate(worker_ids):
-                wd = worker_data_by_id[wid]
-                min_gap = get_effective_min_gap(wd, gap)
-                # slots is already sorted by date (step 1 iterates sorted(self.schedule.items()))
-                for idx_a in range(n_slots):
-                    date_a = slots[idx_a][0]
-                    for idx_b in range(idx_a + 1, n_slots):
-                        date_b = slots[idx_b][0]
-                        delta = (date_b - date_a).days  # positive because sorted
-                        # Break once slots are beyond both the gap window and the 7/14-day window
-                        if delta > 14 and delta >= min_gap:
-                            break
-                        if 0 < delta < min_gap or (delta in (7, 14) and date_a.weekday() == date_b.weekday()):
-                            # Skip if the current schedule already has this worker on both slots.
-                            # The greedy phase may have intentionally allowed such placements
-                            # (e.g. via allow_714_violation).  Forcing CP-SAT to resolve them
-                            # would make the warm-start infeasible and cause the solver to spend
-                            # the full time limit searching for an alternative — the main cause
-                            # of the perceived "infinite loop".
-                            if slots[idx_a][2] == wid and slots[idx_b][2] == wid:
-                                continue
-                            model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
+            worker_min_gap = {wid: get_effective_min_gap(worker_data_by_id[wid], gap) for wid in worker_ids}
+            max_window = max([14, *worker_min_gap.values()]) if worker_min_gap else 14
 
-                # Enforce gap against prior-period assignments
-                cutoff = self.scheduler.start_date - timedelta(days=90)
+            candidate_pairs: list[tuple[int, int, int, bool]] = []
+            # slots is already sorted by date (step 1 iterates sorted(self.schedule.items()))
+            for idx_a in range(n_slots):
+                date_a = slots[idx_a][0]
+                for idx_b in range(idx_a + 1, n_slots):
+                    date_b = slots[idx_b][0]
+                    delta = (date_b - date_a).days  # positive because sorted
+                    if delta > max_window:
+                        break
+                    candidate_pairs.append((idx_a, idx_b, delta, date_a.weekday() == date_b.weekday()))
+
+            for wi, wid in enumerate(worker_ids):
+                min_gap = worker_min_gap[wid]
+                for idx_a, idx_b, delta, same_weekday in candidate_pairs:
+                    if 0 < delta < min_gap or (delta in (7, 14) and same_weekday):
+                        # Skip if the current schedule already has this worker on both slots.
+                        # The greedy phase may have intentionally allowed such placements
+                        # (e.g. via allow_714_violation).  Forcing CP-SAT to resolve them
+                        # would make the warm-start infeasible and cause the solver to spend
+                        # the full time limit searching for an alternative — the main cause
+                        # of the perceived "infinite loop".
+                        if slots[idx_a][2] == wid and slots[idx_b][2] == wid:
+                            continue
+                        model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
+
+            # Enforce gap against prior-period assignments.
+            # Slots are sorted by date, so bisect narrows the scan to only the
+            # slots within `max_window` days of each prior date instead of the
+            # full slot list — avoiding an O(n_workers * n_prior_dates * n_slots) scan.
+            slot_dates = [s[0] for s in slots]
+            cutoff = self.scheduler.start_date - timedelta(days=90)
+            for wi, wid in enumerate(worker_ids):
+                min_gap = worker_min_gap[wid]
                 prior_dates = sorted(
                     d
                     for d in getattr(self.scheduler, "prior_assignments", {}).get(wid, set())
                     if cutoff <= d < self.scheduler.start_date
                 )
                 for prior_date in prior_dates:
-                    for si in range(n_slots):
+                    lo = bisect.bisect_left(slot_dates, prior_date - timedelta(days=max_window))
+                    hi = bisect.bisect_right(slot_dates, prior_date + timedelta(days=max_window))
+                    for si in range(lo, hi):
                         date_s = slots[si][0]
                         delta = abs((date_s - prior_date).days)
                         if delta == 0:
@@ -906,33 +1033,78 @@ class ORToolsPhase:
                 self.scheduler.date_utils.is_bridge_day(slots[si][0], self.scheduler.bridge_periods)
                 for si in range(n_slots)
             ]
+            slot_is_last_post = [slots[si][1] == num_shifts - 1 for si in range(n_slots)]
 
             obj_terms = []
             for wi, wid in enumerate(worker_ids):
                 raw_tgt = raw_targets.get(wid, 0)
-
-                # Shift deviation
                 actual_shifts = sum(x[wi, si] for si in range(n_slots))
-                dplus_s = model.new_int_var(0, n_slots, f"dps_{wi}")
-                dminus_s = model.new_int_var(0, n_slots, f"dms_{wi}")
-                model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
-                obj_terms.append(self.W_SHIFT * (dplus_s + dminus_s))
 
-                # Weekend deviation
+                is_manual_worker = not worker_data_by_id[wid].get("auto_calculate_shifts", True)
+
+                # Manual monthly-target workers (auto_calculate_shifts=False):
+                # their total shift count is a HARD requirement, never a soft
+                # deviation to be traded off against other workers' balance.
+                # No swap/reassignment phase may alter it, so pin it exactly
+                # instead of letting the objective merely "prefer" raw_tgt.
+                if is_manual_worker:
+                    model.add(actual_shifts == raw_tgt)
+                else:
+                    # Shift deviation (con zona muerta ±DEADZONE_SHIFT, alineada con
+                    # optimization_metrics._calculate_workload_balance_score).
+                    dplus_s = model.new_int_var(0, n_slots, f"dps_{wi}")
+                    dminus_s = model.new_int_var(0, n_slots, f"dms_{wi}")
+                    model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
+                    shift_threshold = int(self.DEADZONE_SHIFT * raw_tgt)
+                    eff_s = model.new_int_var(0, n_slots, f"effs_{wi}")
+                    model.add(eff_s >= dplus_s + dminus_s - shift_threshold)
+                    obj_terms.append(self.W_SHIFT * eff_s)
+                    # Tiebreak: penaliza levemente la desviación bruta también
+                    # dentro de la zona muerta, para que el solver no redistribuya
+                    # desviaciones "gratis" (coste 0 en eff_s) de forma arbitraria.
+                    obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_s + dminus_s))
+
+                # Weekend deviation (con zona muerta ±DEADZONE_WEEKEND, alineada
+                # con optimization_metrics._calculate_weekend_balance_score).
                 wknd_tgt = self.engine._weekend_target_for(raw_tgt)
                 actual_wknd = sum(x[wi, si] for si in range(n_slots) if slot_is_weekend[si])
                 dplus_w = model.new_int_var(0, n_slots, f"dpw_{wi}")
                 dminus_w = model.new_int_var(0, n_slots, f"dmw_{wi}")
                 model.add(actual_wknd - wknd_tgt == dplus_w - dminus_w)
-                obj_terms.append(self.W_WEEKEND * (dplus_w + dminus_w))
+                weekend_threshold = int(self.DEADZONE_WEEKEND * wknd_tgt)
+                eff_w = model.new_int_var(0, n_slots, f"effw_{wi}")
+                model.add(eff_w >= dplus_w + dminus_w - weekend_threshold)
+                obj_terms.append(self.W_WEEKEND * eff_w)
+                # Tiebreak: mismo razonamiento que para turnos.
+                obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_w + dminus_w))
 
-                # Bridge deviation
+                # Bridge deviation (sin zona muerta: no existe un umbral
+                # equivalente documentado en el score de calidad para puentes).
                 bridge_tgt = self.engine._bridge_target_for(raw_tgt)
                 actual_bridge = sum(x[wi, si] for si in range(n_slots) if slot_is_bridge[si])
                 dplus_b = model.new_int_var(0, n_slots, f"dpb_{wi}")
                 dminus_b = model.new_int_var(0, n_slots, f"dmb_{wi}")
                 model.add(actual_bridge - bridge_tgt == dplus_b - dminus_b)
                 obj_terms.append(self.W_BRIDGE * (dplus_b + dminus_b))
+
+                # Last-post (rotation) deviation (con zona muerta ±DEADZONE_LAST_POST,
+                # alineada con optimization_metrics._calculate_post_rotation_score).
+                # Sin este término, el solver es libre de permutar qué trabajador
+                # ocupa el último puesto en cada fecha sin coste alguno (no afecta
+                # turnos/weekend/puentes totales), lo que puede desequilibrar por
+                # completo la rotación de último puesto aunque el resto del balance
+                # mejore. _last_post_target_for ya tiene en cuenta no_last_post/
+                # only_last_post (0 o raw_tgt respectivamente).
+                last_post_tgt = self.engine._last_post_target_for(worker_data_by_id[wid])
+                actual_last_post = sum(x[wi, si] for si in range(n_slots) if slot_is_last_post[si])
+                dplus_lp = model.new_int_var(0, n_slots, f"dplp_{wi}")
+                dminus_lp = model.new_int_var(0, n_slots, f"dmlp_{wi}")
+                model.add(actual_last_post - last_post_tgt == dplus_lp - dminus_lp)
+                last_post_threshold = int(self.DEADZONE_LAST_POST * last_post_tgt)
+                eff_lp = model.new_int_var(0, n_slots, f"efflp_{wi}")
+                model.add(eff_lp >= dplus_lp + dminus_lp - last_post_threshold)
+                obj_terms.append(self.W_LAST_POST * eff_lp)
+                obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_lp + dminus_lp))
 
             model.minimize(sum(obj_terms))
 
@@ -961,27 +1133,31 @@ class ORToolsPhase:
             return changes if changes else None
 
         import os
+        import time as _time
 
+        cpu_workers = min(4, max(1, os.cpu_count() or 1))
         attempts = [
             {
                 "label": "warm-start",
                 "include_hints": True,
                 "time_limit": time_limit_seconds,
-                "num_workers": min(4, max(1, os.cpu_count() or 1)),
+                "num_workers": cpu_workers,
                 "repair_hint": True,
             },
             {
                 "label": "retry-without-hints",
                 "include_hints": False,
                 "time_limit": max(time_limit_seconds * 2, 90),
-                "num_workers": 1,
+                "num_workers": cpu_workers,
                 "repair_hint": False,
             },
         ]
 
         last_status = cp_model.UNKNOWN
         for idx, attempt in enumerate(attempts):
+            build_t0 = _time.monotonic()
             model, x, slots, worker_ids = _build_model(include_hints=attempt["include_hints"])
+            build_elapsed = _time.monotonic() - build_t0
             if not slots:
                 return None
 
@@ -993,8 +1169,14 @@ class ORToolsPhase:
                 solver.parameters.repair_hint = True
                 solver.parameters.hint_conflict_limit = 50_000
 
+            solve_t0 = _time.monotonic()
             status = solver.solve(model)
+            solve_elapsed = _time.monotonic() - solve_t0
             last_status = status
+            logging.info(
+                f"  OR-Tools CP-SAT [{attempt['label']}]: build={build_elapsed:.2f}s "
+                f"solve={solve_elapsed:.2f}s status={solver.status_name(status)}"
+            )
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 return _extract_changes(solver, x, slots, worker_ids)
 
