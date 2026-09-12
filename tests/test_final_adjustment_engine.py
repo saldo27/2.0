@@ -449,6 +449,40 @@ def test_ortools_phase_respects_mandatory():
     assert scheduler.schedule[mandatory_date][0] == "A"
 
 
+def test_ortools_phase_pins_manual_worker_total_shifts():
+    """
+    A worker with auto_calculate_shifts=False must keep EXACTLY their
+    configured total shift count after the OR-Tools phase — the CP-SAT
+    model must never treat it as a soft deviation to trade off against
+    other workers' balance.
+    """
+    workers = _simple_workers()
+    workers[0]["auto_calculate_shifts"] = False  # A is manual, target 8
+    scheduler = _make_scheduler(workers, end=datetime(2026, 3, 31))
+
+    # Imbalance: A has more shifts than B, tempting the solver to move some
+    # of A's shifts to B even though A's total must stay pinned at 8.
+    dates_a = [datetime(2026, 3, d) for d in [1, 4, 7, 10, 13, 16, 19, 22]]
+    dates_b = [datetime(2026, 3, d) for d in [25, 28]]
+
+    for d in dates_a:
+        scheduler.schedule[d] = ["A", None]
+    for d in dates_b:
+        scheduler.schedule[d] = ["B", None]
+
+    scheduler.worker_assignments["A"] = set(dates_a)
+    scheduler.worker_assignments["B"] = set(dates_b)
+    scheduler.worker_shift_counts["A"] = len(dates_a)
+    scheduler.worker_shift_counts["B"] = len(dates_b)
+
+    engine = _build_engine(scheduler)
+    engine._run_ortools_phase(time_limit_seconds=15)
+
+    assert len(scheduler.worker_assignments["A"]) == 8, (
+        "Manual worker's total shift count must remain exactly their configured target"
+    )
+
+
 def test_ortools_phase_respects_gap_constraint():
     """
     The OR-Tools solution must not introduce gap violations that were absent

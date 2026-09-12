@@ -991,21 +991,31 @@ class ORToolsPhase:
             obj_terms = []
             for wi, wid in enumerate(worker_ids):
                 raw_tgt = raw_targets.get(wid, 0)
-
-                # Shift deviation (con zona muerta ±DEADZONE_SHIFT, alineada con
-                # optimization_metrics._calculate_workload_balance_score).
                 actual_shifts = sum(x[wi, si] for si in range(n_slots))
-                dplus_s = model.new_int_var(0, n_slots, f"dps_{wi}")
-                dminus_s = model.new_int_var(0, n_slots, f"dms_{wi}")
-                model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
-                shift_threshold = int(self.DEADZONE_SHIFT * raw_tgt)
-                eff_s = model.new_int_var(0, n_slots, f"effs_{wi}")
-                model.add(eff_s >= dplus_s + dminus_s - shift_threshold)
-                obj_terms.append(self.W_SHIFT * eff_s)
-                # Tiebreak: penaliza levemente la desviación bruta también
-                # dentro de la zona muerta, para que el solver no redistribuya
-                # desviaciones "gratis" (coste 0 en eff_s) de forma arbitraria.
-                obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_s + dminus_s))
+
+                is_manual_worker = not worker_data_by_id[wid].get("auto_calculate_shifts", True)
+
+                # Manual monthly-target workers (auto_calculate_shifts=False):
+                # their total shift count is a HARD requirement, never a soft
+                # deviation to be traded off against other workers' balance.
+                # No swap/reassignment phase may alter it, so pin it exactly
+                # instead of letting the objective merely "prefer" raw_tgt.
+                if is_manual_worker:
+                    model.add(actual_shifts == raw_tgt)
+                else:
+                    # Shift deviation (con zona muerta ±DEADZONE_SHIFT, alineada con
+                    # optimization_metrics._calculate_workload_balance_score).
+                    dplus_s = model.new_int_var(0, n_slots, f"dps_{wi}")
+                    dminus_s = model.new_int_var(0, n_slots, f"dms_{wi}")
+                    model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
+                    shift_threshold = int(self.DEADZONE_SHIFT * raw_tgt)
+                    eff_s = model.new_int_var(0, n_slots, f"effs_{wi}")
+                    model.add(eff_s >= dplus_s + dminus_s - shift_threshold)
+                    obj_terms.append(self.W_SHIFT * eff_s)
+                    # Tiebreak: penaliza levemente la desviación bruta también
+                    # dentro de la zona muerta, para que el solver no redistribuya
+                    # desviaciones "gratis" (coste 0 en eff_s) de forma arbitraria.
+                    obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_s + dminus_s))
 
                 # Weekend deviation (con zona muerta ±DEADZONE_WEEKEND, alineada
                 # con optimization_metrics._calculate_weekend_balance_score).

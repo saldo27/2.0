@@ -232,6 +232,13 @@ class StrictBalanceOptimizer(EngineStateMixin):
 
             deviation = non_mandatory_assigned - target
 
+            # Manual monthly-target workers (auto_calculate_shifts=False) must
+            # match their configured target EXACTLY: their effective tolerance
+            # is always 0, never the general ±1 applied to auto-calculated
+            # workers.
+            is_manual = not worker.get("auto_calculate_shifts", True)
+            effective_tolerance = 0 if is_manual else 1
+
             worker_details[worker_id] = {
                 "name": worker.get("name", worker_id),
                 "target": target,
@@ -244,7 +251,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
 
             if target > 0:
                 deviations.append(abs(deviation))
-                if abs(deviation) > 1:
+                if abs(deviation) > effective_tolerance:
                     outside_tolerance_count += 1
 
         return {
@@ -281,10 +288,17 @@ class StrictBalanceOptimizer(EngineStateMixin):
 
             deviation = non_mandatory_assigned - target
 
-            if deviation > tolerance:
+            # Manual monthly-target workers must match EXACTLY (tolerance 0),
+            # regardless of the global tolerance used for auto-calculated
+            # workers — see problem statement: their assigned count "no se
+            # puede alterar en ninguna fase de ajuste".
+            is_manual = not worker.get("auto_calculate_shifts", True)
+            effective_tolerance = 0 if is_manual else tolerance
+
+            if deviation > effective_tolerance:
                 # Sobrecargado: tiene más turnos de los que debería
                 overloaded.append((worker_id, deviation))
-            elif deviation < -tolerance:
+            elif deviation < -effective_tolerance:
                 # Subcargado: tiene menos turnos de los que debería
                 underloaded.append((worker_id, deviation))
 
