@@ -30,6 +30,7 @@ import streamlit.components.v1 as components
 
 from saldo27.application.generation_flow import (
     GenerationUICallbacks,
+    build_generation_summary_log,
     collect_constraint_violations,
     execute_generation_workflow,
     prepare_generation_workflow,
@@ -2397,6 +2398,17 @@ with tab2:
                             st.session_state.schedule = _sched_fa.schedule
 
                     if _fa_results is not None:
+                        # Recalculate the "Score Final" shown in the sidebar
+                        # progress log so it reflects the post-adjustment
+                        # schedule instead of the stale pre-adjustment value.
+                        try:
+                            _fa_new_log_text = build_generation_summary_log(_sched_fa)
+                        except Exception:
+                            logging.error("Error recalculating summary log after Ajuste Final", exc_info=True)
+                            _fa_new_log_text = None
+                        if _fa_new_log_text:
+                            st.session_state._sidebar_log_content = ("code", _fa_new_log_text)
+
                         # Persist the result so it survives the st.rerun() below and
                         # is rendered (via the pending-result block above) on the
                         # next script run — otherwise the immediate rerun discards
