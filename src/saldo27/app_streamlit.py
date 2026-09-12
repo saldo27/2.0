@@ -2,7 +2,7 @@
 Sistema de Generación de Horarios - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 3.4 (Septiembre 2026)
+Versión: 3.5 (Septiembre 2026)
 """
 
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
@@ -30,6 +30,7 @@ import streamlit.components.v1 as components
 
 from saldo27.application.generation_flow import (
     GenerationUICallbacks,
+    build_generation_summary_log,
     collect_constraint_violations,
     execute_generation_workflow,
     prepare_generation_workflow,
@@ -48,7 +49,7 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # Constante de versión
-APP_VERSION = "3.4"
+APP_VERSION = "3.5"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -1407,7 +1408,7 @@ with st.sidebar:
     st.subheader("🎉 Festivos")
     holidays_input = st.text_area(
         "Fechas festivas (una por línea, formato: DD-MM-YYYY)",
-        value="19-03-2026\n27-03-2026\n02-04-2026\n03-04-2026\n01-05-2026\n09-06-2026\n25-09-2026\n12-10-2026\n07-12-2026\n08-12-2026\n24-12-2026\n25-12-2026\n31-12-2026\n01-01-2027",
+        value="19-03-2026\n27-03-2026\n02-04-2026\n03-04-2026\n01-05-2026\n09-06-2026\n25-09-2026\n12-10-2026\n08-12-2026\n24-12-2026\n25-12-2026\n01-01-2027",
         height=100,
         help="Días festivos donde se aplicarán reglas especiales",
     )
@@ -2397,6 +2398,17 @@ with tab2:
                             st.session_state.schedule = _sched_fa.schedule
 
                     if _fa_results is not None:
+                        # Recalculate the "Score Final" shown in the sidebar
+                        # progress log so it reflects the post-adjustment
+                        # schedule instead of the stale pre-adjustment value.
+                        try:
+                            _fa_new_log_text = build_generation_summary_log(_sched_fa)
+                        except Exception:
+                            logging.error("Error recalculating summary log after Ajuste Final", exc_info=True)
+                            _fa_new_log_text = None
+                        if _fa_new_log_text:
+                            st.session_state._sidebar_log_content = ("code", _fa_new_log_text)
+
                         # Persist the result so it survives the st.rerun() below and
                         # is rendered (via the pending-result block above) on the
                         # next script run — otherwise the immediate rerun discards
@@ -3627,9 +3639,9 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "Sistema de Generación de Guardias v3.4 | "
+    "Sistema de Generación de Guardias v3.5 | "
     "Interfaz Streamlit | "
-    f"© {datetime.now().year}"
+    f"Todos los derechos reservados, 2026©,  {datetime.now().year}"
     "</div>",
     unsafe_allow_html=True,
 )
