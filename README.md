@@ -36,6 +36,8 @@ Saldo27 permite:
 - Restricciones de patrón semanal 7/14 días
 - Balance de fines de semana
 - Balance de turnos en días puente
+- Objetivo mensual fijo garantizado para trabajadores con número fijo de guardias/mes, incluso tras la corrección final de restricciones
+- Score de calidad con zonas sin penalización (carga ±10%, fines de semana ±15%, rotación de puestos ±20%), recalculado tras el Ajuste Final
 
 ### Análisis y exportación
 
@@ -152,5 +154,5 @@ uv run pytest
 
 ## Estado del proyecto
 
-Versión de la aplicación (Streamlit): `3.4`.
+Versión de la aplicación (Streamlit): `3.5`.
 Versión del paquete en `pyproject.toml`: `2.5.0`.

@@ -1,6 +1,6 @@
 # Sistema de Generación de Horarios - Interfaz Streamlit
 
-**Versión actual: 3.4 (Septiembre 2026)**
+**Versión actual: 3.5 (Septiembre 2026)**
 
 ## 🚀 Inicio Rápido
 
@@ -190,8 +190,21 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 - ✅ **Balance de Puentes**: Distribución equitativa de turnos en días puente (tolerancia ±0.5)
 - ✅ **Tolerancia**: Desviación máxima respecto al objetivo (+10% max, nunca se incrementa el target)
 - ✅ **Continuidad entre períodos**: Gap respetado en el cambio de mes (vía horario previo)
+- ✅ **Objetivo mensual fijo (trabajadores manuales)**: garantizado incluso después de que la corrección final de restricciones (7/14, incompatibilidades) elimine una asignación
+
+## 📈 Score de Calidad del Calendario
+
+- **Balance de carga (workload)**: no penaliza desviaciones dentro de ±10% respecto al objetivo
+- **Balance de fines de semana**: no penaliza desviaciones dentro de ±15%
+- **Rotación de puestos (post rotation)**: no penaliza desviaciones dentro de ±20%; los trabajadores con `no_last_post` u `only_last_post` quedan exentos de esta penalización
+- El **Score Final** mostrado en el sidebar se recalcula automáticamente tras ejecutar **Ajuste Final**, reflejando el resultado real tras los intercambios aplicados
 
 ## 🆕 Historial de Versiones
+
+### v3.5 (Septiembre 2026)
+- **Objetivo mensual fijo garantizado**: los trabajadores con número fijo de guardias/mes (`auto_calculate_shifts=False`) mantienen su cuota exacta/prorrateada incluso cuando la corrección final de restricciones (patrón 7/14, incompatibilidades) retira una asignación; un bucle de reconciliación en la fase de finalización rellena el déficit tras cada corrección
+- **Score de calidad recalibrado**: se introducen zonas sin penalización (deadzones) en balance de carga (±10%), balance de fines de semana (±15%) y rotación de puestos (±20%); los trabajadores con `no_last_post`/`only_last_post` quedan exentos de la penalización de rotación de puestos por no tener una desviación real
+- **Score Final actualizado tras Ajuste Final**: el resumen de generación en el sidebar ya no muestra el score obsoleto de antes del ajuste; se recalcula con el calendario ya corregido
 
 ### v3.4 (Septiembre 2026)
 - ⚖️ **Ajuste Final ampliado**: tras ejecutarlo se muestra ahora el listado de **cambios realizados** (fecha, puesto, trabajador antes/después), el **calendario actualizado** y un botón de **exportación a PDF** del resultado

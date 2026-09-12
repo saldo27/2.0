@@ -2,7 +2,7 @@
 
 Shared guidelines for AI coding assistants (Claude, Copilot, etc.) working on this project.
 
-**Current version: 3.4 (Septiembre 2026)**
+**Current version: 3.5 (Septiembre 2026)**
 
 ## Project overview
 
