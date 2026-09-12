@@ -96,6 +96,42 @@ def test_manual_worker_monthly_targets_prorated_for_out_of_work_period(sample_wo
     assert worker["monthly_targets"]["2026-08"] == 4
 
 
+def test_auto_worker_monthly_targets_prorated_for_vacation_days_off(sample_workers_data):
+    """Automatic-shift workers (auto_calculate_shifts=True) must have the
+    SAME target/available-days proportionality applied per month as manual
+    workers: a worker on vacation (days_off) for part of a month must get
+    that month's share of their target reduced accordingly, not split by
+    raw days-in-month alone."""
+    workers = [dict(w) for w in sample_workers_data][:1]
+    workers[0]["auto_calculate_shifts"] = True
+    workers[0]["work_periods"] = ""
+    workers[0]["mandatory_days"] = ""
+    workers[0]["days_off"] = "01-06-2026 - 15-06-2026"
+
+    scheduler = _build_scheduler(
+        workers,
+        datetime(2026, 6, 1),
+        datetime(2026, 7, 31),
+    )
+
+    calculator = TargetCalculator(scheduler)
+    # Isolate the per-month distribution logic under test: override the
+    # already-computed overall total (set by Scheduler.__init__) with a
+    # known value, independent of other workers' relative weights.
+    worker = next(w for w in scheduler.workers_data if w["id"] == "DOC001")
+    worker["target_shifts"] = 6
+    assert calculator._calculate_monthly_targets() is True
+
+    # June: 30 days, 15 available (16-30) after removing vacation.
+    # July: 31 days, all available. Total available = 46.
+    # 6 * 15/46 ≈ 1.96 → 2 ; 6 * 31/46 ≈ 4.04 → 4. Sums to 6 (the total).
+    # Without days_off-awareness this would incorrectly yield 3/3 (based on
+    # raw days-in-month 30/31 instead of the vacation-adjusted 15/31).
+    assert worker["monthly_targets"]["2026-06"] == 2
+    assert worker["monthly_targets"]["2026-07"] == 4
+    assert worker["monthly_targets"]["2026-06"] + worker["monthly_targets"]["2026-07"] == 6
+
+
 def test_manual_worker_monthly_targets_honour_guardias_mes_over_three_months(sample_workers_data):
     """Same scenario across three consecutive full months of differing
     lengths (31/30/31 days) must still yield exactly 3/3/3, not skewed

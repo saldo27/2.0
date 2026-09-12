@@ -256,7 +256,7 @@ class TargetCalculator:
             # AND days_off (vacations/permissions) — a manual worker on vacation
             # for half a month must have their guardias/mes prorated down for
             # that month, exactly as if they were outside their work_period.
-            month_avail = self._manual_worker_month_availability(w)
+            month_avail = self._worker_month_availability(w)
             if month_avail:
                 worker_months = 0.0
                 for month_key, avail_days in month_avail.items():
@@ -291,14 +291,18 @@ class TargetCalculator:
 
         return total_manual_slots
 
-    def _manual_worker_month_availability(self, worker: dict) -> dict[str, int]:
+    def _worker_month_availability(self, worker: dict) -> dict[str, int]:
         """
-        Days available to work per month for a manual worker, considering
-        BOTH ``work_periods`` (if configured, only days inside these ranges
+        Days available to work per month for a worker, considering BOTH
+        ``work_periods`` (if configured, only days inside these ranges
         count; otherwise the whole schedule period counts) AND ``days_off``
-        (vacations/permissions, always subtracted). This lets a manual
-        worker's guardias/mes be prorated for a partial month exactly as if
-        the vacation days were outside their work_period.
+        (vacations/permissions, always subtracted). This lets any worker's
+        (manual or automatic) shift target be prorated for a partial month
+        exactly as if the vacation days were outside their work_period.
+
+        Applies equally to manual and auto_calculate_shifts workers — the
+        proportionality between target shifts and available days must be
+        respected regardless of how the target itself was computed.
 
         Returns a ``{"YYYY-MM": available_days}`` dict, or ``{}`` if the
         worker has no schedule-period availability at all restrictions
@@ -361,7 +365,9 @@ class TargetCalculator:
     def _calculate_monthly_targets(self) -> bool:
         """
         Calculate monthly target shifts for each worker based on their overall
-        targets and their individual work_periods availability per month.
+        targets and their individual work_periods/days_off availability per
+        month. Applies to both manual (guardias/mes) and auto_calculate_shifts
+        workers.
         """
         import calendar as cal_mod
 
@@ -381,36 +387,12 @@ class TargetCalculator:
             # distribution — see Scheduler._calculate_monthly_targets docstring.
             overall_target = worker.get("target_shifts", 0)
 
-            work_periods_str = worker.get("work_periods", "").strip()
-            if work_periods_str:
-                try:
-                    work_ranges = s.date_utils.parse_date_ranges(work_periods_str)
-                except (TypeError, ValueError) as exc:
-                    logging.warning(f"Worker {worker_id} invalid work_periods for monthly target distribution: {exc}")
-                    work_ranges = []
-            else:
-                work_ranges = []
-
-            worker_month_avail: dict[str, int] = {}
-            for month_key in month_days:
-                year_m, month_m = int(month_key[:4]), int(month_key[5:])
-                days_in_month = cal_mod.monthrange(year_m, month_m)[1]
-                month_start = datetime(year_m, month_m, 1)
-                month_end = datetime(year_m, month_m, days_in_month)
-
-                if work_ranges:
-                    avail = 0
-                    for rng_start, rng_end in work_ranges:
-                        overlap_start = max(month_start, rng_start, s.start_date)
-                        overlap_end = min(month_end, rng_end, s.end_date)
-                        if overlap_end >= overlap_start:
-                            avail += (overlap_end - overlap_start).days + 1
-                else:
-                    overlap_start = max(month_start, s.start_date)
-                    overlap_end = min(month_end, s.end_date)
-                    avail = max(0, (overlap_end - overlap_start).days + 1)
-
-                worker_month_avail[month_key] = avail
+            # Availability considers BOTH work_periods AND days_off
+            # (vacations/permissions) for ALL workers — manual and automatic
+            # alike — so the target/available-days proportionality is
+            # respected consistently regardless of how the target itself
+            # was computed.
+            worker_month_avail = self._worker_month_availability(worker)
 
             # MANUAL WORKERS: never distribute the overall total proportionally
             # by available days (days-in-month varies 28-31, so a days-based
@@ -421,12 +403,7 @@ class TargetCalculator:
             is_manual = not worker.get("auto_calculate_shifts", True)
             if is_manual:
                 guardias_mes = worker.get("_original_target_shifts", 0)
-                # Availability here considers BOTH work_periods and days_off
-                # (vacations/permissions) so a manual worker on vacation for
-                # part of a month gets their guardias/mes prorated down for
-                # that month instead of the full quota.
-                manual_month_avail = self._manual_worker_month_availability(worker)
-                if guardias_mes > 0 and any(manual_month_avail.values()):
+                if guardias_mes > 0 and any(worker_month_avail.values()):
                     mand_str = worker.get("mandatory_days", "").strip()
                     mand_dates_by_month: dict[str, int] = {}
                     if mand_str:
@@ -441,7 +418,7 @@ class TargetCalculator:
                     remaining_target = overall_target
                     fully_available_months = []
                     for month_key in month_days:
-                        avail = manual_month_avail.get(month_key, 0)
+                        avail = worker_month_avail.get(month_key, 0)
                         year_m, month_m = int(month_key[:4]), int(month_key[5:])
                         days_in_month = cal_mod.monthrange(year_m, month_m)[1]
 
@@ -465,7 +442,7 @@ class TargetCalculator:
                     # total, preferring fully-available months so partial months
                     # (period edges) keep their smaller, proportionally-correct share.
                     if remaining_target > 0:
-                        candidates = fully_available_months or [k for k, v in manual_month_avail.items() if v > 0]
+                        candidates = fully_available_months or [k for k, v in worker_month_avail.items() if v > 0]
                         for month_key in candidates:
                             if remaining_target <= 0:
                                 break
@@ -473,7 +450,7 @@ class TargetCalculator:
                             remaining_target -= 1
                     elif remaining_target < 0:
                         candidates = sorted(
-                            [k for k, v in manual_month_avail.items() if v > 0],
+                            [k for k, v in worker_month_avail.items() if v > 0],
                             key=lambda k: worker["monthly_targets"].get(k, 0),
                             reverse=True,
                         )
