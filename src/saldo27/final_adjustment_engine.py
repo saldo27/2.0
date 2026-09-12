@@ -718,13 +718,56 @@ class FinalAdjustmentEngine(EngineStateMixin):
         return changes
 
 
-def _deviation_score(metrics: dict[str, dict[str, Any]]) -> int:
-    """Weighted total deviation used to compare before/after OR-Tools."""
-    total = 0
+# Pesos del objetivo multi-dimensión, compartidos entre el modelo CP-SAT
+# (ORToolsPhase._build_model) y la comparación antes/después (_deviation_score)
+# para que ambos midan exactamente lo mismo — de lo contrario el solver podría
+# encontrar una solución "óptima" según su objetivo que _deviation_score
+# considere peor, provocando que se revierta sistemáticamente (ver bug donde
+# el score pasaba de 8260 a 24460 y la Fase 4 nunca aplicaba cambios).
+W_SHIFT = 1000
+W_WEEKEND = 100
+W_BRIDGE = 10
+
+# Zonas muertas (deadzones) alineadas con optimization_metrics.py, para que
+# el solver no gaste tiempo optimizando desviaciones que el score final ya
+# no penaliza (ver _calculate_workload_balance_score / _calculate_weekend_balance_score).
+DEADZONE_SHIFT = 0.10
+DEADZONE_WEEKEND = 0.15
+
+# Peso de "desempate" aplicado a la desviación bruta (sin zona muerta) para
+# los términos con deadzone.  Al ser mucho menor que W_BRIDGE (el peso más
+# pequeño de los términos "duros"), no revierte la prioridad turnos > weekend
+# > puentes, pero evita que el solver redistribuya desviaciones libremente
+# dentro de la zona muerta (esos movimientos tenían coste 0 en el objetivo
+# pero disparaban la desviación bruta total, haciendo que _deviation_score
+# rechazara la solución del solver).
+TIEBREAK_WEIGHT = 1
+
+
+def _deviation_score(metrics: dict[str, dict[str, Any]]) -> float:
+    """Weighted total deviation used to compare before/after OR-Tools.
+
+    Debe reflejar EXACTAMENTE la misma noción de "desviación" que el objetivo
+    CP-SAT (``ORToolsPhase._build_model``): desviaciones de turnos/weekend
+    dentro de la zona muerta (±10% / ±15%) no se penalizan con el peso
+    principal, pero sí contribuyen con ``TIEBREAK_WEIGHT`` para evitar que el
+    solver redistribuya desviaciones libremente dentro de la zona muerta y
+    dispare esta métrica sin que el objetivo del solver lo refleje (lo que
+    provocaba que soluciones válidas del solver fuesen revertidas siempre).
+    """
+    total = 0.0
     for m in metrics.values():
-        total += 1000 * abs(m.get("shift_deviation", 0))
-        total += 100 * abs(m.get("weekend_deviation", 0))
-        total += 10 * abs(m.get("bridge_deviation", 0))
+        shift_target = m.get("shift_target", 0)
+        shift_dev = abs(m.get("shift_deviation", 0))
+        shift_excess = max(0.0, shift_dev - DEADZONE_SHIFT * shift_target)
+        total += W_SHIFT * shift_excess + TIEBREAK_WEIGHT * shift_dev
+
+        weekend_target = m.get("weekend_target", 0)
+        weekend_dev = abs(m.get("weekend_deviation", 0))
+        weekend_excess = max(0.0, weekend_dev - DEADZONE_WEEKEND * weekend_target)
+        total += W_WEEKEND * weekend_excess + TIEBREAK_WEIGHT * weekend_dev
+
+        total += W_BRIDGE * abs(m.get("bridge_deviation", 0))
     return total
 
 
@@ -738,16 +781,13 @@ class ORToolsPhase:
     ponderada (turnos > weekends > puentes).
     """
 
-    # Pesos del objetivo multi-dimensión
-    W_SHIFT = 1000
-    W_WEEKEND = 100
-    W_BRIDGE = 10
-
-    # Zonas muertas (deadzones) alineadas con optimization_metrics.py, para que
-    # el solver no gaste tiempo optimizando desviaciones que el score final ya
-    # no penaliza (ver _calculate_workload_balance_score / _calculate_weekend_balance_score).
-    DEADZONE_SHIFT = 0.10
-    DEADZONE_WEEKEND = 0.15
+    # Pesos del objetivo multi-dimensión (ver constantes de módulo más arriba).
+    W_SHIFT = W_SHIFT
+    W_WEEKEND = W_WEEKEND
+    W_BRIDGE = W_BRIDGE
+    DEADZONE_SHIFT = DEADZONE_SHIFT
+    DEADZONE_WEEKEND = DEADZONE_WEEKEND
+    TIEBREAK_WEIGHT = TIEBREAK_WEIGHT
 
     def __init__(self, engine: FinalAdjustmentEngine) -> None:
         self.engine = engine
@@ -962,6 +1002,10 @@ class ORToolsPhase:
                 eff_s = model.new_int_var(0, n_slots, f"effs_{wi}")
                 model.add(eff_s >= dplus_s + dminus_s - shift_threshold)
                 obj_terms.append(self.W_SHIFT * eff_s)
+                # Tiebreak: penaliza levemente la desviación bruta también
+                # dentro de la zona muerta, para que el solver no redistribuya
+                # desviaciones "gratis" (coste 0 en eff_s) de forma arbitraria.
+                obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_s + dminus_s))
 
                 # Weekend deviation (con zona muerta ±DEADZONE_WEEKEND, alineada
                 # con optimization_metrics._calculate_weekend_balance_score).
@@ -974,6 +1018,8 @@ class ORToolsPhase:
                 eff_w = model.new_int_var(0, n_slots, f"effw_{wi}")
                 model.add(eff_w >= dplus_w + dminus_w - weekend_threshold)
                 obj_terms.append(self.W_WEEKEND * eff_w)
+                # Tiebreak: mismo razonamiento que para turnos.
+                obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_w + dminus_w))
 
                 # Bridge deviation (sin zona muerta: no existe un umbral
                 # equivalente documentado en el score de calidad para puentes).
