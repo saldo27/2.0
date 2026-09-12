@@ -449,6 +449,40 @@ def test_ortools_phase_respects_mandatory():
     assert scheduler.schedule[mandatory_date][0] == "A"
 
 
+def test_ortools_phase_pins_manual_worker_total_shifts():
+    """
+    A worker with auto_calculate_shifts=False must keep EXACTLY their
+    configured total shift count after the OR-Tools phase — the CP-SAT
+    model must never treat it as a soft deviation to trade off against
+    other workers' balance.
+    """
+    workers = _simple_workers()
+    workers[0]["auto_calculate_shifts"] = False  # A is manual, target 8
+    scheduler = _make_scheduler(workers, end=datetime(2026, 3, 31))
+
+    # Imbalance: A has more shifts than B, tempting the solver to move some
+    # of A's shifts to B even though A's total must stay pinned at 8.
+    dates_a = [datetime(2026, 3, d) for d in [1, 4, 7, 10, 13, 16, 19, 22]]
+    dates_b = [datetime(2026, 3, d) for d in [25, 28]]
+
+    for d in dates_a:
+        scheduler.schedule[d] = ["A", None]
+    for d in dates_b:
+        scheduler.schedule[d] = ["B", None]
+
+    scheduler.worker_assignments["A"] = set(dates_a)
+    scheduler.worker_assignments["B"] = set(dates_b)
+    scheduler.worker_shift_counts["A"] = len(dates_a)
+    scheduler.worker_shift_counts["B"] = len(dates_b)
+
+    engine = _build_engine(scheduler)
+    engine._run_ortools_phase(time_limit_seconds=15)
+
+    assert len(scheduler.worker_assignments["A"]) == 8, (
+        "Manual worker's total shift count must remain exactly their configured target"
+    )
+
+
 def test_ortools_phase_respects_gap_constraint():
     """
     The OR-Tools solution must not introduce gap violations that were absent
@@ -625,3 +659,97 @@ def test_calculate_statistics_counts_weekend_and_posts_correctly():
     assert a_stats["total_shifts"] == 2
     assert a_stats["weekend_shifts"] == 1
     assert a_stats["post_distribution"] == {0: 1, 1: 1}
+
+
+def test_last_post_target_for_respects_post_restrictions():
+    """
+    _last_post_target_for must give a proportional share for regular workers,
+    but 0 for no_last_post workers and their full raw target for
+    only_last_post workers (mirrors optimization_metrics._calculate_post_rotation_score
+    exemptions).
+    """
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+    engine = _build_engine(scheduler)
+
+    regular_worker = {"id": "A", "_raw_target": 8}
+    no_last_post_worker = {"id": "B", "_raw_target": 8, "no_last_post": True}
+    only_last_post_worker = {"id": "C", "_raw_target": 8, "only_last_post": True}
+
+    # num_shifts=2 in _make_scheduler, so a regular worker's fair share of the
+    # single last-post slot per date is roughly raw_target / num_shifts.
+    assert engine._last_post_target_for(regular_worker) == round(8 * (engine._total_last_post_slots / engine._total_all_slots))
+    assert engine._last_post_target_for(no_last_post_worker) == 0
+    assert engine._last_post_target_for(only_last_post_worker) == 8
+
+
+def test_deviation_score_penalizes_last_post_imbalance():
+    """
+    _deviation_score must include a last-post-rotation term so that scrambling
+    the last-post distribution (without changing shift/weekend/bridge totals)
+    is reflected as a worse score -- otherwise OR-Tools CP-SAT is free to
+    permute last-post assignments at zero cost, as reported by users.
+    """
+    from saldo27.final_adjustment_engine import _deviation_score
+
+    base_metrics = {
+        "A": {
+            "shift_target": 8,
+            "shift_deviation": 0,
+            "weekend_target": 2,
+            "weekend_deviation": 0,
+            "bridge_target": 0,
+            "bridge_deviation": 0,
+            "last_post_target": 4,
+            "last_post_deviation": 0,
+        },
+    }
+    imbalanced_metrics = {
+        "A": {**base_metrics["A"], "last_post_deviation": 4},
+    }
+
+    assert _deviation_score(imbalanced_metrics) > _deviation_score(base_metrics)
+
+
+def test_ortools_phase_preserves_last_post_balance_when_shift_imbalance_forces_change():
+    """
+    Regression test: the reported bug was that Phase 4's massive reassignments
+    (which correctly balance shift/weekend totals) left the last-post
+    rotation completely unbalanced, because the CP-SAT objective had no term
+    for it. With the last-post term in place, total last-post deviation
+    across workers must not get worse than before the solve.
+    """
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+
+    # Build a schedule where A and B each get exactly half their shifts on
+    # post 0 and half on post 1 (perfectly balanced last-post rotation), but
+    # A has more total shifts than B (forcing a shift-count rebalance).
+    dates_a = [datetime(2026, 3, d) for d in range(1, 21, 2)]  # 10 dates
+    dates_b = [datetime(2026, 3, d) for d in range(2, 10, 2)]  # 4 dates
+    for i, d in enumerate(dates_a):
+        post = i % 2
+        row = scheduler.schedule.setdefault(d, [None, None])
+        row[post] = "A"
+    for i, d in enumerate(dates_b):
+        post = i % 2
+        row = scheduler.schedule.setdefault(d, [None, None])
+        row[post] = "B"
+
+    scheduler.worker_assignments["A"] = set(dates_a)
+    scheduler.worker_assignments["B"] = set(dates_b)
+    scheduler.worker_shift_counts["A"] = len(dates_a)
+    scheduler.worker_shift_counts["B"] = len(dates_b)
+
+    engine = _build_engine(scheduler)
+    metrics_before = engine.compute_metrics()
+    last_post_dev_before = sum(abs(m["last_post_deviation"]) for m in metrics_before.values())
+
+    engine._run_ortools_phase(time_limit_seconds=15)
+
+    metrics_after = engine.compute_metrics()
+    last_post_dev_after = sum(abs(m["last_post_deviation"]) for m in metrics_after.values())
+
+    assert last_post_dev_after <= last_post_dev_before, (
+        f"Last-post rotation got worse after OR-Tools phase: {last_post_dev_before} → {last_post_dev_after}"
+    )
