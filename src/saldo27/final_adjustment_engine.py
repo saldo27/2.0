@@ -635,7 +635,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
     # Internal: OR-Tools CP-SAT phase
     # ------------------------------------------------------------------
 
-    def _run_ortools_phase(self, time_limit_seconds: int = 30) -> int:
+    def _run_ortools_phase(self, time_limit_seconds: int | None = None) -> int:
         """
         Ejecuta la Fase 4 de refinamiento CP-SAT con OR-Tools.
 
@@ -644,6 +644,11 @@ class FinalAdjustmentEngine(EngineStateMixin):
         omite sin error.  Si el solver no mejora las métricas actuales se
         descarta la solución y se restaura el estado previo.
 
+        Args:
+            time_limit_seconds: Límite de tiempo (segundos) para el primer
+                intento del solver.  Si es ``None`` se lee de
+                ``scheduler.config["ortools_time_limit_seconds"]`` (por defecto 30).
+
         Returns:
             Número de slots reasignados por el solver (0 si no aplica).
         """
@@ -651,9 +656,16 @@ class FinalAdjustmentEngine(EngineStateMixin):
             logging.info("FinalAdjustmentEngine: OR-Tools no disponible, se omite la Fase 4 CP-SAT.")
             return 0
 
+        if time_limit_seconds is None:
+            scheduler_config = getattr(self.scheduler, "config", None) or {}
+            time_limit_seconds = scheduler_config.get("ortools_time_limit_seconds", 30)
+
         state_before = self._save_state()
         metrics_before = self.compute_metrics()
 
+        import time as _time
+
+        t0 = _time.monotonic()
         try:
             phase = ORToolsPhase(self)
             result = phase.solve(time_limit_seconds=time_limit_seconds)
@@ -661,6 +673,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
             logging.error(f"FinalAdjustmentEngine OR-Tools error: {exc}", exc_info=True)
             self._restore_state(state_before)
             return 0
+        finally:
+            logging.info(f"  OR-Tools CP-SAT: fase completada en {_time.monotonic() - t0:.2f}s")
 
         if result is None:
             # No feasible/improved solution found
@@ -729,6 +743,12 @@ class ORToolsPhase:
     W_WEEKEND = 100
     W_BRIDGE = 10
 
+    # Zonas muertas (deadzones) alineadas con optimization_metrics.py, para que
+    # el solver no gaste tiempo optimizando desviaciones que el score final ya
+    # no penaliza (ver _calculate_workload_balance_score / _calculate_weekend_balance_score).
+    DEADZONE_SHIFT = 0.10
+    DEADZONE_WEEKEND = 0.15
+
     def __init__(self, engine: FinalAdjustmentEngine) -> None:
         self.engine = engine
         self.scheduler = engine.scheduler
@@ -746,6 +766,7 @@ class ORToolsPhase:
             propuestos, o ``None`` si no se encontró solución factible o no se
             produjo mejora.
         """
+        import bisect
         from datetime import timedelta
 
         from ortools.sat.python import cp_model
@@ -843,39 +864,59 @@ class ORToolsPhase:
                     model.add(sum(a_vars) + sum(b_vars) <= 1)
 
             # 3g. Gap and 7/14-day pattern constraints
+            #
+            # Performance note: candidate slot-pairs within the combined gap/7-14
+            # window are computed ONCE for all workers (O(n_slots * avg_window))
+            # instead of re-scanning every (idx_a, idx_b) pair for each worker
+            # (which was O(n_workers * n_slots^2) and dominated model-build time
+            # on large calendars).  Per-worker min_gap is applied when the
+            # constraint is added, using the precomputed pairs.
             gap = self.scheduler.gap_between_shifts
-            for wi, wid in enumerate(worker_ids):
-                wd = worker_data_by_id[wid]
-                min_gap = get_effective_min_gap(wd, gap)
-                # slots is already sorted by date (step 1 iterates sorted(self.schedule.items()))
-                for idx_a in range(n_slots):
-                    date_a = slots[idx_a][0]
-                    for idx_b in range(idx_a + 1, n_slots):
-                        date_b = slots[idx_b][0]
-                        delta = (date_b - date_a).days  # positive because sorted
-                        # Break once slots are beyond both the gap window and the 7/14-day window
-                        if delta > 14 and delta >= min_gap:
-                            break
-                        if 0 < delta < min_gap or (delta in (7, 14) and date_a.weekday() == date_b.weekday()):
-                            # Skip if the current schedule already has this worker on both slots.
-                            # The greedy phase may have intentionally allowed such placements
-                            # (e.g. via allow_714_violation).  Forcing CP-SAT to resolve them
-                            # would make the warm-start infeasible and cause the solver to spend
-                            # the full time limit searching for an alternative — the main cause
-                            # of the perceived "infinite loop".
-                            if slots[idx_a][2] == wid and slots[idx_b][2] == wid:
-                                continue
-                            model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
+            worker_min_gap = {wid: get_effective_min_gap(worker_data_by_id[wid], gap) for wid in worker_ids}
+            max_window = max([14, *worker_min_gap.values()]) if worker_min_gap else 14
 
-                # Enforce gap against prior-period assignments
-                cutoff = self.scheduler.start_date - timedelta(days=90)
+            candidate_pairs: list[tuple[int, int, int, bool]] = []
+            # slots is already sorted by date (step 1 iterates sorted(self.schedule.items()))
+            for idx_a in range(n_slots):
+                date_a = slots[idx_a][0]
+                for idx_b in range(idx_a + 1, n_slots):
+                    date_b = slots[idx_b][0]
+                    delta = (date_b - date_a).days  # positive because sorted
+                    if delta > max_window:
+                        break
+                    candidate_pairs.append((idx_a, idx_b, delta, date_a.weekday() == date_b.weekday()))
+
+            for wi, wid in enumerate(worker_ids):
+                min_gap = worker_min_gap[wid]
+                for idx_a, idx_b, delta, same_weekday in candidate_pairs:
+                    if 0 < delta < min_gap or (delta in (7, 14) and same_weekday):
+                        # Skip if the current schedule already has this worker on both slots.
+                        # The greedy phase may have intentionally allowed such placements
+                        # (e.g. via allow_714_violation).  Forcing CP-SAT to resolve them
+                        # would make the warm-start infeasible and cause the solver to spend
+                        # the full time limit searching for an alternative — the main cause
+                        # of the perceived "infinite loop".
+                        if slots[idx_a][2] == wid and slots[idx_b][2] == wid:
+                            continue
+                        model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
+
+            # Enforce gap against prior-period assignments.
+            # Slots are sorted by date, so bisect narrows the scan to only the
+            # slots within `max_window` days of each prior date instead of the
+            # full slot list — avoiding an O(n_workers * n_prior_dates * n_slots) scan.
+            slot_dates = [s[0] for s in slots]
+            cutoff = self.scheduler.start_date - timedelta(days=90)
+            for wi, wid in enumerate(worker_ids):
+                min_gap = worker_min_gap[wid]
                 prior_dates = sorted(
                     d
                     for d in getattr(self.scheduler, "prior_assignments", {}).get(wid, set())
                     if cutoff <= d < self.scheduler.start_date
                 )
                 for prior_date in prior_dates:
-                    for si in range(n_slots):
+                    lo = bisect.bisect_left(slot_dates, prior_date - timedelta(days=max_window))
+                    hi = bisect.bisect_right(slot_dates, prior_date + timedelta(days=max_window))
+                    for si in range(lo, hi):
                         date_s = slots[si][0]
                         delta = abs((date_s - prior_date).days)
                         if delta == 0:
@@ -911,22 +952,31 @@ class ORToolsPhase:
             for wi, wid in enumerate(worker_ids):
                 raw_tgt = raw_targets.get(wid, 0)
 
-                # Shift deviation
+                # Shift deviation (con zona muerta ±DEADZONE_SHIFT, alineada con
+                # optimization_metrics._calculate_workload_balance_score).
                 actual_shifts = sum(x[wi, si] for si in range(n_slots))
                 dplus_s = model.new_int_var(0, n_slots, f"dps_{wi}")
                 dminus_s = model.new_int_var(0, n_slots, f"dms_{wi}")
                 model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
-                obj_terms.append(self.W_SHIFT * (dplus_s + dminus_s))
+                shift_threshold = int(self.DEADZONE_SHIFT * raw_tgt)
+                eff_s = model.new_int_var(0, n_slots, f"effs_{wi}")
+                model.add(eff_s >= dplus_s + dminus_s - shift_threshold)
+                obj_terms.append(self.W_SHIFT * eff_s)
 
-                # Weekend deviation
+                # Weekend deviation (con zona muerta ±DEADZONE_WEEKEND, alineada
+                # con optimization_metrics._calculate_weekend_balance_score).
                 wknd_tgt = self.engine._weekend_target_for(raw_tgt)
                 actual_wknd = sum(x[wi, si] for si in range(n_slots) if slot_is_weekend[si])
                 dplus_w = model.new_int_var(0, n_slots, f"dpw_{wi}")
                 dminus_w = model.new_int_var(0, n_slots, f"dmw_{wi}")
                 model.add(actual_wknd - wknd_tgt == dplus_w - dminus_w)
-                obj_terms.append(self.W_WEEKEND * (dplus_w + dminus_w))
+                weekend_threshold = int(self.DEADZONE_WEEKEND * wknd_tgt)
+                eff_w = model.new_int_var(0, n_slots, f"effw_{wi}")
+                model.add(eff_w >= dplus_w + dminus_w - weekend_threshold)
+                obj_terms.append(self.W_WEEKEND * eff_w)
 
-                # Bridge deviation
+                # Bridge deviation (sin zona muerta: no existe un umbral
+                # equivalente documentado en el score de calidad para puentes).
                 bridge_tgt = self.engine._bridge_target_for(raw_tgt)
                 actual_bridge = sum(x[wi, si] for si in range(n_slots) if slot_is_bridge[si])
                 dplus_b = model.new_int_var(0, n_slots, f"dpb_{wi}")
@@ -961,27 +1011,31 @@ class ORToolsPhase:
             return changes if changes else None
 
         import os
+        import time as _time
 
+        cpu_workers = min(4, max(1, os.cpu_count() or 1))
         attempts = [
             {
                 "label": "warm-start",
                 "include_hints": True,
                 "time_limit": time_limit_seconds,
-                "num_workers": min(4, max(1, os.cpu_count() or 1)),
+                "num_workers": cpu_workers,
                 "repair_hint": True,
             },
             {
                 "label": "retry-without-hints",
                 "include_hints": False,
                 "time_limit": max(time_limit_seconds * 2, 90),
-                "num_workers": 1,
+                "num_workers": cpu_workers,
                 "repair_hint": False,
             },
         ]
 
         last_status = cp_model.UNKNOWN
         for idx, attempt in enumerate(attempts):
+            build_t0 = _time.monotonic()
             model, x, slots, worker_ids = _build_model(include_hints=attempt["include_hints"])
+            build_elapsed = _time.monotonic() - build_t0
             if not slots:
                 return None
 
@@ -993,8 +1047,14 @@ class ORToolsPhase:
                 solver.parameters.repair_hint = True
                 solver.parameters.hint_conflict_limit = 50_000
 
+            solve_t0 = _time.monotonic()
             status = solver.solve(model)
+            solve_elapsed = _time.monotonic() - solve_t0
             last_status = status
+            logging.info(
+                f"  OR-Tools CP-SAT [{attempt['label']}]: build={build_elapsed:.2f}s "
+                f"solve={solve_elapsed:.2f}s status={solver.status_name(status)}"
+            )
             if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 return _extract_changes(solver, x, slots, worker_ids)
 
