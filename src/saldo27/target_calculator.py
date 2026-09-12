@@ -252,36 +252,18 @@ class TargetCalculator:
                 w["_original_target_shifts"] = w.get("target_shifts", 0)
             guardias_per_mes = w["_original_target_shifts"]
 
-            work_periods_str = w.get("work_periods", "").strip()
-            if work_periods_str:
-                try:
-                    work_ranges = s.date_utils.parse_date_ranges(work_periods_str)
-                except (TypeError, ValueError) as exc:
-                    logging.warning(f"Worker {wid} invalid work_periods; using default availability: {exc}")
-                    work_ranges = []
-
-                if work_ranges:
-                    worker_months = 0.0
-                    cur_year, cur_month = s.start_date.year, s.start_date.month
-                    end_year, end_month = s.end_date.year, s.end_date.month
-                    while (cur_year, cur_month) <= (end_year, end_month):
-                        days_in_month = calendar.monthrange(cur_year, cur_month)[1]
-                        month_start = datetime(cur_year, cur_month, 1)
-                        month_end = datetime(cur_year, cur_month, days_in_month)
-                        covered = 0
-                        for rng_start, rng_end in work_ranges:
-                            overlap_start = max(month_start, rng_start, s.start_date)
-                            overlap_end = min(month_end, rng_end, s.end_date)
-                            if overlap_end >= overlap_start:
-                                covered += (overlap_end - overlap_start).days + 1
-                        worker_months += covered / days_in_month
-                        cur_month += 1
-                        if cur_month > 12:
-                            cur_month = 1
-                            cur_year += 1
-                    logging.debug(f"Worker {wid}: work_periods → {worker_months:.2f} effective months")
-                else:
-                    worker_months = proportional_months
+            # Effective availability considers BOTH work_periods (if configured)
+            # AND days_off (vacations/permissions) — a manual worker on vacation
+            # for half a month must have their guardias/mes prorated down for
+            # that month, exactly as if they were outside their work_period.
+            month_avail = self._manual_worker_month_availability(w)
+            if month_avail:
+                worker_months = 0.0
+                for month_key, avail_days in month_avail.items():
+                    year_m, month_m = int(month_key[:4]), int(month_key[5:])
+                    days_in_month = calendar.monthrange(year_m, month_m)[1]
+                    worker_months += avail_days / days_in_month
+                logging.debug(f"Worker {wid}: work_periods/days_off → {worker_months:.2f} effective months")
             else:
                 worker_months = proportional_months
 
@@ -308,6 +290,69 @@ class TargetCalculator:
             )
 
         return total_manual_slots
+
+    def _manual_worker_month_availability(self, worker: dict) -> dict[str, int]:
+        """
+        Days available to work per month for a manual worker, considering
+        BOTH ``work_periods`` (if configured, only days inside these ranges
+        count; otherwise the whole schedule period counts) AND ``days_off``
+        (vacations/permissions, always subtracted). This lets a manual
+        worker's guardias/mes be prorated for a partial month exactly as if
+        the vacation days were outside their work_period.
+
+        Returns a ``{"YYYY-MM": available_days}`` dict, or ``{}`` if the
+        worker has no schedule-period availability at all restrictions
+        cannot be resolved (callers should fall back to full-period targets).
+        """
+        s = self.scheduler
+        import calendar as cal_mod
+
+        work_periods_str = worker.get("work_periods", "").strip()
+        work_ranges: list[tuple[datetime, datetime]] = [(s.start_date, s.end_date)]
+        if work_periods_str:
+            try:
+                parsed_ranges = s.date_utils.parse_date_ranges(work_periods_str)
+                if parsed_ranges:
+                    work_ranges = parsed_ranges
+            except (TypeError, ValueError) as exc:
+                logging.warning(f"Worker {worker.get('id')} invalid work_periods for availability calc: {exc}")
+
+        days_off_str = worker.get("days_off", "").strip()
+        off_ranges: list[tuple[datetime, datetime]] = []
+        if days_off_str:
+            try:
+                off_ranges = s.date_utils.parse_date_ranges(days_off_str)
+            except (TypeError, ValueError) as exc:
+                logging.warning(f"Worker {worker.get('id')} invalid days_off for availability calc: {exc}")
+
+        month_avail: dict[str, int] = {}
+        cur_year, cur_month = s.start_date.year, s.start_date.month
+        end_year, end_month = s.end_date.year, s.end_date.month
+        while (cur_year, cur_month) <= (end_year, end_month):
+            month_key = f"{cur_year}-{cur_month:02d}"
+            days_in_month = cal_mod.monthrange(cur_year, cur_month)[1]
+            month_start = datetime(cur_year, cur_month, 1)
+            month_end = datetime(cur_year, cur_month, days_in_month)
+            period_start = max(month_start, s.start_date)
+            period_end = min(month_end, s.end_date)
+
+            count = 0
+            if period_end >= period_start:
+                cur = period_start
+                while cur <= period_end:
+                    in_work = any(rs <= cur <= re for rs, re in work_ranges)
+                    in_off = any(rs <= cur <= re for rs, re in off_ranges)
+                    if in_work and not in_off:
+                        count += 1
+                    cur += timedelta(days=1)
+            month_avail[month_key] = count
+
+            cur_month += 1
+            if cur_month > 12:
+                cur_month = 1
+                cur_year += 1
+
+        return month_avail
 
     # ------------------------------------------------------------------
     # Monthly targets
@@ -376,7 +421,12 @@ class TargetCalculator:
             is_manual = not worker.get("auto_calculate_shifts", True)
             if is_manual:
                 guardias_mes = worker.get("_original_target_shifts", 0)
-                if guardias_mes > 0 and any(worker_month_avail.values()):
+                # Availability here considers BOTH work_periods and days_off
+                # (vacations/permissions) so a manual worker on vacation for
+                # part of a month gets their guardias/mes prorated down for
+                # that month instead of the full quota.
+                manual_month_avail = self._manual_worker_month_availability(worker)
+                if guardias_mes > 0 and any(manual_month_avail.values()):
                     mand_str = worker.get("mandatory_days", "").strip()
                     mand_dates_by_month: dict[str, int] = {}
                     if mand_str:
@@ -391,7 +441,7 @@ class TargetCalculator:
                     remaining_target = overall_target
                     fully_available_months = []
                     for month_key in month_days:
-                        avail = worker_month_avail.get(month_key, 0)
+                        avail = manual_month_avail.get(month_key, 0)
                         year_m, month_m = int(month_key[:4]), int(month_key[5:])
                         days_in_month = cal_mod.monthrange(year_m, month_m)[1]
 
@@ -415,7 +465,7 @@ class TargetCalculator:
                     # total, preferring fully-available months so partial months
                     # (period edges) keep their smaller, proportionally-correct share.
                     if remaining_target > 0:
-                        candidates = fully_available_months or [k for k, v in worker_month_avail.items() if v > 0]
+                        candidates = fully_available_months or [k for k, v in manual_month_avail.items() if v > 0]
                         for month_key in candidates:
                             if remaining_target <= 0:
                                 break
@@ -423,7 +473,7 @@ class TargetCalculator:
                             remaining_target -= 1
                     elif remaining_target < 0:
                         candidates = sorted(
-                            [k for k, v in worker_month_avail.items() if v > 0],
+                            [k for k, v in manual_month_avail.items() if v > 0],
                             key=lambda k: worker["monthly_targets"].get(k, 0),
                             reverse=True,
                         )
