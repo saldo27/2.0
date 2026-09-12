@@ -181,6 +181,7 @@ uv run pytest tests/ -m "not e2e" -q
 - **OR-Tools is optional.** `infrastructure/optional_engines.py` wraps the import; code must degrade gracefully when `ortools` is unavailable (e.g., in constrained environments). Never import `ortools` directly at module top-level outside `optional_engines.py`.
 - **Prior-schedule cross-period constraints.** When loading a previous schedule JSON via `prior_schedule_handler.py`, the extracted `prior_last_date` affects gap constraints at the period boundary. Always pass the prior handler output into `SchedulerConfig`; do not re-derive it elsewhere.
 - **Bridge shifts vs. weekend shifts are separate counters.** `bridge_manager.py` maintains its own balance independently of the weekend balance in `balance_validator.py`. Modifying one does not affect the other.
+- **Monthly target proration considers BOTH `work_periods` and `days_off`.** `TargetCalculator._worker_month_availability()` computes per-month available days from both fields (vacations subtracted) for ALL workers — manual (`guardias_mes`) and `auto_calculate_shifts` alike — so a worker on vacation for part of a month gets that month's target prorated down. It uses O(ranges) interval-subtraction arithmetic (`_merge_date_ranges`/`_subtract_date_ranges`), not a day-by-day scan, and a `mandatory_days` date that falls inside `days_off` or outside `work_periods` triggers a `_check_mandatory_days_availability()` warning (configuration conflict, not a hard error).
 
 ## Commit conventions
 

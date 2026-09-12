@@ -37,6 +37,8 @@ Saldo27 permite:
 - Balance de fines de semana
 - Balance de turnos en días puente
 - Objetivo mensual fijo garantizado para trabajadores con número fijo de guardias/mes, incluso tras la corrección final de restricciones
+- Prorrateo automático del objetivo mensual (manual y automático) según días disponibles por `work_periods` y `days_off` (vacaciones/permisos)
+- Aviso de posible conflicto cuando un día obligatorio (`mandatory_days`) cae dentro de un período de vacaciones o fuera del período de trabajo configurado
 - Score de calidad con zonas sin penalización (carga ±10%, fines de semana ±15%, rotación de puestos ±20%), recalculado tras el Ajuste Final
 
 ### Análisis y exportación

@@ -191,6 +191,8 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 - ✅ **Tolerancia**: Desviación máxima respecto al objetivo (+10% max, nunca se incrementa el target)
 - ✅ **Continuidad entre períodos**: Gap respetado en el cambio de mes (vía horario previo)
 - ✅ **Objetivo mensual fijo (trabajadores manuales)**: garantizado incluso después de que la corrección final de restricciones (7/14, incompatibilidades) elimine una asignación
+- ✅ **Prorrateo por vacaciones/período de trabajo**: el objetivo mensual (manual y automático) se ajusta según los días realmente disponibles combinando `work_periods` y `days_off`
+- ✅ **Validación de días obligatorios**: se registra un aviso si un `mandatory_days` cae dentro de `days_off` o fuera de `work_periods` (posible error de configuración)
 
 ## 📈 Score de Calidad del Calendario
 
@@ -205,6 +207,9 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 - **Objetivo mensual fijo garantizado**: los trabajadores con número fijo de guardias/mes (`auto_calculate_shifts=False`) mantienen su cuota exacta/prorrateada incluso cuando la corrección final de restricciones (patrón 7/14, incompatibilidades) retira una asignación; un bucle de reconciliación en la fase de finalización rellena el déficit tras cada corrección
 - **Score de calidad recalibrado**: se introducen zonas sin penalización (deadzones) en balance de carga (±10%), balance de fines de semana (±15%) y rotación de puestos (±20%); los trabajadores con `no_last_post`/`only_last_post` quedan exentos de la penalización de rotación de puestos por no tener una desviación real
 - **Score Final actualizado tras Ajuste Final**: el resumen de generación en el sidebar ya no muestra el score obsoleto de antes del ajuste; se recalcula con el calendario ya corregido
+- **Prorrateo del objetivo mensual por vacaciones/período de trabajo**: `TargetCalculator._worker_month_availability` calcula los días disponibles por mes combinando `work_periods` y `days_off`, aplicándose tanto a trabajadores manuales (guardias/mes) como automáticos; un trabajador de vacaciones media parte de un mes ve su cuota de ese mes reducida proporcionalmente
+- **Validación de conflictos en días obligatorios**: se registra un aviso (log) cuando un `mandatory_days` cae dentro de `days_off` o fuera de todos los `work_periods` configurados del trabajador, sin bloquear la generación
+- **Cálculo de disponibilidad optimizado**: el prorrateo por vacaciones/período de trabajo usa aritmética de intervalos (O(rangos)) en vez de recorrer día a día el período completo
 
 ### v3.4 (Septiembre 2026)
 - ⚖️ **Ajuste Final ampliado**: tras ejecutarlo se muestra ahora el listado de **cambios realizados** (fecha, puesto, trabajador antes/después), el **calendario actualizado** y un botón de **exportación a PDF** del resultado
