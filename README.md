@@ -1,156 +1,189 @@
-# Saldo27
+# Saldo27 — Agent Directives
 
-Sistema de generación y análisis de horarios de guardias para personal sanitario, construido con Streamlit.
+Shared guidelines for AI coding assistants (Claude, Copilot, etc.) working on this project.
 
-## Resumen
+**Current version: 3.5 (Septiembre 2026)**
 
-Saldo27 permite:
+## Project overview
 
-- generar calendarios mensuales optimizados
-- respetar restricciones de descanso, incompatibilidades y días obligatorios/libres
-- equilibrar carga, fines de semana y turnos en días puente
-- analizar calendarios existentes en PDF, Excel o CSV
-- exportar resultados y métricas
+Saldo27 is a **worker shift scheduling system** for medical staff, built with Streamlit. It generates optimised monthly schedules respecting constraints like minimum gaps between shifts, maximum consecutive weekends, incompatibilities between workers, and mandatory/off days.
 
-## Características principales
+## Architecture
 
-### Generación de horarios
-
-- Generación automática de calendarios mensuales
-- Configuración de turnos por día y gap mínimo entre guardias
-- Soporte para calendario previo para restricciones entre períodos
-- Optimización con validación de restricciones y métricas de calidad
-
-### Gestión de personal
-
-- Alta y edición de trabajadores
-- Objetivos de turnos por trabajador
-- Porcentaje de jornada
-- Incompatibilidades entre trabajadores
-- Días obligatorios y días no disponibles
-
-### Validación y balance
-
-- Verificación de incompatibilidades
-- Control de descansos mínimos
-- Restricciones de patrón semanal 7/14 días
-- Balance de fines de semana
-- Balance de turnos en días puente
-
-### Análisis y exportación
-
-- Exportación de calendarios a JSON, CSV y PDF
-- Análisis de horarios externos en PDF, Excel y CSV
-- Estadísticas por trabajador y globales
-- Visualizaciones y reportes para revisión
-
-### Licenciamiento
-
-- Modo DEMO con límites de uso
-- Activación de licencia completa desde la aplicación
-
-## Inicio rápido
-
-### Requisitos
-
-- Python 3.10 o superior
-- `uv` para gestionar dependencias y ejecutar el proyecto
-
-### Instalación
-
-```bash
-uv sync
+```
+src/saldo27/              # All source code — installable Python package
+  application/            # Use-cases, pipeline, generation flow, contracts
+  domain/                 # Domain models: schedule state, engine state mixin
+  infrastructure/         # Optional engines, external integrations
+tests/                    # pytest test suite (unit + e2e)
+  e2e/                    # Playwright browser tests against the Streamlit app
+docs/                     # Project documentation
+packaging/                # PyInstaller hooks, .spec file, Windows installer
 ```
 
-### Ejecutar la aplicación
+### Key modules
+
+| Module | Role |
+|--------|------|
+| `app_streamlit.py` | Streamlit UI — the main entry point (v3.5) |
+| `scheduler.py` | Top-level Scheduler orchestrator |
+| `scheduler_core.py` | Core optimisation loop |
+| `schedule_builder.py` | Initial schedule construction |
+| `iterative_optimizer.py` | Post-build iterative improvement |
+| `constraint_checker.py` | Validates all scheduling constraints |
+| `balance_validator.py` | Checks workload distribution fairness |
+| `data_manager.py` | Worker data and schedule state management |
+| `utilities.py` | Date/time helpers, holiday detection |
+| `event_bus.py` | Internal pub/sub event system |
+| `performance_cache.py` | Caching decorators and monitoring |
+| `bridge_manager.py` | Detection and balancing of bridge-holiday shifts |
+| `change_tracker.py` | Undo/redo and audit trail for real-time edits |
+| `real_time_engine.py` | Unified real-time processing for schedule operations |
+| `live_validator.py` | Instant constraint validation during manual edits |
+| `license_manager.py` | Demo/full-license management (usage limits, key activation) |
+| `prior_schedule_handler.py` | Parses exported JSON to extract cross-period constraints |
+| `schedule_analyzer.py` | PDF/Excel/CSV schedule reader; generates analysis reports |
+| `final_adjustment_engine.py` | Post-generation balancing of remaining deviations |
+| `adaptive_iterations.py` | Dynamically adjusts optimiser iteration counts |
+| `adjustment_utils.py` | Shared helpers for shift adjustment operations |
+| `demand_forecaster.py` | Demand-forecasting model for predictive analytics |
+| `predictive_analytics.py` | Insights, recommendations, and demand trend analysis |
+| `predictive_optimizer.py` | Applies predictive recommendations to the scheduler |
+| `historical_data_manager.py` | Persists and queries historical scheduling data |
+| `statistics_calculator.py` | Aggregates per-worker and global statistics |
+| `optimization_metrics.py` | Tracks and exposes quality metrics from each run |
+| `operation_prioritizer.py` | Ranks candidate assignment operations by priority |
+| `incremental_updater.py` | Applies incremental schedule mutations efficiently |
+| `progress_monitor.py` | Reports optimiser progress to the UI |
+| `scheduler_initializer.py` | Bootstraps scheduler state before the core loop |
+| `scheduler_reporting.py` | Formats and exports scheduler results |
+| `scheduler_tracking.py` | Records per-run tracking data |
+| `scheduler_validation.py` | Pre-run validation of configuration and worker data |
+| `scheduler_config.py` | `SchedulerConfig` dataclass and logging setup |
+| `worker_eligibility.py` | Determines eligible workers for each shift slot |
+| `shift_tolerance_validator.py` | Validates per-worker shift-count tolerances |
+| `target_calculator.py` | Computes per-worker target shift counts |
+| `exceptions.py` | Custom exception hierarchy |
+| `pdf_exporter.py` | PDF calendar and summary generation |
+| `generate_keys.py` | License-key generation utility |
+| `run_app.py` | `saldo27` CLI entry-point (runs Streamlit) |
+
+### Application layer (`src/saldo27/application/`)
+
+| Module | Role |
+|--------|------|
+| `use_cases.py` | `GenerateScheduleRequest` / `run_simulation` — application use-cases |
+| `generation_flow.py` | `execute_generation_workflow`, `prepare_generation_workflow`, UI callback types |
+| `pipeline.py` | Pipeline orchestration across use-cases |
+| `contracts.py` | Shared data-transfer objects and contracts between layers |
+
+### Domain layer (`src/saldo27/domain/`)
+
+| Module | Role |
+|--------|------|
+| `schedule_state.py` | `ScheduleState` — authoritative in-memory schedule model |
+| `engine_state_mixin.py` | Mixin providing engine-phase state tracking |
+
+### Infrastructure layer (`src/saldo27/infrastructure/`)
+
+| Module | Role |
+|--------|------|
+| `optional_engines.py` | Conditionally loads OR-Tools and other optional engines |
+
+### Balance/distribution engines (`scheduler_core.py`'s `_iterative_improvement_phase`)
+
+Three modules apply shift-balance adjustments during Phase 3 of optimization. They are **not**
+alternatives to pick from — they run in sequence, each with a distinct scope:
+
+| Module | Role | Instantiated by |
+|--------|------|------------------|
+| `advanced_distribution_engine.py` (`AdvancedDistributionEngine`) | Runs first; broad post/weekday redistribution passes | `scheduler_core.py` (`_iterative_improvement_phase`) |
+| `strict_balance_optimizer.py` (`StrictBalanceOptimizer`) | Runs after the advanced engine; enforces exact `target_shifts` balance per worker | `scheduler_core.py` (`_iterative_improvement_phase`) |
+| `balance_validator.py` (`BalanceValidator`) | Used separately by `IterativeOptimizer` to *validate* (not mutate) whether a schedule is within tolerance | `iterative_optimizer.py` (`__init__`) |
+
+When modifying shift-balance behaviour, check all three call sites above — a fix applied to only
+one of them may be silently overridden or duplicated by another.
+
+## Code style
+
+- **Language**: Python 3.10+. The UI strings and comments are in Spanish; code identifiers are in English.
+- **Imports**: Use absolute imports (`from saldo27.module import X`). Relative imports break Streamlit's script runner.
+- **Type hints**: Use them on public function signatures. Use `from __future__ import annotations` if needed.
+- **No classes in tests**: Write tests in functional style with plain `def test_*` functions, using pytest fixtures for setup/teardown. Never use `unittest.TestCase` or class-based test grouping.
+
+## Testing
+
+### Running tests
 
 ```bash
-uv run saldo27
-```
-
-Alternativa:
-
-```bash
-uv run streamlit run src/saldo27/app_streamlit.py
-```
-
-La aplicación se sirve por defecto en `http://localhost:8501`.
-
-## Flujo básico de uso
-
-1. Cargar o crear la plantilla de trabajadores.
-2. Configurar mes, año y parámetros de generación.
-3. Opcionalmente cargar un calendario previo en JSON.
-4. Generar el calendario.
-5. Revisar métricas, restricciones y estadísticas.
-6. Exportar el resultado en el formato necesario.
-
-## Estructura del proyecto
-
-```text
-src/saldo27/
-  application/      # Casos de uso y flujo de generación
-  domain/           # Modelos de dominio y estado del calendario
-  infrastructure/   # Integraciones y motores opcionales
-  app_streamlit.py  # Interfaz principal
-  run_app.py        # Entrada CLI: `saldo27`
-tests/
-  e2e/              # Pruebas end-to-end con Playwright
-docs/               # Documentación complementaria
-packaging/          # Empaquetado Windows / PyInstaller
-```
-
-## Desarrollo
-
-### Comandos útiles
-
-```bash
-# Instalar dependencias
-uv sync
-
-# Ejecutar la app
-uv run saldo27
-
-# Lint
-uv run ruff check src/ tests/
-
-# Formato
-uv run ruff format src/ tests/
-
-# Tipado
-uv run ty check
-
-# Dependencias declaradas
-uv run deptry src/
-```
-
-### Tests
-
-```bash
-# Unit tests
+# Unit tests only (fast)
 uv run pytest tests/ -m "not e2e"
 
-# E2E
+# E2E tests only (starts Streamlit, needs Playwright browsers)
 uv run pytest tests/e2e/ -m e2e
 
-# Suite completa
+# Everything
 uv run pytest
 ```
 
-## Documentación adicional
+### Writing tests
 
-- `docs/README_STREAMLIT.md` — descripción funcional ampliada de la interfaz
-- `docs/README.txt` — documentación orientada a distribución de escritorio
-- `docs/ejecutar.md` — notas de ejecución
+- Place unit tests in `tests/test_<module>.py`.
+- Place e2e tests in `tests/e2e/test_<feature>.py`.
+- Mark e2e tests with `pytestmark = pytest.mark.e2e`.
+- Use the shared fixtures in `tests/conftest.py` (`sample_workers_data`, `sample_schedule`, `sample_holidays`, `march_2026_dates`).
+- For Playwright tests, use the `app_page` fixture from `tests/e2e/conftest.py` — it starts the Streamlit server automatically.
+- Keep tests focused: one behaviour per test function.
 
-## Notas importantes
+## Development workflow
 
-- Los imports en `src/saldo27/` deben ser absolutos.
-- El proyecto usa rutas relativas al directorio de trabajo para archivos generados por el usuario.
-- OR-Tools es opcional a nivel de arquitectura, pero está declarado como dependencia del proyecto.
-- El sistema admite continuidad entre períodos mediante importación de un JSON exportado previamente.
+```bash
+# Install all dependencies (including dev)
+uv sync
 
-## Estado del proyecto
+# Run the app locally
+uv run streamlit run src/saldo27/app_streamlit.py
 
-Versión de la aplicación (Streamlit): `3.4`.
-Versión del paquete en `pyproject.toml`: `2.5.0`.
+# Lint and format
+uv run ruff check src/ tests/        # lint (auto-fix with --fix)
+uv run ruff format src/ tests/       # format
+
+# Type check
+uv run ty check                      # type checking with ty
+
+# Check for dependency issues
+uv run deptry src/                   # unused/missing dependencies
+
+# Run tests before committing
+uv run pytest tests/ -m "not e2e" -q
+```
+
+## Code quality tools
+
+- **ruff** — linter and formatter. Config in `pyproject.toml` under `[tool.ruff]`. Run `ruff check --fix` for auto-fixes. Spanish unicode characters are intentionally allowed (RUF001/002/003 ignored).
+- **ty** — type checker. Expect diagnostics on the existing codebase; focus on keeping new code clean.
+- **deptry** — dependency checker. Verifies all declared deps are used and all imports are declared.
+
+## Dependency management
+
+- All dependencies are declared in `pyproject.toml`.
+- Dev dependencies (pytest, playwright, ruff, ty, deptry) live in `[dependency-groups] dev`.
+- Lock file (`uv.lock`) is committed — always run `uv sync` after pulling.
+- Do not use `pip install` directly; always go through `uv`.
+
+## Common pitfalls
+
+- **Never use relative imports** in `src/saldo27/`. Streamlit runs files as `__main__`, so `from .module import X` will fail with `ImportError: attempted relative import with no known parent package`.
+- **CWD-relative paths are intentional.** The app reads/writes data files (JSON exports, PDFs) relative to the current working directory. Do not refactor these to use `__file__`-based paths — users run the app from their data directory.
+- **The `schedule` dict uses string keys** for dates (`"2026-03-15"`) and **int keys** for shift numbers (`{1: "DOC001", 2: "DOC002"}`). Some JSON round-trips convert int keys to strings — handle both.
+- **Worker IDs are strings**, even when they look numeric.
+- **License checks gate generation.** `license_manager.can_use()` must return `True` before calling `generate_schedule_internal`. DEMO mode limits generations (10), workers (15), and schedule length (62 days). Tests that need unlimited runs should bypass or mock `license_manager`.
+- **OR-Tools is optional.** `infrastructure/optional_engines.py` wraps the import; code must degrade gracefully when `ortools` is unavailable (e.g., in constrained environments). Never import `ortools` directly at module top-level outside `optional_engines.py`.
+- **Prior-schedule cross-period constraints.** When loading a previous schedule JSON via `prior_schedule_handler.py`, the extracted `prior_last_date` affects gap constraints at the period boundary. Always pass the prior handler output into `SchedulerConfig`; do not re-derive it elsewhere.
+- **Bridge shifts vs. weekend shifts are separate counters.** `bridge_manager.py` maintains its own balance independently of the weekend balance in `balance_validator.py`. Modifying one does not affect the other.
+
+## Commit conventions
+
+- Write clear, imperative commit messages ("Add worker validation" not "Added worker validation").
+- Co-author line: `Co-Authored-By: <agent name> <noreply@anthropic.com>` when AI-assisted.
+- Keep PRs focused — one logical change per branch.
