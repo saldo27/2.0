@@ -1498,7 +1498,9 @@ class SchedulerCore:
                     )
                 )
                 if _vstate in _fix_validation_seen:
-                    logging.info(f"Validation/monthly-target reconciliation oscillating — stopping at pass {_vpass + 1}")
+                    logging.info(
+                        f"Validation/monthly-target reconciliation oscillating — stopping at pass {_vpass + 1}"
+                    )
                     break
                 _fix_validation_seen.add(_vstate)
             else:
