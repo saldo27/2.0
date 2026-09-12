@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 from saldo27.scheduler import Scheduler
@@ -155,3 +156,78 @@ def test_manual_worker_monthly_targets_honour_guardias_mes_over_three_months(sam
     assert worker["monthly_targets"]["2026-03"] == 3
     assert worker["monthly_targets"]["2026-04"] == 3
     assert worker["monthly_targets"]["2026-05"] == 3
+
+
+def test_mandatory_days_within_days_off_logs_warning(sample_workers_data, caplog):
+    """A mandatory_days date that falls inside the worker's own days_off
+    period is a configuration conflict (the worker is marked both
+    unavailable and mandatorily on-shift the same day) and must be
+    surfaced as a warning rather than silently accepted."""
+    workers = [dict(w) for w in sample_workers_data]
+    workers[0]["auto_calculate_shifts"] = False
+    workers[0]["target_shifts"] = 4
+    workers[0]["work_periods"] = ""
+    workers[0]["mandatory_days"] = "10-06-2026"
+    workers[0]["days_off"] = "01-06-2026 - 15-06-2026"
+
+    scheduler = _build_scheduler(
+        workers,
+        datetime(2026, 6, 1),
+        datetime(2026, 7, 31),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="root"):
+        assert TargetCalculator(scheduler).calculate() is True
+
+    assert any(
+        "DOC001" in record.message and "days_off" in record.message and "10-06-2026" in record.message
+        for record in caplog.records
+    )
+
+
+def test_mandatory_days_outside_work_periods_logs_warning(sample_workers_data, caplog):
+    """A mandatory_days date that falls outside all configured
+    work_periods is a configuration conflict and must be surfaced as a
+    warning rather than silently accepted."""
+    workers = [dict(w) for w in sample_workers_data]
+    workers[0]["auto_calculate_shifts"] = False
+    workers[0]["target_shifts"] = 4
+    workers[0]["work_periods"] = "16-06-2026 - 31-08-2026"
+    workers[0]["mandatory_days"] = "10-06-2026"
+    workers[0]["days_off"] = ""
+
+    scheduler = _build_scheduler(
+        workers,
+        datetime(2026, 6, 1),
+        datetime(2026, 8, 31),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="root"):
+        assert TargetCalculator(scheduler).calculate() is True
+
+    assert any(
+        "DOC001" in record.message and "work_periods" in record.message and "10-06-2026" in record.message
+        for record in caplog.records
+    )
+
+
+def test_mandatory_days_within_availability_logs_no_warning(sample_workers_data, caplog):
+    """A mandatory_days date inside the worker's normal availability must
+    NOT trigger a conflict warning."""
+    workers = [dict(w) for w in sample_workers_data]
+    workers[0]["auto_calculate_shifts"] = False
+    workers[0]["target_shifts"] = 4
+    workers[0]["work_periods"] = ""
+    workers[0]["mandatory_days"] = "20-06-2026"
+    workers[0]["days_off"] = ""
+
+    scheduler = _build_scheduler(
+        workers,
+        datetime(2026, 6, 1),
+        datetime(2026, 6, 30),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="root"):
+        assert TargetCalculator(scheduler).calculate() is True
+
+    assert not any("configuration conflict" in record.message for record in caplog.records)
