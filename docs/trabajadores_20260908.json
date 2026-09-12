@@ -177,7 +177,7 @@
   },
   {
     "id": "LUIS H",
-    "target_shifts": 13,
+    "target_shifts": 0,
     "work_percentage": 100.0,
     "is_incompatible": false,
     "incompatible_with": [],
