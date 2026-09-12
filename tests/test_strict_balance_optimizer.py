@@ -160,3 +160,51 @@ def test_relaxed_swap_never_drops_manual_worker_below_floor():
     assert len(scheduler.worker_assignments["A"]) == over_count_before, (
         "_try_relaxed_swap must not drop a manual worker below their monthly floor"
     )
+
+
+def test_optimize_balance_does_not_give_up_when_no_matching_donor(monkeypatch):
+    """
+    Regression test: optimize_balance's main loop used to break out and log
+    "Balance achieved" as soon as EITHER the overloaded or underloaded list
+    was empty, even if a manual worker remained off-target (e.g. it is
+    underloaded but nobody else is technically "overloaded" under the general
+    tolerance). It must fall back to the monthly-target reconciliation
+    machinery (_enforce_manual_monthly_targets) instead of silently giving up.
+    """
+    workers = _workers(manual_target=8, auto_target=8)
+    scheduler = _make_scheduler(workers)
+    for w in scheduler.workers_data:
+        w["target_shifts"] = 8
+
+    # Manual worker A is 1 shift short of its exact target; auto worker B is
+    # exactly at its own target (within the default +-1 tolerance, so it is
+    # never flagged as "overloaded") -- there is no direct donor/recipient
+    # pairing available to the swap strategies.
+    dates_a = [datetime(2026, 3, d) for d in [1, 4, 7, 10, 13, 16, 19]]  # 7 shifts, target 8
+    dates_b = [datetime(2026, 3, d) for d in [2, 5, 8, 11, 14, 17, 20, 23]]  # 8 shifts, target 8
+    scheduler.schedule = {}
+    for d in dates_a:
+        scheduler.schedule.setdefault(d, [None, None])[0] = "A"
+    for d in dates_b:
+        scheduler.schedule.setdefault(d, [None, None])[1] = "B"
+    scheduler.worker_assignments["A"] = set(dates_a)
+    scheduler.worker_assignments["B"] = set(dates_b)
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+
+    sbo = StrictBalanceOptimizer(scheduler, scheduler.schedule_builder)
+
+    calls = []
+    original = scheduler.schedule_builder._enforce_manual_monthly_targets
+
+    def _tracked_enforce():
+        calls.append(True)
+        return original()
+
+    monkeypatch.setattr(scheduler.schedule_builder, "_enforce_manual_monthly_targets", _tracked_enforce)
+
+    sbo.optimize_balance(max_iterations=50, target_tolerance=1)
+
+    assert calls, (
+        "optimize_balance must invoke the monthly-target reconciliation fallback "
+        "when a manual worker remains off-target with no direct swap partner"
+    )

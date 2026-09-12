@@ -178,6 +178,35 @@ class StrictBalanceOptimizer(EngineStateMixin):
 
         # Análisis final
         final_analysis = self._analyze_balance()
+
+        # Final fallback: manual workers must match their monthly target
+        # EXACTLY (tolerance 0). The swap strategies above require a
+        # same-iteration overloaded/underloaded pairing (both lists non-empty)
+        # and can give up early — e.g. when a manual worker is underloaded but
+        # nobody else qualifies as "overloaded" under the general tolerance,
+        # the main loop above exits declaring "balance achieved" while the
+        # manual worker is still off-target. Delegate to the more powerful
+        # cross-month reconciliation machinery, which can pull a shift from
+        # ANY worker with slack (not just those flagged "overloaded"), to
+        # close this gap.
+        if final_analysis["workers_outside_tolerance"] > 0 and hasattr(self.builder, "_enforce_manual_monthly_targets"):
+            manual_still_off = any(
+                abs(info["deviation"]) > 0
+                and not next((w for w in self.workers_data if w["id"] == wid), {}).get(
+                    "auto_calculate_shifts", True
+                )
+                for wid, info in final_analysis["worker_details"].items()
+            )
+            if manual_still_off:
+                logging.info(
+                    "  Manual worker(s) still off-target after swap strategies; "
+                    "invoking monthly-target reconciliation fallback"
+                )
+                for _ in range(10):
+                    if not self.builder._enforce_manual_monthly_targets():
+                        break
+                final_analysis = self._analyze_balance()
+
         self.stats["max_deviation_after"] = final_analysis["max_deviation"]
         self.stats["workers_balanced"] = (
             initial_analysis["workers_outside_tolerance"] - final_analysis["workers_outside_tolerance"]

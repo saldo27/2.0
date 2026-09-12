@@ -56,6 +56,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         self._total_all_slots: int = 0
         self._total_weekend_slots: int = 0
         self._total_bridge_slots: int = 0
+        self._total_last_post_slots: int = 0
         self._precompute_slot_totals()
 
         # Cache raw targets to avoid repeated O(n) scans inside hot loops
@@ -148,6 +149,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
                     "bridge_target": int,
                     "bridge_assigned": int,
                     "bridge_deviation": int,
+                    "last_post_target": int,
+                    "last_post_assigned": int,
+                    "last_post_deviation": int,
                 },
                 ...
             }
@@ -158,11 +162,13 @@ class FinalAdjustmentEngine(EngineStateMixin):
         total_by_worker: dict[str, int] = {}
         weekend_by_worker: dict[str, int] = {}
         bridge_by_worker: dict[str, int] = {}
+        last_post_by_worker: dict[str, int] = {}
 
+        num_shifts = self.scheduler.num_shifts
         for date, shifts in self.schedule.items():
             is_weekend = self.scheduler.date_utils.is_weekend_day(date, self.holidays_set)
             is_bridge = self.scheduler.date_utils.is_bridge_day(date, self.scheduler.bridge_periods)
-            for worker_id in shifts:
+            for post, worker_id in enumerate(shifts):
                 if worker_id is None:
                     continue
                 total_by_worker[worker_id] = total_by_worker.get(worker_id, 0) + 1
@@ -170,6 +176,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
                     weekend_by_worker[worker_id] = weekend_by_worker.get(worker_id, 0) + 1
                 if is_bridge:
                     bridge_by_worker[worker_id] = bridge_by_worker.get(worker_id, 0) + 1
+                if post == num_shifts - 1:
+                    last_post_by_worker[worker_id] = last_post_by_worker.get(worker_id, 0) + 1
 
         metrics: dict[str, dict[str, Any]] = {}
         for worker in self.workers_data:
@@ -179,9 +187,11 @@ class FinalAdjustmentEngine(EngineStateMixin):
             total_assigned = total_by_worker.get(wid, 0)
             weekend_assigned = weekend_by_worker.get(wid, 0)
             bridge_assigned = bridge_by_worker.get(wid, 0)
+            last_post_assigned = last_post_by_worker.get(wid, 0)
 
             weekend_target = self._weekend_target_for(raw_target)
             bridge_target = self._bridge_target_for(raw_target)
+            last_post_target = self._last_post_target_for(worker)
 
             metrics[wid] = {
                 "name": worker.get("name", wid),
@@ -194,6 +204,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
                 "bridge_target": bridge_target,
                 "bridge_assigned": bridge_assigned,
                 "bridge_deviation": bridge_assigned - bridge_target,
+                "last_post_target": last_post_target,
+                "last_post_assigned": last_post_assigned,
+                "last_post_deviation": last_post_assigned - last_post_target,
             }
         return metrics
 
@@ -213,6 +226,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
                 self._total_weekend_slots += n
             if self.scheduler.date_utils.is_bridge_day(current, self.scheduler.bridge_periods):
                 self._total_bridge_slots += n
+            if n > 0:
+                self._total_last_post_slots += 1
             current += timedelta(days=1)
 
     def _weekend_target_for(self, raw_target: int) -> int:
@@ -227,6 +242,25 @@ class FinalAdjustmentEngine(EngineStateMixin):
         if self._total_all_slots == 0 or self._total_bridge_slots == 0:
             return 0
         ratio = self._total_bridge_slots / self._total_all_slots
+        return round(raw_target * ratio)
+
+    def _last_post_target_for(self, worker: dict) -> int:
+        """Target proporcional de turnos en el último puesto (post rotation).
+
+        Alineado con ``optimization_metrics._calculate_post_rotation_score``:
+        los trabajadores ``no_last_post``/``only_last_post`` tienen su
+        rotación de puestos condicionada por configuración, así que se les
+        asigna el target "correcto" para su restricción (0 o su target total)
+        en lugar del reparto proporcional general.
+        """
+        raw_target = self._get_worker_raw_target(worker)
+        if worker.get("no_last_post", False):
+            return 0
+        if worker.get("only_last_post", False):
+            return raw_target
+        if self._total_all_slots == 0 or self._total_last_post_slots == 0:
+            return 0
+        ratio = self._total_last_post_slots / self._total_all_slots
         return round(raw_target * ratio)
 
     @staticmethod
@@ -726,6 +760,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
 # el score pasaba de 8260 a 24460 y la Fase 4 nunca aplicaba cambios).
 W_SHIFT = 1000
 W_WEEKEND = 100
+W_LAST_POST = 50
 W_BRIDGE = 10
 
 # Zonas muertas (deadzones) alineadas con optimization_metrics.py, para que
@@ -733,6 +768,9 @@ W_BRIDGE = 10
 # no penaliza (ver _calculate_workload_balance_score / _calculate_weekend_balance_score).
 DEADZONE_SHIFT = 0.10
 DEADZONE_WEEKEND = 0.15
+# Alineada con optimization_metrics._calculate_post_rotation_score, que
+# tolera hasta un ±20% de desviación en la distribución de puestos.
+DEADZONE_LAST_POST = 0.20
 
 # Peso de "desempate" aplicado a la desviación bruta (sin zona muerta) para
 # los términos con deadzone.  Al ser mucho menor que W_BRIDGE (el peso más
@@ -748,12 +786,13 @@ def _deviation_score(metrics: dict[str, dict[str, Any]]) -> float:
     """Weighted total deviation used to compare before/after OR-Tools.
 
     Debe reflejar EXACTAMENTE la misma noción de "desviación" que el objetivo
-    CP-SAT (``ORToolsPhase._build_model``): desviaciones de turnos/weekend
-    dentro de la zona muerta (±10% / ±15%) no se penalizan con el peso
-    principal, pero sí contribuyen con ``TIEBREAK_WEIGHT`` para evitar que el
-    solver redistribuya desviaciones libremente dentro de la zona muerta y
-    dispare esta métrica sin que el objetivo del solver lo refleje (lo que
-    provocaba que soluciones válidas del solver fuesen revertidas siempre).
+    CP-SAT (``ORToolsPhase._build_model``): desviaciones de turnos/weekend/
+    último-puesto dentro de la zona muerta (±10% / ±15% / ±20%) no se
+    penalizan con el peso principal, pero sí contribuyen con
+    ``TIEBREAK_WEIGHT`` para evitar que el solver redistribuya desviaciones
+    libremente dentro de la zona muerta y dispare esta métrica sin que el
+    objetivo del solver lo refleje (lo que provocaba que soluciones válidas
+    del solver fuesen revertidas siempre).
     """
     total = 0.0
     for m in metrics.values():
@@ -766,6 +805,11 @@ def _deviation_score(metrics: dict[str, dict[str, Any]]) -> float:
         weekend_dev = abs(m.get("weekend_deviation", 0))
         weekend_excess = max(0.0, weekend_dev - DEADZONE_WEEKEND * weekend_target)
         total += W_WEEKEND * weekend_excess + TIEBREAK_WEIGHT * weekend_dev
+
+        last_post_target = m.get("last_post_target", 0)
+        last_post_dev = abs(m.get("last_post_deviation", 0))
+        last_post_excess = max(0.0, last_post_dev - DEADZONE_LAST_POST * last_post_target)
+        total += W_LAST_POST * last_post_excess + TIEBREAK_WEIGHT * last_post_dev
 
         total += W_BRIDGE * abs(m.get("bridge_deviation", 0))
     return total
@@ -784,9 +828,11 @@ class ORToolsPhase:
     # Pesos del objetivo multi-dimensión (ver constantes de módulo más arriba).
     W_SHIFT = W_SHIFT
     W_WEEKEND = W_WEEKEND
+    W_LAST_POST = W_LAST_POST
     W_BRIDGE = W_BRIDGE
     DEADZONE_SHIFT = DEADZONE_SHIFT
     DEADZONE_WEEKEND = DEADZONE_WEEKEND
+    DEADZONE_LAST_POST = DEADZONE_LAST_POST
     TIEBREAK_WEIGHT = TIEBREAK_WEIGHT
 
     def __init__(self, engine: FinalAdjustmentEngine) -> None:
@@ -987,6 +1033,7 @@ class ORToolsPhase:
                 self.scheduler.date_utils.is_bridge_day(slots[si][0], self.scheduler.bridge_periods)
                 for si in range(n_slots)
             ]
+            slot_is_last_post = [slots[si][1] == num_shifts - 1 for si in range(n_slots)]
 
             obj_terms = []
             for wi, wid in enumerate(worker_ids):
@@ -1039,6 +1086,25 @@ class ORToolsPhase:
                 dminus_b = model.new_int_var(0, n_slots, f"dmb_{wi}")
                 model.add(actual_bridge - bridge_tgt == dplus_b - dminus_b)
                 obj_terms.append(self.W_BRIDGE * (dplus_b + dminus_b))
+
+                # Last-post (rotation) deviation (con zona muerta ±DEADZONE_LAST_POST,
+                # alineada con optimization_metrics._calculate_post_rotation_score).
+                # Sin este término, el solver es libre de permutar qué trabajador
+                # ocupa el último puesto en cada fecha sin coste alguno (no afecta
+                # turnos/weekend/puentes totales), lo que puede desequilibrar por
+                # completo la rotación de último puesto aunque el resto del balance
+                # mejore. _last_post_target_for ya tiene en cuenta no_last_post/
+                # only_last_post (0 o raw_tgt respectivamente).
+                last_post_tgt = self.engine._last_post_target_for(worker_data_by_id[wid])
+                actual_last_post = sum(x[wi, si] for si in range(n_slots) if slot_is_last_post[si])
+                dplus_lp = model.new_int_var(0, n_slots, f"dplp_{wi}")
+                dminus_lp = model.new_int_var(0, n_slots, f"dmlp_{wi}")
+                model.add(actual_last_post - last_post_tgt == dplus_lp - dminus_lp)
+                last_post_threshold = int(self.DEADZONE_LAST_POST * last_post_tgt)
+                eff_lp = model.new_int_var(0, n_slots, f"efflp_{wi}")
+                model.add(eff_lp >= dplus_lp + dminus_lp - last_post_threshold)
+                obj_terms.append(self.W_LAST_POST * eff_lp)
+                obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_lp + dminus_lp))
 
             model.minimize(sum(obj_terms))
 
