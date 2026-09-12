@@ -25,7 +25,7 @@ packaging/                # PyInstaller hooks, .spec file, Windows installer
 
 | Module | Role |
 |--------|------|
-| `app_streamlit.py` | Streamlit UI — the main entry point (v3.4) |
+| `app_streamlit.py` | Streamlit UI — the main entry point (v3.5) |
 | `scheduler.py` | Top-level Scheduler orchestrator |
 | `scheduler_core.py` | Core optimisation loop |
 | `schedule_builder.py` | Initial schedule construction |
