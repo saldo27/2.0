@@ -762,7 +762,15 @@ class StrictBalanceOptimizer(EngineStateMixin):
                 over_assignments = list(self.worker_assignments.get(over_id, set()))
 
                 for date in over_assignments:
-                    if self.builder.is_locked_mandatory(over_id, date):
+                    # CRITICAL: unlike the other strategies, this check was
+                    # previously limited to is_locked_mandatory only, missing
+                    # the config-mandatory (_is_mandatory) and manual-worker
+                    # monthly-floor protections that _can_modify_assignment
+                    # also enforces. That gap let "relaxed" mode swap away
+                    # config-mandatory shifts and drop manual workers below
+                    # their fixed monthly target — the two invariants this
+                    # helper must respect.
+                    if not self.builder._can_modify_assignment(over_id, date, "relaxed_swap"):
                         continue
 
                     # Giver monthly check (same guard as _try_direct_swap)
