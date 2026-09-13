@@ -191,6 +191,98 @@ def test_fix_constraint_violations_always_fixes_non_mandatory_weekly_pattern(sam
     assert scheduler.worker_assignments["DOC001"] == {first_date}
 
 
+def test_check_schedule_violations_detects_consecutive_last_post(sample_workers_data):
+    """A worker with 3 consecutive last-post shifts (in their own chronological
+    assignment sequence) must be reported as a `consecutive_last_post`
+    violation, unless they are `only_last_post`."""
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 31),
+            "num_shifts": 4,
+            "workers_data": sample_workers_data,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    last_post = 3  # num_shifts - 1
+    dates = [datetime(2026, 3, d) for d in (1, 5, 9)]  # 4-day gaps, no gap violation
+    for d in dates:
+        scheduler.schedule[d][last_post] = "DOC001"
+    scheduler._synchronize_tracking_data()
+
+    violations = scheduler._check_schedule_constraints()
+    consecutive_violations = [v for v in violations if v["type"] == "consecutive_last_post"]
+
+    assert len(consecutive_violations) == 1
+    assert consecutive_violations[0]["worker_id"] == "DOC001"
+    assert consecutive_violations[0]["run_length"] == 3
+
+
+def test_check_schedule_violations_exempts_only_last_post_worker(sample_workers_data):
+    """only_last_post workers are exempt from the consecutive last-post limit
+    since their entire role is to always occupy the last post."""
+    workers = [dict(w) for w in sample_workers_data]
+    workers[0]["only_last_post"] = True
+
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 31),
+            "num_shifts": 4,
+            "workers_data": workers,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    last_post = 3
+    dates = [datetime(2026, 3, d) for d in (1, 5, 9)]
+    for d in dates:
+        scheduler.schedule[d][last_post] = "DOC001"
+    scheduler._synchronize_tracking_data()
+
+    violations = scheduler._check_schedule_constraints()
+    consecutive_violations = [v for v in violations if v["type"] == "consecutive_last_post"]
+
+    assert consecutive_violations == []
+
+
+def test_fix_constraint_violations_fixes_consecutive_last_post(sample_workers_data):
+    """The final validation/fix pass must repair a consecutive-last-post
+    violation by unassigning the worker from one of the offending shifts."""
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 31),
+            "num_shifts": 4,
+            "workers_data": sample_workers_data,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    last_post = 3
+    dates = [datetime(2026, 3, d) for d in (1, 5, 9)]
+    for d in dates:
+        scheduler.schedule[d][last_post] = "DOC001"
+    scheduler._synchronize_tracking_data()
+
+    fixes_made = scheduler.validate_and_fix_final_schedule()
+
+    assert fixes_made >= 1
+    remaining_violations = [
+        v for v in scheduler._check_schedule_constraints() if v["type"] == "consecutive_last_post"
+    ]
+    assert remaining_violations == []
+    # Exactly 2 of the 3 original shifts should remain assigned to DOC001.
+    assert len(scheduler.worker_assignments["DOC001"] & set(dates)) == 2
+
+
 def test_finalization_phase_runs_final_validation_and_fix(sample_workers_data):
     """The finalization phase must invoke the (previously dead) final
     validation/fix safety net so genuine constraint violations left over from

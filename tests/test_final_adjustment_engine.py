@@ -314,6 +314,54 @@ def test_can_take_in_swap_does_not_check_target_tolerance():
     assert result is True
 
 
+def test_can_take_in_swap_blocked_by_consecutive_last_post_limit():
+    """
+    A worker who already has 2 consecutive last-post shifts (in their own
+    chronological sequence) must not be allowed to gain a 3rd one via a
+    paired swap.
+    """
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+
+    # B already occupies the last post (index 1) on two well-spaced dates.
+    existing_dates = [datetime(2026, 3, 2), datetime(2026, 3, 8)]
+    for d in existing_dates:
+        scheduler.schedule[d] = [None, "B"]
+    scheduler.worker_assignments["B"] = set(existing_dates)
+
+    date_gain = datetime(2026, 3, 20)
+    date_lose = None
+    scheduler.schedule[date_gain] = ["A", None]
+
+    engine = _build_engine(scheduler)
+    engine.schedule_builder = _make_stub_builder(scheduler)
+
+    result = engine._can_take_in_swap("B", date_gain, 1, date_lose)
+    assert result is False
+
+
+def test_can_take_in_swap_allows_only_last_post_worker_with_long_streak():
+    """only_last_post workers are exempt from the consecutive last-post limit."""
+    workers = _simple_workers()
+    workers[1]["only_last_post"] = True  # worker B
+
+    scheduler = _make_scheduler(workers)
+
+    existing_dates = [datetime(2026, 3, 2), datetime(2026, 3, 8)]
+    for d in existing_dates:
+        scheduler.schedule[d] = [None, "B"]
+    scheduler.worker_assignments["B"] = set(existing_dates)
+
+    date_gain = datetime(2026, 3, 20)
+    scheduler.schedule[date_gain] = [None, None]
+
+    engine = _build_engine(scheduler)
+    engine.schedule_builder = _make_stub_builder(scheduler)
+
+    result = engine._can_take_in_swap("B", date_gain, 1, None)
+    assert result is True
+
+
 # ---------------------------------------------------------------------------
 # _raw_targets cache – fallback logic
 # ---------------------------------------------------------------------------
@@ -574,6 +622,86 @@ def test_ortools_phase_terminates_with_preexisting_714_violation():
     # Allow generous headroom (10 s) but the phase must NOT run the full 20-s
     # time limit, which would be the symptom of the regression.
     assert elapsed < 10, f"OR-Tools phase took {elapsed:.1f}s — likely hit the time limit due to infeasible warm-start"
+
+
+def test_ortools_phase_enforces_consecutive_last_post_limit():
+    """
+    HARD constraint regression test: the CP-SAT model must never leave a
+    worker with more than 2 consecutive last-post shifts (in their own
+    chronological sequence), even when the pre-existing schedule already
+    violates it (e.g. imported/legacy data).
+
+    Setup: worker A occupies ONLY the last post (index 1) on 4 well-spaced
+    dates; post 0 is left unfilled on those dates so the CP-SAT model is
+    free to reassign the last-post slot to B without needing any other
+    change — the minimal way to resolve the streak.
+    """
+    from saldo27.infrastructure import optional_engines
+
+    optional_engines._ortools_available = None  # reset cache from other tests
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers, end=datetime(2026, 3, 31))
+
+    # TargetCalculator overwrites _raw_target with a whole-month auto-computed
+    # value (e.g. 31) during Scheduler.__init__, which would make the tiny
+    # 4-slot model below infeasible (the deviation variables are bounded by
+    # n_slots). Pin small, model-consistent raw targets so the objective
+    # section's deviation constraints stay satisfiable.
+    for w in scheduler.workers_data:
+        w["_raw_target"] = 2
+        w["target_shifts"] = 2
+
+    dates = [datetime(2026, 3, d) for d in (1, 6, 11, 16)]  # 5-day spacing, avoids 7/14 pattern
+    for d in dates:
+        scheduler.schedule[d] = [None, "A"]  # A always last post (index 1)
+    scheduler.worker_assignments["A"] = set(dates)
+    scheduler.worker_shift_counts["A"] = len(dates)
+
+    engine = _build_engine(scheduler)
+    engine._run_ortools_phase(time_limit_seconds=20)
+
+    last_post_idx = 1
+    for wid in ("A", "B"):
+        assigned = sorted(d for d in scheduler.worker_assignments.get(wid, set()) if d in dates)
+        run = 0
+        max_run = 0
+        for d in assigned:
+            is_last = scheduler.schedule[d][last_post_idx] == wid
+            run = run + 1 if is_last else 0
+            max_run = max(max_run, run)
+        assert max_run <= 2, f"Worker {wid} has {max_run} consecutive last-post shifts after OR-Tools phase"
+
+
+def test_ortools_phase_allows_only_last_post_worker_unlimited_streak():
+    """only_last_post workers are exempt from the CP-SAT hard constraint,
+    since they are expected to always occupy the last post."""
+    from saldo27.infrastructure import optional_engines
+
+    optional_engines._ortools_available = None  # reset cache from other tests
+    workers = _simple_workers()
+    workers[0]["only_last_post"] = True  # A
+
+    scheduler = _make_scheduler(workers, end=datetime(2026, 3, 31))
+
+    # A (only_last_post) should keep all 4 shifts; B gets none, matching the
+    # pre-existing assignment, so the deviation objective has no incentive
+    # to move A off the last post independently of the exemption itself.
+    for w in scheduler.workers_data:
+        w["_raw_target"] = 4 if w["id"] == "A" else 0
+        w["target_shifts"] = 4 if w["id"] == "A" else 0
+
+    dates = [datetime(2026, 3, d) for d in (1, 6, 11, 16)]
+    for d in dates:
+        scheduler.schedule[d] = [None, "A"]
+    scheduler.worker_assignments["A"] = set(dates)
+    scheduler.worker_shift_counts["A"] = len(dates)
+
+    engine = _build_engine(scheduler)
+    engine._run_ortools_phase(time_limit_seconds=20)
+
+    # A (only_last_post) must remain in the last post on every date.
+    for d in dates:
+        assert scheduler.schedule[d][1] == "A"
 
 
 def test_ortools_phase_improves_or_neutral():
