@@ -55,14 +55,23 @@ class OptimizationMetrics:
             fill_rate_score = self._calculate_fill_rate_score()
             workload_balance_score = self._calculate_workload_balance_score()
             weekend_balance_score = self._calculate_weekend_balance_score()
+            bridge_balance_score = self._calculate_bridge_balance_score()
             post_rotation_score = self._calculate_post_rotation_score()
             constraint_violations_penalty = self._calculate_constraint_violations_penalty()
 
-            # Pesos para cada componente
+            # Pesos para cada componente.
+            # bridge_balance se añade como componente propio (antes los puentes
+            # no contribuían en absoluto al score general, así que las pasadas
+            # de rebalanceo de puentes podían ser revertidas por
+            # _finalization_phase sin que esa pérdida de calidad se reflejase
+            # aquí). Su peso (0.05) sale de weekend_balance (0.15 → 0.10) ya
+            # que los puentes son un subconjunto, mucho menos frecuente, del
+            # mismo concepto de "días especiales".
             weights = {
                 "fill_rate": 0.35,
                 "workload_balance": 0.25,
-                "weekend_balance": 0.15,
+                "weekend_balance": 0.10,
+                "bridge_balance": 0.05,
                 "post_rotation": 0.15,
                 "constraint_penalty": 0.10,
             }
@@ -71,6 +80,7 @@ class OptimizationMetrics:
                 fill_rate_score * weights["fill_rate"]
                 + workload_balance_score * weights["workload_balance"]
                 + weekend_balance_score * weights["weekend_balance"]
+                + bridge_balance_score * weights["bridge_balance"]
                 + post_rotation_score * weights["post_rotation"]
                 - constraint_violations_penalty * weights["constraint_penalty"]
             )
@@ -80,7 +90,8 @@ class OptimizationMetrics:
                     f"📊 Score components: "
                     f"fill={fill_rate_score:.1f}(×.35={fill_rate_score * 0.35:.1f}) "
                     f"workload={workload_balance_score:.1f}(×.25={workload_balance_score * 0.25:.1f}) "
-                    f"weekend={weekend_balance_score:.1f}(×.15={weekend_balance_score * 0.15:.1f}) "
+                    f"weekend={weekend_balance_score:.1f}(×.10={weekend_balance_score * 0.10:.1f}) "
+                    f"bridge={bridge_balance_score:.1f}(×.05={bridge_balance_score * 0.05:.1f}) "
                     f"post_rot={post_rotation_score:.1f}(×.15={post_rotation_score * 0.15:.1f}) "
                     f"penalty={constraint_violations_penalty:.1f}(×.10={constraint_violations_penalty * 0.10:.1f})"
                 )
@@ -215,6 +226,54 @@ class OptimizationMetrics:
 
         except Exception as e:
             logging.error(f"Error calculating weekend balance score: {e}")
+            return 0.0
+
+    def _calculate_bridge_balance_score(self) -> float:
+        """Calcular score basado en el balance de turnos en días de puente.
+
+        Compara cada trabajador con su objetivo de puentes
+        (``Scheduler.get_bridge_objective_for_worker``, proporcional a su
+        ``target_shifts``). A diferencia del balance de weekends (zona muerta
+        relativa del ±15%), los puentes son mucho menos frecuentes — sus
+        objetivos suelen ser fracciones pequeñas (p.ej. 1-3 turnos) — por lo
+        que una tolerancia relativa sería inestable (un objetivo de 1 turno
+        con un ±15% no tolera ninguna desviación entera). En su lugar se usa
+        la misma tolerancia absoluta ±0.5 turnos que
+        ``BalanceValidator.validate_bridge_balance`` ya usa para violaciones.
+
+        Si no hay periodos de puente definidos, o ningún trabajador tiene un
+        objetivo de puente > 0, se devuelve 100 (sin penalización aplicable).
+        """
+        try:
+            bridge_periods = getattr(self.scheduler, "bridge_periods", None)
+            if not bridge_periods or not self.scheduler.workers_data:
+                return 100.0
+
+            deviations = []
+            for worker in self.scheduler.workers_data:
+                worker_id = worker["id"]
+                if worker.get("target_shifts", 0) <= 0:
+                    continue
+                target_bridges = self.scheduler.get_bridge_objective_for_worker(worker_id)
+                if target_bridges <= 0:
+                    continue
+                actual_bridges = self.scheduler.count_bridges_for_worker(worker_id)
+                deviations.append(abs(actual_bridges - target_bridges))
+
+            if not deviations:
+                return 100.0
+
+            # Zona muerta: tolerancia absoluta ±0.5 turnos (alineada con
+            # BalanceValidator.validate_bridge_balance).
+            deadzone = 0.5
+            effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
+
+            avg_excess = sum(effective_deviations) / len(effective_deviations)
+            # Escala (tras la zona muerta): 0 turnos de exceso → 100, 2 turnos → 0.
+            return max(0.0, 100.0 - avg_excess * 50.0)
+
+        except Exception as e:
+            logging.error(f"Error calculating bridge balance score: {e}")
             return 0.0
 
     def _calculate_post_rotation_score(self) -> float:
@@ -465,6 +524,50 @@ class OptimizationMetrics:
 
         except Exception as e:
             logging.error(f"Error calculating weekend imbalance: {e}")
+            return 0.0
+
+    def calculate_bridge_imbalance(self) -> float:
+        """Calcular el desbalance de turnos en días de puente.
+
+        Coeficiente de variación (CV) de bridge_shifts/target_shifts entre
+        trabajadores, análogo a ``calculate_weekend_imbalance``. Se usa en
+        ``SchedulerCore._finalization_phase`` para decidir si una pasada de
+        finalización debe revertirse: antes de este método, el desbalance de
+        puentes era completamente invisible en esa comparación pre/post
+        (sólo se consideraban workload y weekend), así que una pasada que
+        mejorase drásticamente el balance de puentes pero empeorase
+        ligeramente otra métrica podía revertirse sin tener en cuenta esa
+        pérdida, y viceversa.
+
+        Devuelve 0.0 si no hay periodos de puente definidos.
+        """
+        try:
+            bridge_periods = getattr(self.scheduler, "bridge_periods", None)
+            if not bridge_periods or not self.scheduler.workers_data:
+                return 0.0
+
+            ratios: list[float] = []
+            for worker in self.scheduler.workers_data:
+                worker_id = worker["id"]
+                target_shifts = worker.get("target_shifts", 0)
+                if target_shifts <= 0:
+                    continue
+                bridge_count = self.scheduler.count_bridges_for_worker(worker_id)
+                ratios.append(bridge_count / target_shifts)
+
+            if not ratios:
+                return 0.0
+
+            mean_val = sum(ratios) / len(ratios)
+            if mean_val == 0:
+                return 0.0
+
+            variance = sum((r - mean_val) ** 2 for r in ratios) / len(ratios)
+            cv = (variance**0.5) / mean_val
+            return cv
+
+        except Exception as e:
+            logging.error(f"Error calculating bridge imbalance: {e}")
             return 0.0
 
     def record_iteration_result(

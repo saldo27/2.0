@@ -230,3 +230,140 @@ def test_post_rotation_score_penalizes_beyond_20_percent():
         scheduler.schedule[d][post] = "A"
 
     assert metrics._calculate_post_rotation_score() < 100.0
+
+
+def test_bridge_balance_score_no_bridge_periods_returns_full_score():
+    """With no bridge periods configured, the bridge score must not penalize."""
+    workers = [
+        {
+            "id": "A",
+            "target_shifts": 10,
+            "work_percentage": 100,
+            "work_periods": "",
+            "mandatory_days": "",
+            "days_off": "",
+        },
+    ]
+    scheduler = _build_scheduler(workers)
+    scheduler.bridge_periods = []
+    metrics = OptimizationMetrics(scheduler)
+
+    assert metrics._calculate_bridge_balance_score() == 100.0
+    assert metrics.calculate_bridge_imbalance() == 0.0
+
+
+def test_bridge_balance_score_no_penalty_within_half_shift_tolerance():
+    """Deviations of <= 0.5 shifts from the proportional bridge target must not penalize."""
+    workers = [
+        {
+            "id": "A",
+            "target_shifts": 10,
+            "work_percentage": 100,
+            "work_periods": "",
+            "mandatory_days": "",
+            "days_off": "",
+        },
+        {
+            "id": "B",
+            "target_shifts": 10,
+            "work_percentage": 100,
+            "work_periods": "",
+            "mandatory_days": "",
+            "days_off": "",
+        },
+    ]
+    scheduler = _build_scheduler(workers)
+    scheduler.workers_data[0]["target_shifts"] = 10
+    scheduler.workers_data[1]["target_shifts"] = 10
+    bridge_date = datetime(2026, 3, 6)
+    scheduler.bridge_periods = [
+        {"id": "bridge_2026-03-05", "start_date": bridge_date, "end_date": bridge_date, "holiday": bridge_date}
+    ]
+    metrics = OptimizationMetrics(scheduler)
+
+    # Both workers share equal target_shifts, so each has a bridge objective of
+    # total_bridge_shifts/2 = 1.0. Assigning the single bridge slot to A gives
+    # A an actual of 1 (deviation 0) and B an actual of 0 (deviation 1.0,
+    # which exceeds the 0.5 tolerance) -- so instead split evenly across a
+    # 2-shift bridge day to keep both workers within tolerance.
+    scheduler.schedule[bridge_date][0] = "A"
+    scheduler.schedule[bridge_date][1] = "B"
+    scheduler.worker_assignments["A"].add(bridge_date)
+    scheduler.worker_assignments["B"].add(bridge_date)
+
+    assert metrics._calculate_bridge_balance_score() == 100.0
+
+
+def test_bridge_balance_score_penalizes_beyond_half_shift_tolerance():
+    """Bridge deviations exceeding the ±0.5 shift tolerance must reduce the score."""
+    workers = [
+        {
+            "id": "A",
+            "target_shifts": 10,
+            "work_percentage": 100,
+            "work_periods": "",
+            "mandatory_days": "",
+            "days_off": "",
+        },
+        {
+            "id": "B",
+            "target_shifts": 10,
+            "work_percentage": 100,
+            "work_periods": "",
+            "mandatory_days": "",
+            "days_off": "",
+        },
+    ]
+    scheduler = _build_scheduler(workers)
+    scheduler.workers_data[0]["target_shifts"] = 10
+    scheduler.workers_data[1]["target_shifts"] = 10
+    bridge_date = datetime(2026, 3, 6)
+    scheduler.bridge_periods = [
+        {"id": "bridge_2026-03-05", "start_date": bridge_date, "end_date": bridge_date, "holiday": bridge_date}
+    ]
+    metrics = OptimizationMetrics(scheduler)
+
+    # A takes both bridge shifts: A actual=2 (target 1, deviation 1.0),
+    # B actual=0 (target 1, deviation 1.0) -- both exceed the 0.5 tolerance.
+    scheduler.schedule[bridge_date][0] = "A"
+    scheduler.schedule[bridge_date][1] = "A"
+    scheduler.worker_assignments["A"].add(bridge_date)
+
+    assert metrics._calculate_bridge_balance_score() < 100.0
+
+
+def test_bridge_imbalance_zero_when_evenly_distributed():
+    """A perfectly balanced bridge distribution must yield zero imbalance (CV)."""
+    workers = [
+        {
+            "id": "A",
+            "target_shifts": 10,
+            "work_percentage": 100,
+            "work_periods": "",
+            "mandatory_days": "",
+            "days_off": "",
+        },
+        {
+            "id": "B",
+            "target_shifts": 10,
+            "work_percentage": 100,
+            "work_periods": "",
+            "mandatory_days": "",
+            "days_off": "",
+        },
+    ]
+    scheduler = _build_scheduler(workers)
+    scheduler.workers_data[0]["target_shifts"] = 10
+    scheduler.workers_data[1]["target_shifts"] = 10
+    bridge_date = datetime(2026, 3, 6)
+    scheduler.bridge_periods = [
+        {"id": "bridge_2026-03-05", "start_date": bridge_date, "end_date": bridge_date, "holiday": bridge_date}
+    ]
+    metrics = OptimizationMetrics(scheduler)
+
+    scheduler.schedule[bridge_date][0] = "A"
+    scheduler.schedule[bridge_date][1] = "B"
+    scheduler.worker_assignments["A"].add(bridge_date)
+    scheduler.worker_assignments["B"].add(bridge_date)
+
+    assert metrics.calculate_bridge_imbalance() == 0.0
