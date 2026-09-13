@@ -115,6 +115,20 @@ class FinalAdjustmentEngine(EngineStateMixin):
         logging.info("Phase FA-4: OR-Tools CP-SAT refinement")
         self.stats["ortools_reassignments"] = self._run_ortools_phase()
 
+        # --- Phase 5: Consecutive last-post safety net ---------------------
+        # Re-validates and fixes any residual "worker with >2 consecutive
+        # last-post shifts" violation. All swap/assignment paths above already
+        # guard against introducing new violations, but this final full
+        # re-scan catches edge cases (e.g. prior-period boundary effects)
+        # per the requirement that this constraint be recalculated whenever
+        # a last-post slot is assigned/removed, in every phase including
+        # Ajuste Final.
+        logging.info("Phase FA-5: Consecutive last-post validation")
+        try:
+            self.scheduler._run_final_validation_and_fix()
+        except Exception as exc:
+            logging.error(f"FinalAdjustmentEngine consecutive last-post validation error: {exc}", exc_info=True)
+
         after = self.compute_metrics()
 
         logging.info("=" * 70)
@@ -378,6 +392,19 @@ class FinalAdjustmentEngine(EngineStateMixin):
                     return False
                 if not is_last_post and worker_config.get("only_last_post", False):
                     return False
+
+        # 2b. CRITICAL: worker cannot end up with >2 consecutive last-post shifts
+        #     (in their own chronological sequence), unless only_last_post. The date
+        #     being ceded (date_lose) is excluded so the check reflects the post-swap state.
+        num_shifts = getattr(sb, "num_shifts", None)
+        if (
+            num_shifts is not None
+            and self.constraint_checker is not None
+            and self.constraint_checker._would_exceed_consecutive_last_post(
+                worker_id, date_gain, post_gain == num_shifts - 1, exclude_date=date_lose
+            )
+        ):
+            return False
 
         # 3. Incompatibility: check against workers already on date_gain (excluding the
         #    slot being freed, if any, to avoid false conflicts with the outgoing worker)
@@ -1021,6 +1048,35 @@ class ORToolsPhase:
                 for wi in range(n_workers):
                     model.add(sum(x[wi, si] for si in range(n_slots)) <= max_shifts)
 
+            # 3i. Max 2 consecutive last-post shifts in the worker's own
+            # chronological assignment sequence (mirrors ConstraintChecker.
+            # _would_exceed_consecutive_last_post, but as a hard CP-SAT
+            # constraint since Ajuste Final/OR-Tools must honor it too).
+            # `only_last_post` workers are exempt (they always occupy the
+            # last post by design). `slots` is sorted by date (step 1), so
+            # iterating si in order visits every slot chronologically; a
+            # streak var per (worker, slot) carries the running count of
+            # consecutive last-post assignments, resetting on any
+            # non-last-post assignment and passing through unchanged when
+            # the worker isn't assigned that slot at all.
+            slot_is_last_post = [slots[si][1] == num_shifts - 1 for si in range(n_slots)]
+            if num_shifts > 1 and n_slots > 0:
+                max_consecutive_last_post = 2
+                for wi, wid in enumerate(worker_ids):
+                    wd = worker_data_by_id[wid]
+                    if wd.get("only_last_post", False):
+                        continue
+                    prev_run = 0
+                    for si in range(n_slots):
+                        run_var = model.new_int_var(0, max_consecutive_last_post, f"lprun_{wi}_{si}")
+                        if slot_is_last_post[si]:
+                            model.add(run_var == prev_run + 1).only_enforce_if(x[wi, si])
+                            model.add(run_var == prev_run).only_enforce_if(x[wi, si].Not())
+                        else:
+                            model.add(run_var == 0).only_enforce_if(x[wi, si])
+                            model.add(run_var == prev_run).only_enforce_if(x[wi, si].Not())
+                        prev_run = run_var
+
             # -------------------------------------------------------------------
             # 4. Objective: minimize weighted deviations
             # -------------------------------------------------------------------
@@ -1033,7 +1089,6 @@ class ORToolsPhase:
                 self.scheduler.date_utils.is_bridge_day(slots[si][0], self.scheduler.bridge_periods)
                 for si in range(n_slots)
             ]
-            slot_is_last_post = [slots[si][1] == num_shifts - 1 for si in range(n_slots)]
 
             obj_terms = []
             for wi, wid in enumerate(worker_ids):

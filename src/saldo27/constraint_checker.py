@@ -484,6 +484,98 @@ class ConstraintChecker:
             logging.error(f"Error checking weekend limit for worker {worker_id}: {e}")
             return True  # Conservative: reject on error
 
+    def _get_worker_last_post_sequence(
+        self,
+        worker_id,
+        schedule=None,
+        assigned_dates=None,
+        exclude_date=None,
+    ):
+        """Return the sorted (date, is_last_post) sequence of a worker's own assignments.
+
+        Reconstructs, in chronological order, whether each of the worker's assigned
+        shifts occupies the last post. Used to detect consecutive-last-post runs,
+        which cannot be derived from `worker_posts` (a plain set of post-indices
+        ever worked, with no per-date/order information).
+
+        Args:
+            worker_id: worker to inspect.
+            schedule: optional schedule dict (date -> list[worker_id|None]) to use
+                instead of the live `self.scheduler.schedule` (e.g. a simulated copy).
+            assigned_dates: optional iterable of dates to use instead of the live
+                `self.scheduler.worker_assignments[worker_id]` (e.g. a simulated set).
+            exclude_date: if given, this date is skipped (useful when checking
+                "as if" a shift on that date had been removed/replaced).
+        """
+        sched = schedule if schedule is not None else self.scheduler.schedule
+        dates = assigned_dates if assigned_dates is not None else self.scheduler.worker_assignments.get(worker_id, set())
+
+        num_shifts = getattr(self.scheduler, "num_shifts", 1)
+        last_post_index = num_shifts - 1
+
+        sequence = []
+        for d in sorted(dates):
+            if exclude_date is not None and d == exclude_date:
+                continue
+            day_slots = sched.get(d, [])
+            try:
+                post = day_slots.index(worker_id)
+            except (ValueError, AttributeError):
+                continue
+            sequence.append((d, post == last_post_index))
+        return sequence
+
+    def _would_exceed_consecutive_last_post(
+        self,
+        worker_id,
+        date,
+        is_last_post,
+        schedule=None,
+        assigned_dates=None,
+        exclude_date=None,
+        max_consecutive=2,
+    ):
+        """Check whether assigning/keeping `worker_id` on `date` (last-post flag
+        `is_last_post`) would create a run of more than `max_consecutive`
+        consecutive last-post shifts in the worker's OWN chronological
+        assignment sequence (mirrors the "consecutive weekend WEEKS" pattern
+        used by `_would_exceed_weekend_limit`, but here "consecutive" means
+        consecutive among the worker's own assigned dates, not consecutive
+        calendar days).
+
+        `only_last_post` workers are exempt (their role is to always be last
+        post). Schedules with a single shift per day (`num_shifts <= 1`) make
+        the notion of "last post" trivial/meaningless, so they are exempt too.
+        """
+        try:
+            if getattr(self.scheduler, "num_shifts", 1) <= 1:
+                return False
+
+            worker_data = self._get_worker_data(worker_id)
+            if worker_data and worker_data.get("only_last_post", False):
+                return False
+
+            sequence = self._get_worker_last_post_sequence(
+                worker_id,
+                schedule=schedule,
+                assigned_dates=assigned_dates,
+                exclude_date=exclude_date if exclude_date != date else None,
+            )
+            # Insert/replace the date under evaluation with the hypothetical flag.
+            sequence = [(d, flag) for d, flag in sequence if d != date]
+            sequence.append((date, is_last_post))
+            sequence.sort(key=lambda item: item[0])
+
+            run = 0
+            for _d, flag in sequence:
+                run = run + 1 if flag else 0
+                if run > max_consecutive:
+                    return True
+            return False
+        except Exception as e:
+            logging.error(f"Error checking consecutive last-post limit for worker {worker_id}: {e}")
+            return True  # Conservative: reject on error
+
     def _is_worker_unavailable(self, worker_id, date):
         """
         Check if worker is unavailable on a specific date
@@ -780,6 +872,37 @@ class ConstraintChecker:
                                 "date1": date1,
                                 "date2": date2,
                                 "days_between": days_between,
+                            }
+                        )
+
+            # Consecutive last-post violation: worker has >2 consecutive
+            # last-post shifts in their own chronological sequence (exempt
+            # for only_last_post workers, who always occupy the last post).
+            if not worker.get("only_last_post", False) and getattr(self.scheduler, "num_shifts", 1) > 1:
+                last_post_idx = self.scheduler.num_shifts - 1
+                run_start = None
+                run_len = 0
+                for d in assigned_dates:
+                    day_slots = self.scheduler.schedule.get(d, [])
+                    try:
+                        is_last = day_slots.index(worker_id) == last_post_idx
+                    except (ValueError, AttributeError):
+                        is_last = False
+                    if is_last:
+                        if run_len == 0:
+                            run_start = d
+                        run_len += 1
+                    else:
+                        run_len = 0
+                        run_start = None
+                    if run_len > 2:
+                        violations.append(
+                            {
+                                "type": "consecutive_last_post",
+                                "worker_id": worker_id,
+                                "date1": run_start,
+                                "date2": d,
+                                "run_length": run_len,
                             }
                         )
 
