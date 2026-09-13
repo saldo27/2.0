@@ -508,7 +508,9 @@ class ConstraintChecker:
                 "as if" a shift on that date had been removed/replaced).
         """
         sched = schedule if schedule is not None else self.scheduler.schedule
-        dates = assigned_dates if assigned_dates is not None else self.scheduler.worker_assignments.get(worker_id, set())
+        dates = (
+            assigned_dates if assigned_dates is not None else self.scheduler.worker_assignments.get(worker_id, set())
+        )
 
         num_shifts = getattr(self.scheduler, "num_shifts", 1)
         last_post_index = num_shifts - 1

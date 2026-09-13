@@ -1521,9 +1521,7 @@ class ScheduleBuilder:
             if worker_config and worker_config.get("only_last_post", False):
                 return False
         # Check max-2-consecutive-last-post constraint (except only_last_post workers)
-        if self.constraint_checker._would_exceed_consecutive_last_post(
-            worker_id, date, post == self.num_shifts - 1
-        ):
+        if self.constraint_checker._would_exceed_consecutive_last_post(worker_id, date, post == self.num_shifts - 1):
             return False
         already_assigned_on_date = [
             w for idx, w in enumerate(self.schedule.get(date, [])) if w is not None and idx != post

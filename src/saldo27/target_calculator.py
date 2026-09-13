@@ -393,7 +393,9 @@ class TargetCalculator:
         # single day of the schedule period for every worker (O(ranges) vs
         # O(days), which matters when computed twice per manual worker over
         # long schedules).
-        free_ranges = self._subtract_date_ranges(self._merge_date_ranges(work_ranges), self._merge_date_ranges(off_ranges))
+        free_ranges = self._subtract_date_ranges(
+            self._merge_date_ranges(work_ranges), self._merge_date_ranges(off_ranges)
+        )
 
         month_avail: dict[str, int] = {}
         cur_year, cur_month = s.start_date.year, s.start_date.month
