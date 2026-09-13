@@ -192,9 +192,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
         if final_analysis["workers_outside_tolerance"] > 0 and hasattr(self.builder, "_enforce_manual_monthly_targets"):
             manual_still_off = any(
                 abs(info["deviation"]) > 0
-                and not next((w for w in self.workers_data if w["id"] == wid), {}).get(
-                    "auto_calculate_shifts", True
-                )
+                and not next((w for w in self.workers_data if w["id"] == wid), {}).get("auto_calculate_shifts", True)
                 for wid, info in final_analysis["worker_details"].items()
             )
             if manual_still_off:

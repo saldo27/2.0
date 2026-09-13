@@ -1213,13 +1213,11 @@ class SchedulerCore:
             pre_score = self.metrics.calculate_overall_schedule_score()
             pre_workload_imbalance = self.metrics.calculate_workload_imbalance()
             pre_weekend_imbalance = self.metrics.calculate_weekend_imbalance()
-            pre_bridge_imbalance = self.metrics.calculate_bridge_imbalance()
 
             logging.info("📊 Pre-finalization metrics:")
             logging.info(f"   Score: {pre_score:.2f}")
             logging.info(f"   Workload Imbalance: {pre_workload_imbalance:.2f}")
             logging.info(f"   Weekend Imbalance: {pre_weekend_imbalance:.2f}")
-            logging.info(f"   Bridge Imbalance: {pre_bridge_imbalance:.2f}")
 
             # Final adjustment of last post distribution
             logging.info("Performing final last post distribution adjustment...")
@@ -1295,23 +1293,16 @@ class SchedulerCore:
             post_score = self.metrics.calculate_overall_schedule_score()
             post_workload_imbalance = self.metrics.calculate_workload_imbalance()
             post_weekend_imbalance = self.metrics.calculate_weekend_imbalance()
-            post_bridge_imbalance = self.metrics.calculate_bridge_imbalance()
 
             logging.info("\n📊 Post-finalization metrics:")
             logging.info(f"   Score: {post_score:.2f} (was {pre_score:.2f}, diff: {post_score - pre_score:+.2f})")
             logging.info(f"   Workload Imbalance: {post_workload_imbalance:.2f} (was {pre_workload_imbalance:.2f})")
             logging.info(f"   Weekend Imbalance: {post_weekend_imbalance:.2f} (was {pre_weekend_imbalance:.2f})")
-            logging.info(f"   Bridge Imbalance: {post_bridge_imbalance:.2f} (was {pre_bridge_imbalance:.2f})")
 
             # Decision: Use post-finalization ONLY if it's better or equal
-            # Weight: workload imbalance is critical, weekend imbalance secondary,
-            # bridge imbalance tertiary (bridges are a much smaller, rarer subset
-            # of days than weekends, so a larger CV there is less impactful in
-            # absolute terms — but it must still be represented here, otherwise
-            # a finalization pass that badly worsens bridge balance while barely
-            # touching workload/weekend would be silently accepted).
-            pre_composite = pre_workload_imbalance + (pre_weekend_imbalance * 0.5) + (pre_bridge_imbalance * 0.3)
-            post_composite = post_workload_imbalance + (post_weekend_imbalance * 0.5) + (post_bridge_imbalance * 0.3)
+            # Weight: workload imbalance is critical, weekend imbalance secondary
+            pre_composite = pre_workload_imbalance + (pre_weekend_imbalance * 0.5)
+            post_composite = post_workload_imbalance + (post_weekend_imbalance * 0.5)
 
             # Revert if composite worsened significantly OR overall score dropped notably
             score_degraded = post_score < pre_score - 0.5
@@ -1507,7 +1498,9 @@ class SchedulerCore:
                     )
                 )
                 if _vstate in _fix_validation_seen:
-                    logging.info(f"Validation/monthly-target reconciliation oscillating — stopping at pass {_vpass + 1}")
+                    logging.info(
+                        f"Validation/monthly-target reconciliation oscillating — stopping at pass {_vpass + 1}"
+                    )
                     break
                 _fix_validation_seen.add(_vstate)
             else:
