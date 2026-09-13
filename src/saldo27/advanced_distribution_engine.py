@@ -689,6 +689,12 @@ class AdvancedDistributionEngine:
                 if w_data and w_data.get("no_last_post", False):
                     return False
 
+            # CRITICAL: worker cannot end up with >2 consecutive last-post shifts
+            if self.builder.constraint_checker._would_exceed_consecutive_last_post(
+                worker_id, date, post == self.scheduler.num_shifts - 1
+            ):
+                return False
+
             # NEW: Validate monthly balance before assigning
             worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
             if worker_data and hasattr(self.builder, "_get_expected_monthly_target"):

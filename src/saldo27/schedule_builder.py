@@ -842,6 +842,13 @@ class ScheduleBuilder:
             if post != self.num_shifts - 1 and worker.get("only_last_post", False):
                 return False
 
+            # CRITICAL: worker cannot have more than 2 consecutive last-post shifts
+            # (in their own chronological assignment sequence), unless only_last_post.
+            if self.constraint_checker._would_exceed_consecutive_last_post(
+                worker_id, date, post == self.num_shifts - 1
+            ):
+                return False
+
             # Check for incompatibilities
             # CRITICAL: Exclude replacing_worker from incompatibility check when doing a swap,
             # because that worker will no longer be on this date after the swap
@@ -1097,6 +1104,18 @@ class ScheduleBuilder:
             if self._would_exceed_weekend_limit_simulated(worker_id, date, simulated_assignments):
                 if _dbg:
                     logging.debug(f"Sim Check Fail: Weekend limit {worker_id} on {date}")
+                return False
+
+            # 3b. Consecutive last-post limit (using simulated schedule/assignments)
+            if self.constraint_checker._would_exceed_consecutive_last_post(
+                worker_id,
+                date,
+                post == self.num_shifts - 1,
+                schedule=simulated_schedule,
+                assigned_dates=simulated_assignments.get(worker_id, set()),
+            ):
+                if _dbg:
+                    logging.debug(f"Sim Check Fail: Consecutive last-post limit {worker_id} on {date}")
                 return False
 
             # 4. Max Shifts (using simulated_assignments)
@@ -1501,6 +1520,11 @@ class ScheduleBuilder:
             worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if worker_config and worker_config.get("only_last_post", False):
                 return False
+        # Check max-2-consecutive-last-post constraint (except only_last_post workers)
+        if self.constraint_checker._would_exceed_consecutive_last_post(
+            worker_id, date, post == self.num_shifts - 1
+        ):
+            return False
         already_assigned_on_date = [
             w for idx, w in enumerate(self.schedule.get(date, [])) if w is not None and idx != post
         ]
@@ -3442,6 +3466,8 @@ class ScheduleBuilder:
                     W_data = next((w for w in self.workers_data if w["id"] == worker_W_id), None)
                     if W_data is None or W_data.get("no_last_post", False):
                         continue  # W cannot take last post
+                    if self.constraint_checker._would_exceed_consecutive_last_post(worker_W_id, date_e, True):
+                        continue  # W would exceed the consecutive last-post limit
 
                     # Build the "future" day after W moves from post_w to post_e.
                     # post_e (last post) gets worker_W_id; post_w is freed (None).
@@ -3584,6 +3610,15 @@ class ScheduleBuilder:
                         ):
                             continue
 
+                        # Consecutive last-post check for Z's move (date_z removed, date_e added)
+                        if self.constraint_checker._would_exceed_consecutive_last_post(
+                            worker_Z_id,
+                            date_e,
+                            post_e == self.num_shifts - 1,
+                            assigned_dates=Z_asgn_minus_z,
+                        ):
+                            continue
+
                         # Monthly limit check for Z at date_e.
                         # Z is being MOVED: date_z removed, date_e added.
                         # - Same month: net neutral — no monthly check needed.
@@ -3630,6 +3665,11 @@ class ScheduleBuilder:
                                 continue
                             # 7/14 check for D at date_z
                             if self._violates_7_14_pattern(worker_D_id, date_z):
+                                continue
+                            # Consecutive last-post check for D taking (date_z, post_z)
+                            if self.constraint_checker._would_exceed_consecutive_last_post(
+                                worker_D_id, date_z, post_z == self.num_shifts - 1
+                            ):
                                 continue
                             # Select D with highest deficit (workers at-or-below target).
                             # CRITICAL: target_shifts has mandatory subtracted — compare against
@@ -6910,6 +6950,11 @@ class ScheduleBuilder:
             worker_cfg = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if worker_cfg and worker_cfg.get("only_last_post", False):
                 return False
+        # CRITICAL: worker cannot end up with >2 consecutive last-post shifts
+        if self.constraint_checker._would_exceed_consecutive_last_post(
+            worker_id, date, post == self.num_shifts - 1, exclude_date=giving_up_date
+        ):
+            return False
         for p_idx, w in enumerate(self.schedule.get(date, [])):
             if w == worker_id and p_idx != post:
                 return False
@@ -6984,6 +7029,12 @@ class ScheduleBuilder:
             worker_cfg = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if worker_cfg and worker_cfg.get("only_last_post", False):
                 return False
+
+        # CRITICAL: worker cannot end up with >2 consecutive last-post shifts
+        if self.constraint_checker._would_exceed_consecutive_last_post(
+            worker_id, date, post == self.num_shifts - 1, exclude_date=giving_up_date
+        ):
+            return False
 
         # Worker must not already be working on that date (other post)
         for p_idx, w in enumerate(self.schedule.get(date, [])):
@@ -8464,6 +8515,11 @@ class ScheduleBuilder:
                                     continue
                                 if cfg_nonlast and cfg_nonlast.get("only_last_post", False):
                                     continue
+                                # CRITICAL: worker cannot end up with >2 consecutive last-post shifts
+                                if self.constraint_checker._would_exceed_consecutive_last_post(
+                                    w_going_to_last, date, True
+                                ):
+                                    continue
                             else:
                                 # Neither i nor j is the last post — block only_last_post workers from non-last swaps
                                 for w_check in (w_i, w_j):
@@ -8686,6 +8742,9 @@ class ScheduleBuilder:
                             self._check_incompatibility_with_list(worker_A, others_A)
                             and self._check_incompatibility_with_list(worker_B, others_B)
                             and not self._are_workers_incompatible(worker_A, worker_B)
+                            and not self.constraint_checker._would_exceed_consecutive_last_post(
+                                worker_B, date_val, True
+                            )
                         ):
                             best_partner = worker_B
                             best_improvement = improvement
@@ -8989,6 +9048,12 @@ class ScheduleBuilder:
 
                             # Check direct incompatibility
                             if valid_swap and self._are_workers_incompatible(worker_A_id, worker_B_id):
+                                valid_swap = False
+
+                            # CRITICAL: worker_B cannot end up with >2 consecutive last-post shifts
+                            if valid_swap and self.constraint_checker._would_exceed_consecutive_last_post(
+                                worker_B_id, date_to_adjust, True
+                            ):
                                 valid_swap = False
 
                             # CRITICAL: Check 7/14 pattern - both workers stay on same date, so no new 7/14 violations

@@ -756,6 +756,11 @@ class Scheduler:
                         logging.warning(
                             f"Violation {i + 1}: Incompatible workers {v['worker_id']} and {v['incompatible_id']} are both assigned on {v['date']}"
                         )
+                    elif v["type"] == "consecutive_last_post":
+                        logging.warning(
+                            f"Violation {i + 1}: Worker {v['worker_id']} has {v['run_length']} consecutive last-post shifts "
+                            f"between {v['date1']} and {v['date2']}"
+                        )
 
                 if len(violations) > 5:
                     logging.warning(f"...and {len(violations) - 5} more violations")
@@ -908,6 +913,49 @@ class Scheduler:
                             f"Fixed incompatibility violation: Unassigned worker {worker_to_unassign} from {date}"
                         )
                         fixes_made += 1
+
+                elif violation["type"] == "consecutive_last_post":
+                    # Fix by unassigning the worker from one of the shifts in the
+                    # over-length last-post run (prefer the most recent date in
+                    # the run so earlier, already-settled shifts are undisturbed).
+                    worker_id = violation["worker_id"]
+                    date1 = violation["date1"]
+                    date2 = violation["date2"]
+
+                    candidates_to_unassign = [d for d in (date2, date1) if d is not None]
+                    fixed = False
+                    for date_to_unassign in candidates_to_unassign:
+                        if schedule_builder and not schedule_builder._can_modify_assignment(
+                            worker_id,
+                            date_to_unassign,
+                            "fix_consecutive_last_post",
+                            enforce_monthly_target_floor=False,
+                        ):
+                            continue
+
+                        shift_num = None
+                        if date_to_unassign in self.schedule:
+                            for i, worker in enumerate(self.schedule[date_to_unassign]):
+                                if worker == worker_id:
+                                    shift_num = i
+                                    break
+
+                        if shift_num is not None:
+                            self.schedule[date_to_unassign][shift_num] = None
+                            self.worker_assignments[worker_id].discard(date_to_unassign)
+                            self._update_tracking_data(worker_id, date_to_unassign, shift_num, removing=True)
+                            logging.info(
+                                f"Fixed consecutive last-post violation: Unassigned worker {worker_id} from {date_to_unassign}"
+                            )
+                            fixes_made += 1
+                            fixed = True
+                            break
+
+                    if not fixed:
+                        logging.warning(
+                            f"🔒 BLOCKED: Cannot fix consecutive last-post violation for MANDATORY worker {worker_id} "
+                            f"between {date1} and {date2}"
+                        )
 
             # Check if we fixed all violations
             remaining_violations = self._check_schedule_constraints()

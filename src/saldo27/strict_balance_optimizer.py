@@ -1212,6 +1212,10 @@ class StrictBalanceOptimizer(EngineStateMixin):
                     to_data = next((w for w in self.workers_data if w["id"] == _to_id), None)
                     if to_data and to_data.get("no_last_post", False):
                         return False
+                if num_shifts > 0 and self.builder.constraint_checker._would_exceed_consecutive_last_post(
+                    _to_id, _date, _post == num_shifts - 1
+                ):
+                    return False
 
             # Aplicar cada paso de la cadena
             for from_id, date, post, to_id in chain:
