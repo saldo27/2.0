@@ -678,7 +678,9 @@ def test_last_post_target_for_respects_post_restrictions():
 
     # num_shifts=2 in _make_scheduler, so a regular worker's fair share of the
     # single last-post slot per date is roughly raw_target / num_shifts.
-    assert engine._last_post_target_for(regular_worker) == round(8 * (engine._total_last_post_slots / engine._total_all_slots))
+    assert engine._last_post_target_for(regular_worker) == round(
+        8 * (engine._total_last_post_slots / engine._total_all_slots)
+    )
     assert engine._last_post_target_for(no_last_post_worker) == 0
     assert engine._last_post_target_for(only_last_post_worker) == 8
 
