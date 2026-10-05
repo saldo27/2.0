@@ -4,6 +4,8 @@ Iterative Optimization System for Schedule Assignment
 Automatically retries and optimizes schedule assignments until tolerance requirements are met.
 """
 
+from __future__ import annotations
+
 import copy
 import logging
 import math
@@ -12,8 +14,12 @@ from calendar import monthrange as _monthrange
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from saldo27.balance_validator import BalanceValidator
+
+if TYPE_CHECKING:
+    from saldo27.scheduler import Scheduler
 from saldo27.constraint_checker import candidate_spacing_rejection
 from saldo27.performance_cache import time_function
 from saldo27.utilities import get_effective_min_gap, is_date_in_ranges
@@ -37,6 +43,13 @@ class IterativeOptimizer:
     Iterative optimization system that continuously improves schedule assignments
     until tolerance requirements are met.
     """
+
+    scheduler: Scheduler | None
+
+    def _active_scheduler(self) -> Scheduler:
+        if self.scheduler is None:
+            raise RuntimeError("IterativeOptimizer has no scheduler reference")
+        return self.scheduler
 
     def __init__(self, max_iterations: int = 100, tolerance: float = 0.13):
         """
@@ -118,7 +131,7 @@ class IterativeOptimizer:
 
         # Store reference to scheduler for mandatory shift checks
         self.scheduler = getattr(scheduler_core, "scheduler", None)
-        if not self.scheduler:
+        if self.scheduler is None:
             logging.warning("Scheduler reference not found in scheduler_core")
 
         # Update constraint parameters from scheduler
@@ -1294,9 +1307,7 @@ class IterativeOptimizer:
             if scheduler is not None and getattr(scheduler, "start_date", None) is not None:
                 cutoff = scheduler.start_date - timedelta(days=90)
                 spacing_dates |= {
-                    d
-                    for d in getattr(scheduler, "prior_assignments", {}).get(worker_name, set())
-                    if d >= cutoff
+                    d for d in getattr(scheduler, "prior_assignments", {}).get(worker_name, set()) if d >= cutoff
                 }
             rejection = candidate_spacing_rejection(
                 shift_date,
@@ -1493,7 +1504,7 @@ class IterativeOptimizer:
             holidays_set = (
                 set(getattr(self.scheduler, "holidays", [])) if hasattr(self, "scheduler") and self.scheduler else set()
             )
-            is_weekend = self.scheduler.date_utils.is_weekend_day(shift_date, holidays_set)
+            is_weekend = self._active_scheduler().date_utils.is_weekend_day(shift_date, holidays_set)
 
             if is_weekend and hasattr(self, "scheduler") and self.scheduler:
                 max_consecutive_weekends = getattr(self.scheduler, "max_consecutive_weekends", 3)
@@ -1503,7 +1514,7 @@ class IterativeOptimizer:
 
                 # Get weekend/holiday dates from worker assignments (consistent with rest of code)
                 weekend_dates = sorted(
-                    [d for d in worker_assignments if self.scheduler.date_utils.is_weekend_day(d, holidays_set)]
+                    [d for d in worker_assignments if self._active_scheduler().date_utils.is_weekend_day(d, holidays_set)]
                 )
 
                 # ========================================
@@ -1559,7 +1570,7 @@ class IterativeOptimizer:
                 total_weekend_days = sum(
                     1
                     for i in range(total_schedule_days)
-                    if self.scheduler.date_utils.is_weekend_day(
+                    if self._active_scheduler().date_utils.is_weekend_day(
                         self.scheduler.start_date + timedelta(days=i), holidays_set
                     )
                 )
@@ -1656,11 +1667,10 @@ class IterativeOptimizer:
             if not mandatory_days_str:
                 return False
 
-            # Use scheduler's method if available
-            if self.scheduler and hasattr(self.scheduler, "is_mandatory_shift"):
-                # Extract numeric ID from worker_name if needed
+            # Use schedule_builder when available
+            if self.scheduler and self.scheduler.schedule_builder is not None:
                 worker_id = worker_data.get("id", worker_name)
-                return self.scheduler.is_mandatory_shift(worker_id, shift_date)
+                return self.scheduler.schedule_builder.is_mandatory(worker_id, shift_date)
 
             # Fallback: parse mandatory_days manually
             try:
@@ -1730,11 +1740,12 @@ class IterativeOptimizer:
                 return False
 
             # Get monthly target
-            if not self.scheduler or not hasattr(self.scheduler, "schedule_builder"):
+            schedule_builder = self.scheduler.schedule_builder if self.scheduler else None
+            if schedule_builder is None:
                 return False
 
             date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
-            monthly_target = self.scheduler.schedule_builder._get_expected_monthly_target(
+            monthly_target = schedule_builder._get_expected_monthly_target(
                 worker_data, date_obj.year, date_obj.month
             )
 
@@ -1838,7 +1849,7 @@ class IterativeOptimizer:
                     date_obj = datetime.strptime(date_key, "%Y-%m-%d")
                     date_str = date_key
 
-                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays_rw):
+                if self._active_scheduler().date_utils.is_weekend_day(date_obj, _holidays_rw):
                     weekend_dates.append(date_key)  # Use original key format
             except (ValueError, AttributeError):
                 continue  # Skip invalid date format
@@ -2020,7 +2031,7 @@ class IterativeOptimizer:
             for dk in optimized_schedule:
                 try:
                     d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                    if self.scheduler.date_utils.is_weekend_day(d, _holidays_rw):
+                    if self._active_scheduler().date_utils.is_weekend_day(d, _holidays_rw):
                         weekend_date_set.add(dk)
                     else:
                         weekday_date_set.add(dk)
@@ -2168,7 +2179,7 @@ class IterativeOptimizer:
             for dk in optimized_schedule:
                 try:
                     d = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                    if self.scheduler.date_utils.is_weekend_day(d, _holidays_rw):
+                    if self._active_scheduler().date_utils.is_weekend_day(d, _holidays_rw):
                         ep_weekend_set.add(dk)
                 except (ValueError, AttributeError):
                     continue
@@ -2374,7 +2385,7 @@ class IterativeOptimizer:
                 else:
                     date_obj = datetime.strptime(date_key, "%Y-%m-%d")
 
-                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays_ws):
+                if self._active_scheduler().date_utils.is_weekend_day(date_obj, _holidays_ws):
                     weekend_dates.append(date_key)
             except (ValueError, AttributeError):
                 continue  # Skip invalid date format
@@ -2574,7 +2585,7 @@ class IterativeOptimizer:
         for date_key in optimized_schedule:
             try:
                 date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
-                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays):
+                if self._active_scheduler().date_utils.is_weekend_day(date_obj, _holidays):
                     weekend_date_set.add(date_key)
                 else:
                     weekday_date_set.add(date_key)
@@ -2763,7 +2774,7 @@ class IterativeOptimizer:
         for date_key in optimized_schedule:
             try:
                 date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
-                if self.scheduler.date_utils.is_weekend_day(date_obj, _holidays):
+                if self._active_scheduler().date_utils.is_weekend_day(date_obj, _holidays):
                     weekend_dates.append(date_key)
             except (ValueError, AttributeError):
                 continue
@@ -2925,7 +2936,7 @@ class IterativeOptimizer:
         for dk in optimized_schedule:
             try:
                 dobj = dk if isinstance(dk, datetime) else datetime.strptime(dk, "%Y-%m-%d")
-                if self.scheduler.date_utils.is_weekend_day(dobj, _holidays):
+                if self._active_scheduler().date_utils.is_weekend_day(dobj, _holidays):
                     weekend_date_set.add(dk)
             except (AttributeError, TypeError, ValueError) as e:
                 logging.debug(f"Skipping invalid weekend date in ejection chain: {e}")
@@ -3085,7 +3096,6 @@ class IterativeOptimizer:
         logging.info(f"   ✅ Ejection chains: {swaps_made} swaps")
         return optimized_schedule
 
-
     def _should_stop_optimization(self, iteration: int, current_violations: int) -> bool:
         """
         Determine if optimization should stop based on convergence criteria.
@@ -3115,7 +3125,6 @@ class IterativeOptimizer:
             return True
 
         return False
-
 
     def _count_worker_shifts(
         self, worker_name: str, schedule: dict, workers_data: list[dict] | None = None, exclude_mandatory: bool = False
@@ -3714,12 +3723,12 @@ class IterativeOptimizer:
             is_weekend = False
             try:
                 if hasattr(date, "weekday"):
-                    is_weekend = self.scheduler.date_utils.is_weekend_day(date, holidays_set)
+                    is_weekend = self._active_scheduler().date_utils.is_weekend_day(date, holidays_set)
                 elif isinstance(date, str):
                     from datetime import datetime
 
                     date_obj = datetime.strptime(date, "%Y-%m-%d")
-                    is_weekend = self.scheduler.date_utils.is_weekend_day(date_obj, holidays_set)
+                    is_weekend = self._active_scheduler().date_utils.is_weekend_day(date_obj, holidays_set)
             except ValueError:
                 pass  # Skip invalid date format
 
@@ -3739,4 +3748,3 @@ class IterativeOptimizer:
                                     stats[worker]["weekend_shifts"] += 1
 
         return stats
-

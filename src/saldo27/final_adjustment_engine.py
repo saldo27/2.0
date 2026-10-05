@@ -1264,14 +1264,14 @@ class ORToolsPhase:
         last_status = cp_model.UNKNOWN
         for idx, attempt in enumerate(attempts):
             build_t0 = _time.monotonic()
-            model, x, slots, worker_ids = _build_model(include_hints=attempt["include_hints"])
+            model, x, slots, worker_ids = _build_model(include_hints=bool(attempt["include_hints"]))
             build_elapsed = _time.monotonic() - build_t0
             if not slots:
                 return None
 
             solver = cp_model.CpSolver()
-            solver.parameters.max_time_in_seconds = attempt["time_limit"]
-            solver.parameters.num_workers = attempt["num_workers"]
+            solver.parameters.max_time_in_seconds = float(attempt["time_limit"])
+            solver.parameters.num_workers = int(attempt["num_workers"])
             solver.parameters.log_search_progress = False
             if attempt["repair_hint"]:
                 solver.parameters.repair_hint = True

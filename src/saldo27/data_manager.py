@@ -1,18 +1,21 @@
 # Imports
+from __future__ import annotations
+
 import logging
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from saldo27.bridge_manager import BridgeManager
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from saldo27.scheduler import Scheduler
 
 
 class DataManager:
     """Enhanced data management and tracking with performance optimizations"""
 
-    def __init__(self, scheduler: "Scheduler"):
+    def __init__(self, scheduler: Scheduler):
         """
         Initialize the data manager with caching support
 
@@ -121,7 +124,6 @@ class DataManager:
         """
         return self.scheduler.date_utils.get_weekend_start(date, self.scheduler.holidays)
 
-
     def _is_holiday(self, date):
         """
         Check if a date is a holiday
@@ -134,7 +136,6 @@ class DataManager:
         """
         return self.scheduler.date_utils.is_holiday(date, self.scheduler.holidays)
 
-
     def _ensure_data_integrity(self):
         """
         Ensure all data structures are consistent before schedule operations.
@@ -144,7 +145,6 @@ class DataManager:
         empty list, so post-index lookups stay valid.
         """
         return self.scheduler._ensure_data_integrity()
-
 
     def mark_data_dirty(self):
         """Mark that data integrity needs to be verified again"""
@@ -227,10 +227,8 @@ class DataManager:
                 if weekend_start not in self.worker_weekends[worker_id]:
                     self.worker_weekends[worker_id].append(weekend_start)
 
-
     def clear_caches(self) -> None:
         """Clear all caches when data changes"""
         self._worker_cache.clear()
         self._build_worker_cache()
         logging.debug("DataManager caches cleared and rebuilt")
-

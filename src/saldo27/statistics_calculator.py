@@ -119,7 +119,6 @@ class StatisticsCalculator:
         # Use built-in functions for efficiency
         return {"min_gap": min(gaps), "max_gap": max(gaps), "avg_gap": sum(gaps) / len(gaps)}
 
-
     @time_function
     @monitor_performance("gather_statistics")
     def gather_statistics(self):
@@ -219,7 +218,6 @@ class StatisticsCalculator:
                 }
 
         return monthly_stats
-
 
     def _calculate_coverage(self):
         """Calculate schedule coverage percentage"""
@@ -412,7 +410,6 @@ class StatisticsCalculator:
 
         logging.info("Generated schedule metrics")
         return metrics
-
 
     def generate_worker_report(self, worker_id):
         """

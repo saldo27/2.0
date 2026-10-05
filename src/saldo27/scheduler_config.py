@@ -180,7 +180,7 @@ class SchedulerConfig:
         missing = cls.REQUIRED_PIPELINE_PHASES - set(phases)
         if missing:
             raise ValueError(f"'pipeline_phases' debe incluir las fases requeridas: {sorted(missing)}")
-        return list(phases)
+        return [str(phase) for phase in phases]
 
     @classmethod
     def resolve_pipeline_phases(cls, phases: Any, *, default_order: list[str]) -> list[str]:

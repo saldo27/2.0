@@ -16,13 +16,22 @@ from typing import Any, ParamSpec, Protocol, TypeVar, cast
 
 P = ParamSpec("P")
 R = TypeVar("R")
-R_co = TypeVar("R_co", covariant=True)
 
 
-class MemoizedCallable(Protocol[P, R_co]):
-    """Callable protocol for functions wrapped by functools.lru_cache."""
+class CachedFunction(Protocol):
+    """Callable protocol for functions wrapped by :func:`cached`."""
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+    def cache_invalidate(self, pattern: str | None = None) -> None: ...
+
+    def cache_stats(self) -> Any: ...
+
+
+class MemoizedCallable(Protocol[R]):
+    """Callable protocol for functions wrapped by :func:`memoize`."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> R: ...
 
     def cache_clear(self) -> None: ...
 
@@ -243,7 +252,9 @@ def get_cache() -> PerformanceCache:
         return _global_cache
 
 
-def cached(ttl: int = 3600, cache_instance: PerformanceCache | None = None):
+def cached(
+    ttl: int = 3600, cache_instance: PerformanceCache | None = None
+) -> Callable[[Callable[P, R]], CachedFunction]:
     """
     Decorator for caching function results
 
@@ -252,23 +263,28 @@ def cached(ttl: int = 3600, cache_instance: PerformanceCache | None = None):
         cache_instance: Optional specific cache instance to use
     """
 
-    def decorator(func: Callable) -> Callable:
+    def decorator(func: Callable[P, R]) -> CachedFunction:
         cache = cache_instance or get_cache()
 
         @wraps(func)
-        def wrapper(*args, **kwargs):  # type: ignore[misc]
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             return cache.cached_call(func, args, kwargs, ttl)
 
-        # Add cache management methods to the wrapped function
-        wrapper.cache_invalidate = lambda pattern=None: cache.invalidate(pattern)  # type: ignore[attr-defined]
-        wrapper.cache_stats = lambda: cache.get_stats()  # type: ignore[attr-defined]
+        def cache_invalidate(pattern: str | None = None) -> None:
+            cache.invalidate(pattern)
 
-        return wrapper
+        def cache_stats() -> Any:
+            return cache.get_stats()
+
+        cached_wrapper = cast("Any", wrapper)
+        cached_wrapper.cache_invalidate = cache_invalidate
+        cached_wrapper.cache_stats = cache_stats
+        return cast("CachedFunction", cached_wrapper)
 
     return decorator
 
 
-def memoize(maxsize: int = 128) -> Callable[[Callable[P, R]], MemoizedCallable[P, R]]:
+def memoize(maxsize: int = 128) -> Callable[[Callable[..., R]], MemoizedCallable[R]]:
     """
     Simple memoization decorator using functools.lru_cache
 
@@ -276,12 +292,8 @@ def memoize(maxsize: int = 128) -> Callable[[Callable[P, R]], MemoizedCallable[P
         maxsize: Maximum size of the LRU cache
     """
 
-    def decorator(func: Callable[P, R]) -> MemoizedCallable[P, R]:
-        cached_func = cast("MemoizedCallable[P, R]", lru_cache(maxsize=maxsize)(func))
-
-        # Add cache management methods
-        # (lru_cache already exposes cache_clear and cache_info on cached_func)
-        return cached_func
+    def decorator(func: Callable[..., R]) -> MemoizedCallable[R]:
+        return cast("MemoizedCallable[R]", lru_cache(maxsize=maxsize)(func))
 
     return decorator
 

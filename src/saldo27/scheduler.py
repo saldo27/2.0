@@ -17,6 +17,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from saldo27.application.contracts import GenerationProgressEvent
+    from saldo27.constraint_checker import ConstraintChecker
+    from saldo27.data_manager import DataManager
+    from saldo27.schedule_builder import ScheduleBuilder
+    from saldo27.scheduler_core import SchedulerCore
+    from saldo27.statistics_calculator import StatisticsCalculator
 
 # Initialize logging using the configuration module
 setup_logging()
@@ -27,6 +32,72 @@ setup_logging()
 
 class Scheduler:
     """Main Scheduler class that coordinates all scheduling operations"""
+
+    # Services (set in __init__)
+    date_utils: DateTimeUtils
+    _tracking_state: SchedulerTrackingState
+    _initializer: SchedulerInitializer
+    _validation_service: SchedulerValidationService
+    _reporting_service: SchedulerReportingService
+    _cancelled: bool
+    _progress_callback: Callable[[GenerationProgressEvent], None] | None
+    _phase_trace: list[Any]
+    _cache: dict[str, Any]
+    _cache_enabled: bool
+    _scheduler_core: SchedulerCore | None
+
+    # Configuration (set by SchedulerInitializer.apply_config)
+    config: dict[str, Any]
+    start_date: datetime
+    end_date: datetime
+    num_shifts: int
+    variable_shifts: list[dict[str, Any]]
+    workers_data: list[dict[str, Any]]
+    holidays: list[datetime]
+    enable_proportional_weekends: bool
+    weekend_tolerance: int | float
+    bridge_tolerance: float
+    bridge_periods: list[dict[str, Any]]
+    worker_bridge_counts: dict[str, set[datetime]]
+    gap_between_shifts: int
+    max_consecutive_weekends: int
+    current_datetime: datetime
+    current_user: str
+
+    # Core modules (set by SchedulerInitializer.initialize_modules)
+    stats: StatisticsCalculator
+    constraint_checker: ConstraintChecker
+    data_manager: DataManager
+
+    # Optional engines (None when disabled)
+    real_time_engine: Any | None
+    predictive_analytics: Any | None
+    predictive_optimizer: Any | None
+
+    # Mutable schedule state (set by SchedulerTrackingState.initialize)
+    schedule: dict[datetime, list[str | None]]
+    schedule_builder: ScheduleBuilder | None
+    worker_assignments: dict[str, set[datetime]]
+    worker_posts: dict[str, set[int]]
+    worker_weekdays: dict[str, dict[int, int]]
+    worker_weekends: dict[str, list[datetime]]
+    worker_shift_counts: dict[str, int]
+    worker_weekend_counts: dict[str, int]
+    worker_post_counts: dict[str, dict[int, int]]
+    worker_weekday_counts: dict[str, dict[int, int]]
+    worker_holiday_counts: dict[str, int]
+    last_assignment_date: dict[str, datetime | None]
+    consecutive_shifts: dict[str, int]
+    max_shifts_per_worker: int
+    constraint_skips: dict[str, dict[str, list[Any]]]
+
+    # Prior-period constraints and base targets
+    _base_target_shifts: dict[str, float]
+    prior_assignments: dict[str, set[datetime]]
+    prior_shift_counts: dict[str, int]
+    prior_weekend_counts: dict[str, int]
+    prior_target_shifts: dict[str, Any]
+    prior_last_date: dict[str, datetime | None]
 
     def __init__(self, config: dict[str, Any]):
         """Initialize the scheduler with configuration"""
@@ -40,6 +111,7 @@ class Scheduler:
         # Initialize cache for performance optimization
         self._cache: dict[str, Any] = {}
         self._cache_enabled = config.get("cache_enabled", SchedulerConfig.CACHE_ENABLED)
+        self._scheduler_core = None
 
         try:
             # Initialize date_utils FIRST, before calling any method that might need it
@@ -83,7 +155,6 @@ class Scheduler:
     def set_phase_trace(self, trace: list[Any]) -> None:
         self._phase_trace = list(trace)
 
-
     def get_locked_mandatory(self) -> set[Any]:
         if hasattr(self, "schedule_builder") and self.schedule_builder is not None:
             return self.schedule_builder.get_locked_mandatory()
@@ -109,7 +180,6 @@ class Scheduler:
             incompatible_with = worker.get("incompatible_with")
             if incompatible_with:
                 worker["incompatible_with"] = [str(w_id) for w_id in incompatible_with]
-
 
     def load_prior_schedule_data(self, json_source) -> dict[str, Any]:
         """
@@ -187,7 +257,6 @@ class Scheduler:
 
         return get_effective_assignments(worker_id, self.worker_assignments, self.prior_assignments, self.start_date)
 
-
     def _get_prior_weekend_count(self, worker_id: str) -> int:
         """Return just the prior-period weekend count."""
         from saldo27.prior_schedule_handler import get_prior_weekend_count
@@ -215,7 +284,6 @@ class Scheduler:
 
     def _initialize_schedule_with_variable_shifts(self):
         self._tracking_state.initialize_schedule_with_variable_shifts()
-
 
     def _ensure_data_integrity(self):
         return self._tracking_state.ensure_data_integrity()
@@ -265,7 +333,6 @@ class Scheduler:
         from saldo27.target_calculator import TargetCalculator
 
         return TargetCalculator(self).calculate()
-
 
     def _get_shifts_for_date(self, date):
         """Determine the number of shifts for a specific date based on variable_shifts."""
@@ -379,7 +446,6 @@ class Scheduler:
     # ========================================
     # 4. ASSIGNMENT AND CONSTRAINT CHECKING
     # ========================================
-
 
     def _check_schedule_constraints(self):
         """Check the current schedule for constraint violations.
@@ -663,7 +729,6 @@ class Scheduler:
     def calculate_score(self, schedule_to_score=None, assignments_to_score=None):
         return self._reporting_service.calculate_score(schedule_to_score, assignments_to_score)
 
-
     def validate_and_fix_final_schedule(self):
         return self._validation_service.validate_and_fix_final_schedule()
 
@@ -692,11 +757,15 @@ class Scheduler:
     # 10. UTILITY METHODS
     # ========================================
 
+    _RT_DISABLED: ClassVar[dict[str, Any]] = {
+        "success": False,
+        "message": "Real-time features not enabled",
+        "error": "REAL_TIME_DISABLED",
+    }
 
     def is_real_time_enabled(self) -> bool:
         """Return True if the real-time engine is active."""
         return self.real_time_engine is not None
-
 
     def assign_worker_real_time(
         self, worker_id: str, shift_date: datetime, post_index: int, user_id: str | None = None, validate: bool = True
@@ -804,7 +873,6 @@ class Scheduler:
         assert self.predictive_optimizer is not None
         return self.predictive_optimizer.run_predictive_optimization_dict()
 
-
     def get_optimization_suggestions(self) -> list[str]:
         """Return optimization suggestions from predictive analytics."""
         if not self.is_predictive_analytics_enabled():
@@ -822,4 +890,3 @@ class Scheduler:
         except Exception as e:
             logging.error(f"Error getting analytics summary: {e}")
             return {"enabled": True, "error": str(e), "message": "Error getting analytics summary"}
-

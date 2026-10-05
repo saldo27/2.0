@@ -240,7 +240,11 @@ class DateTimeUtils:
         next_day = date + timedelta(days=1)
         return next_day in holidays_set
 
-    def is_weekend_day(self, date: datetime, holidays_list: list[datetime] | None = None) -> bool:
+    def is_weekend_day(
+        self,
+        date: datetime,
+        holidays_list: list[datetime] | set[datetime] | None = None,
+    ) -> bool:
         """
         Check if a date is a weekend day or holiday (optimized with caching)
 

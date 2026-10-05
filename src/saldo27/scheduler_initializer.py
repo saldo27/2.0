@@ -142,7 +142,7 @@ class SchedulerInitializer:
             cadence_days = worker.get("cadence_days")
             cadence_start_str = worker.get("cadence_start_date")
             try:
-                cadence_days = int(cadence_days)
+                cadence_days = int(cadence_days) if cadence_days is not None else 0
             except (TypeError, ValueError):
                 cadence_days = 0
 

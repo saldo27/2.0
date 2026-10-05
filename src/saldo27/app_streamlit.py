@@ -3000,9 +3000,9 @@ with tab5:
                         "Hasta (L-D)", value=None, key="sim_s_end", help="Calendario: Lunes a Domingo"
                     )
 
-            run_simulation = st.button("🚀 Ejecutar Simulación", type="primary")
+            run_simulation_clicked = st.button("🚀 Ejecutar Simulación", type="primary")
 
-        if run_simulation:
+        if run_simulation_clicked:
             with st.spinner("Ejecutando simulación de escenario..."):
                 try:
                     # 1. Clonar configuración actual
@@ -3130,7 +3130,7 @@ with tab5:
                     success = sim_result.success
                     sim_scheduler = sim_result.scheduler
 
-                    if success:
+                    if success and sim_scheduler is not None:
                         st.success("✅ Simulación completada")
 
                         # 4. Comparar resultados
