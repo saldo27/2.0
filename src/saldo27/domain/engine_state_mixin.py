@@ -1,10 +1,10 @@
 """
 EngineStateMixin — shared save/restore state logic for optimisation engines.
 
-Both ``StrictBalanceOptimizer`` and ``FinalAdjustmentEngine`` contain identical
-``_save_state`` / ``_restore_state`` implementations that capture a full
-scheduler-state snapshot (schedule, assignments and all tracking counters) for
-local rollback.  This mixin centralises those implementations in a single place.
+``StrictBalanceOptimizer``, ``FinalAdjustmentEngine`` and
+``AdvancedDistributionEngine`` share ``_save_state`` / ``_restore_state``.
+The snapshot covers the schedule, assignments and tracking counters, and
+restore updates those dicts in place so aliases stay valid.
 
 Concrete classes must expose the following attributes:
   * ``self.schedule``            – aliased to ``scheduler.schedule``
