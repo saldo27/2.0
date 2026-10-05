@@ -112,5 +112,5 @@ def test_cancel_scheduler_uses_public_api():
             self.cancel_requested = True
 
     scheduler = _DummyScheduler()
-    cancel_scheduler(scheduler)  # type: ignore[arg-type]
+    cancel_scheduler(scheduler)
     assert scheduler.cancel_requested is True

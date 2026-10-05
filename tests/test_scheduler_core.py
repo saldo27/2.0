@@ -74,6 +74,7 @@ def test_sanitize_restored_attempt_state_removes_non_mandatory_prefill():
     assert scheduler_core._initialize_schedule_phase() is True
     assert scheduler_core._assign_mandatory_phase() is True
 
+    assert scheduler.schedule_builder is not None
     assert len(scheduler.schedule_builder._locked_mandatory) == 1
 
     contaminated_date = datetime(2026, 3, 2)
@@ -203,13 +204,13 @@ def test_strict_balance_optimizer_not_called_in_finalization_phase():
     """
     src = textwrap.dedent(inspect.getsource(SchedulerCore._finalization_phase))
     tree = ast.parse(src)
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(getattr(node, "func", None), ast.Attribute)
-        and node.func.attr == "optimize_balance"
-    ]
+    calls: list[ast.Call] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "optimize_balance":
+            calls.append(node)
     assert calls == [], (
         "_finalization_phase still calls optimize_balance — remove the duplicate StrictBalanceOptimizer invocation"
     )

@@ -1,8 +1,9 @@
 import json
 from datetime import datetime
 from math import isclose
-from typing import ClassVar
+from typing import Any, cast
 
+from saldo27.schedule_builder import ScheduleBuilder
 from saldo27.scheduler import Scheduler
 
 
@@ -145,11 +146,7 @@ def test_mandatory_assignment_never_places_no_last_post_worker_in_last_post(samp
 def test_fix_constraint_violations_always_fixes_non_mandatory_weekly_pattern(sample_workers_data):
     """HARD INVARIANT: a weekly_pattern (7/14-day same-weekday) violation must
     always be fixed by the final validation/fix pass unless BOTH colliding dates
-    are mandatory_days for that worker. A spent/absent _violations_714_budget is
-    NOT a sanctioned reason to leave the violation in place — that budget only
-    controls whether generation-time relaxation passes are allowed to *create*
-    such a violation (they never do, see schedule_builder._violations_714_budget),
-    it must never suppress the final repair."""
+    are mandatory_days for that worker."""
     scheduler = Scheduler(
         {
             "start_date": datetime(2026, 3, 1),
@@ -170,8 +167,6 @@ def test_fix_constraint_violations_always_fixes_non_mandatory_weekly_pattern(sam
     scheduler._synchronize_tracking_data()
 
     class _StubBuilder:
-        _violations_714_budget: ClassVar[dict[str, int]] = {"DOC001": 0}
-
         def is_mandatory(self, worker_id, date):
             return False
 
@@ -181,7 +176,7 @@ def test_fix_constraint_violations_always_fixes_non_mandatory_weekly_pattern(sam
         def get_locked_mandatory(self):
             return set()
 
-    scheduler.schedule_builder = _StubBuilder()
+    scheduler.schedule_builder = cast("Any", _StubBuilder())
 
     fixes_made = scheduler.validate_and_fix_final_schedule()
 
@@ -189,6 +184,63 @@ def test_fix_constraint_violations_always_fixes_non_mandatory_weekly_pattern(sam
     assert scheduler.schedule[first_date][0] == "DOC001"
     assert scheduler.schedule[second_date][0] is None
     assert scheduler.worker_assignments["DOC001"] == {first_date}
+
+
+def test_friday_monday_blocked_regardless_of_gap(sample_workers_data):
+    """Friday-Monday is removed even when the worker's minimum gap is below 3."""
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 15),
+            "num_shifts": 2,
+            "workers_data": sample_workers_data,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 2,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    friday = datetime(2026, 3, 6)
+    monday = datetime(2026, 3, 9)
+    scheduler.schedule[friday][0] = "DOC001"
+    scheduler._synchronize_tracking_data()
+
+    assert scheduler.constraint_checker._check_gap_constraint("DOC001", monday) is False
+
+    scheduler.schedule[monday][0] = "DOC001"
+    scheduler._synchronize_tracking_data()
+    fixes_made = scheduler.validate_and_fix_final_schedule()
+
+    assert fixes_made == 1
+    assert scheduler.schedule[friday][0] == "DOC001"
+    assert scheduler.schedule[monday][0] is None
+
+
+def test_mandatory_shift_may_land_on_friday_monday_and_714(sample_workers_data):
+    """A mandatory date may be placed on a Friday-Monday or 7/14 interval."""
+    workers = [dict(w) for w in sample_workers_data]
+    workers[0]["mandatory_days"] = "09-03-2026"
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 15),
+            "num_shifts": 2,
+            "workers_data": workers,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 2,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    friday = datetime(2026, 3, 6)
+    monday = datetime(2026, 3, 9)
+    earlier_monday = datetime(2026, 3, 2)
+    scheduler.schedule[friday][0] = "DOC001"
+    scheduler.schedule[earlier_monday][0] = "DOC001"
+    scheduler._synchronize_tracking_data()
+
+    # Monday is mandatory, so both the Friday-Monday pair and the 7-day pair are allowed.
+    assert scheduler.constraint_checker._check_gap_constraint("DOC001", monday) is True
 
 
 def test_finalization_phase_runs_final_validation_and_fix(sample_workers_data):
@@ -218,7 +270,8 @@ def test_finalization_phase_runs_final_validation_and_fix(sample_workers_data):
     scheduler._synchronize_tracking_data()
     scheduler.schedule_builder = ScheduleBuilder(scheduler)
 
-    scheduler.best_schedule_data = {
+    assert scheduler.schedule_builder is not None
+    scheduler.schedule_builder.best_schedule_data = {
         "schedule": scheduler.schedule,
         "worker_assignments": scheduler.worker_assignments,
         "worker_shift_counts": scheduler.worker_shift_counts,
@@ -281,7 +334,8 @@ def test_finalization_phase_restores_manual_monthly_target_after_violation_fix(s
     scheduler._synchronize_tracking_data()
     scheduler.schedule_builder = ScheduleBuilder(scheduler)
 
-    scheduler.best_schedule_data = {
+    assert scheduler.schedule_builder is not None
+    scheduler.schedule_builder.best_schedule_data = {
         "schedule": scheduler.schedule,
         "worker_assignments": scheduler.worker_assignments,
         "worker_shift_counts": scheduler.worker_shift_counts,
@@ -327,3 +381,22 @@ def test_export_schedule_json_serializes_schedule_and_assignments(sample_workers
     assert exported_path == str(output_file)
     assert exported["schedule"]["2026-03-01"][0] == "DOC001"
     assert exported["worker_assignments"]["DOC001"] == ["2026-03-01"]
+
+
+def test_pass1_scores_each_worker_once_per_empty_slot(sample_workers_data):
+    """Pass 1 scores a worker once for a slot. Later relaxation steps reuse that score."""
+    scheduler = _build_scheduler(sample_workers_data)
+    builder = ScheduleBuilder(scheduler)
+    scheduler.schedule_builder = builder
+    calls: list[int] = []
+
+    def _score(worker, date, post, relaxation_level=0):
+        calls.append(relaxation_level)
+        return float("-inf")
+
+    builder._calculate_worker_score = _score  # ty: ignore[invalid-assignment]
+    builder._try_fill_empty_shifts()
+
+    empty_slots = sum(slot is None for posts in scheduler.schedule.values() for slot in posts)
+    assert len(calls) == empty_slots * len(sample_workers_data)
+    assert set(calls) == {1}

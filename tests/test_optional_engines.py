@@ -76,7 +76,7 @@ def test_engine_capabilities_defaults():
 def test_engine_capabilities_frozen():
     caps = EngineCapabilities(name="Test")
     with pytest.raises((AttributeError, TypeError)):
-        caps.name = "Other"  # type: ignore[misc]
+        caps.__setattr__("name", "Other")
 
 
 # ---------------------------------------------------------------------------
