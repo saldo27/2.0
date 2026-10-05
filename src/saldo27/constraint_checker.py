@@ -1,5 +1,7 @@
 # Imports
 import logging
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +30,81 @@ _GAP2_WEEKEND_PROHIBITED_PAIRS: frozenset[tuple[int, int]] = frozenset(
         (1, 6),  # Sun-Tue
     }
 )
+
+# Violation types produced from candidate_spacing_rejection. Repair treats them alike.
+SPACING_VIOLATION_TYPES: frozenset[str] = frozenset(
+    {
+        "min_rest_days",
+        "friday_monday_pattern",
+        "weekly_pattern",
+        "gap2_weekend",
+    }
+)
+
+_REJECTION_TO_VIOLATION = {
+    "gap": "min_rest_days",
+    "friday_monday": "friday_monday_pattern",
+    "pattern_714": "weekly_pattern",
+    "gap2_weekend": "gap2_weekend",
+}
+
+
+@dataclass(frozen=True)
+class SpacingRejection:
+    """Why a candidate date cannot sit next to one existing assignment."""
+
+    reason: str
+    other_date: datetime
+    days_between: int
+    min_gap: int
+
+
+def candidate_spacing_rejection(
+    date: datetime,
+    existing_dates: Iterable[datetime],
+    *,
+    min_gap: int,
+    date_is_mandatory: bool,
+    block_gap2_weekend_pairs: bool,
+) -> SpacingRejection | None:
+    """Accept or reject placing ``date`` beside ``existing_dates``.
+
+    Returns None when the placement is allowed. Otherwise returns the first
+    rule that rejects it: minimum gap, Friday–Monday, a gap-2 weekend bridge,
+    or a 7/14 same-weekday interval.
+
+    ``min_gap`` is the caller's threshold. Assignment uses the hard floor from
+    ``get_effective_min_gap``. Scoring may pass a larger preferred gap.
+    Friday–Monday and 7/14 are blocked unless ``date_is_mandatory``. A gap-2
+    weekend pair is blocked only when ``block_gap2_weekend_pairs`` is set,
+    which callers set from the worker's hard floor (effective gap == 2).
+    """
+    for prev_date in existing_dates:
+        if prev_date == date:
+            continue
+        days_between = abs((date - prev_date).days)
+
+        if days_between < min_gap:
+            return SpacingRejection("gap", prev_date, days_between, min_gap)
+
+        if not date_is_mandatory and days_between == 3 and _is_friday_monday(prev_date, date):
+            return SpacingRejection("friday_monday", prev_date, days_between, min_gap)
+
+        if (
+            block_gap2_weekend_pairs
+            and days_between == 2
+            and (prev_date.weekday(), date.weekday()) in _GAP2_WEEKEND_PROHIBITED_PAIRS
+        ):
+            return SpacingRejection("gap2_weekend", prev_date, days_between, min_gap)
+
+        if not date_is_mandatory and days_between in (7, 14) and date.weekday() == prev_date.weekday():
+            return SpacingRejection("pattern_714", prev_date, days_between, min_gap)
+
+    return None
+
+
+def _is_friday_monday(earlier: datetime, later: datetime) -> bool:
+    return (earlier.weekday() == 4 and later.weekday() == 0) or (earlier.weekday() == 0 and later.weekday() == 4)
 
 
 class ConstraintChecker:
@@ -201,85 +278,52 @@ class ConstraintChecker:
         if _debug_enabled():
             logging.debug("ConstraintChecker caches cleared and rebuilt")
 
-    def _check_gap_constraint(self, worker_id, date, allow_714_violation: bool = False):
+    def _check_gap_constraint(self, worker_id, date):
         """Check minimum gap between assignments, Friday-Monday, and 7/14 day patterns.
+
+        Friday-Monday and a 7/14 same-weekday interval are blocked for every
+        non-mandatory assignment, whatever the worker's minimum gap. A mandatory
+        shift may land on either pattern.
 
         Args:
             worker_id: Worker to check.
             date: Prospective assignment date.
-            allow_714_violation: When True, a single 7/14-day same-weekday violation is
-                allowed on non-special (non-weekend, non-holiday) days.  Used by the
-                optimisation phase to break stalemates.  Weekend/holiday days are never
-                exempt even when this flag is set.
         """
         worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
         if not worker:
             return False  # Should not happen
-        # Determine minimum gap (calendar days) per worker type
         min_required_days_between = get_effective_min_gap(worker, self.scheduler.gap_between_shifts)
 
-        assignments = sorted(
-            list(
-                self.scheduler._get_effective_assignments(worker_id)
-                if hasattr(self.scheduler, "_get_effective_assignments")
-                else self.scheduler.worker_assignments.get(worker_id, [])
+        assignments = (
+            self.scheduler._get_effective_assignments(worker_id)
+            if hasattr(self.scheduler, "_get_effective_assignments")
+            else self.scheduler.worker_assignments.get(worker_id, [])
+        )
+
+        date_is_mandatory = False
+        mandatory_str = worker.get("mandatory_days", "")
+        if mandatory_str:
+            try:
+                date_is_mandatory = date in set(self.date_utils.parse_dates(mandatory_str))
+            except (TypeError, ValueError) as exc:
+                logging.debug(f"Error parsing mandatory_days for {worker_id} in gap check: {exc}")
+
+        rejection = candidate_spacing_rejection(
+            date,
+            assignments,
+            min_gap=min_required_days_between,
+            date_is_mandatory=date_is_mandatory,
+            block_gap2_weekend_pairs=(min_required_days_between == 2),
+        )
+        if rejection is None:
+            return True
+        if _debug_enabled():
+            logging.debug(
+                f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} "
+                f"fails {rejection.reason} with {rejection.other_date.strftime('%Y-%m-%d')} "
+                f"({rejection.days_between} days, min gap {rejection.min_gap})"
             )
-        )  # Includes prior-period dates for cross-period gap/pattern checks
-
-        # Pre-compute whether the prospective date is a special day (weekend/pre-holiday/holiday)
-        # Used by the allow_714_violation path.
-        holiday_set = self._holiday_set
-        date_is_special = self.date_utils.is_weekend_day(date, holiday_set)
-
-        for prev_date in assignments:
-            if prev_date == date:
-                continue  # Should not happen if checking before assignment
-            days_between = abs((date - prev_date).days)
-
-            # Basic gap check
-            if days_between < min_required_days_between:
-                if _debug_enabled():
-                    logging.debug(
-                        f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails basic gap with {prev_date.strftime('%Y-%m-%d')} ({days_between} < {min_required_days_between})"
-                    )
-                return False
-
-            # Friday-Monday rule: only block if the worker's effective gap > 3
-            # (if effective gap <= 3, a 3-day Fri-Mon span is permitted)
-            if min_required_days_between > 3:
-                if days_between == 3:
-                    if (prev_date.weekday() == 4 and date.weekday() == 0) or (
-                        date.weekday() == 4 and prev_date.weekday() == 0
-                    ):
-                        if _debug_enabled():
-                            logging.debug(
-                                f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails Fri-Mon rule with {prev_date.strftime('%Y-%m-%d')}"
-                            )
-                        return False
-
-            # gap=2 special case: prohibit weekend-bridging pairs
-            # (Thu-Sat, Fri-Sun, Sat-Mon, Sun-Tue): insufficient rest around weekend.
-            if min_required_days_between == 2 and days_between == 2:
-                if (prev_date.weekday(), date.weekday()) in _GAP2_WEEKEND_PROHIBITED_PAIRS:
-                    if _debug_enabled():
-                        logging.debug(
-                            f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails gap=2 weekend-bridge rule with {prev_date.strftime('%Y-%m-%d')}"
-                        )
-                    return False
-
-            # Prevent same day of week in consecutive weeks (7 or 14 day pattern)
-            # CRITICAL: This constraint applies to ALL days (weekdays AND weekends)
-            if (days_between == 7 or days_between == 14) and date.weekday() == prev_date.weekday():
-                # allow_714_violation: permit one violation on non-special weekdays only
-                if allow_714_violation and not date_is_special:
-                    continue
-                if _debug_enabled():
-                    logging.debug(
-                        f"Constraint Check: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {prev_date.strftime('%Y-%m-%d')}"
-                    )
-                return False
-
-        return True
+        return False
 
     def _would_exceed_weekend_limit(self, worker_id, date):
         """
@@ -835,47 +879,27 @@ class ConstraintChecker:
 
             for i, date2 in enumerate(assigned_dates):
                 for date1 in assigned_dates[:i]:
-                    days_between = abs((date2 - date1).days)
-
-                    # Gap violation
-                    if 0 < days_between < effective_gap:
-                        violations.append(
-                            {
-                                "type": "min_rest_days",
-                                "worker_id": worker_id,
-                                "date1": date1,
-                                "date2": date2,
-                                "days_between": days_between,
-                                "min_required": effective_gap,
-                            }
-                        )
-
-                    # Friday-Monday pattern (only when effective_gap > 3)
-                    if days_between == 3 and effective_gap > 3:
-                        if (date1.weekday() == 4 and date2.weekday() == 0) or (
-                            date1.weekday() == 0 and date2.weekday() == 4
-                        ):
-                            violations.append(
-                                {
-                                    "type": "friday_monday_pattern",
-                                    "worker_id": worker_id,
-                                    "date1": date1,
-                                    "date2": date2,
-                                    "days_between": days_between,
-                                }
-                            )
-
-                    # 7 / 14 day same-weekday pattern
-                    if (days_between == 7 or days_between == 14) and date1.weekday() == date2.weekday():
-                        violations.append(
-                            {
-                                "type": "weekly_pattern",
-                                "worker_id": worker_id,
-                                "date1": date1,
-                                "date2": date2,
-                                "days_between": days_between,
-                            }
-                        )
+                    # Report the pair even when one side is mandatory. Repair keeps
+                    # a pair only when both dates are mandatory.
+                    rejection = candidate_spacing_rejection(
+                        date2,
+                        (date1,),
+                        min_gap=effective_gap,
+                        date_is_mandatory=False,
+                        block_gap2_weekend_pairs=(effective_gap == 2),
+                    )
+                    if rejection is None:
+                        continue
+                    violations.append(
+                        {
+                            "type": _REJECTION_TO_VIOLATION[rejection.reason],
+                            "worker_id": worker_id,
+                            "date1": date1,
+                            "date2": date2,
+                            "days_between": rejection.days_between,
+                            "min_required": effective_gap,
+                        }
+                    )
 
             # Consecutive last-post violation: worker has >2 consecutive
             # last-post shifts in their own chronological sequence (exempt

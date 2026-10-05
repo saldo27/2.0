@@ -131,12 +131,26 @@ class FinalAdjustmentEngine(EngineStateMixin):
 
         after = self.compute_metrics()
 
+        weekend_errors = [
+            (wid, metrics)
+            for wid, metrics in after.items()
+            if weekend_count_error(metrics["weekend_deviation"], metrics["weekend_target"]) > 0
+        ]
+        self.stats["weekend_errors"] = len(weekend_errors)
+        for wid, metrics in weekend_errors:
+            logging.error(
+                f"Weekend deviation error: {wid} has {metrics['weekend_assigned']} weekend shifts "
+                f"against target {metrics['weekend_target']} "
+                f"(deviation {metrics['weekend_deviation']:+d}, above ±15%)"
+            )
+
         logging.info("=" * 70)
         logging.info("FINAL ADJUSTMENT ENGINE - Results")
         logging.info(f"  Shift swaps:          {self.stats['shift_swaps']}")
         logging.info(f"  Weekend swaps:        {self.stats['weekend_swaps']}")
         logging.info(f"  Bridge swaps:         {self.stats['bridge_swaps']}")
         logging.info(f"  OR-Tools changes:     {self.stats['ortools_reassignments']}")
+        logging.info(f"  Weekend errors >±15%: {self.stats['weekend_errors']}")
         logging.info("=" * 70)
 
         return {
@@ -787,6 +801,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
 # el score pasaba de 8260 a 24460 y la Fase 4 nunca aplicaba cambios).
 W_SHIFT = 1000
 W_WEEKEND = 100
+# A weekend count outside ±15% of its target is an error: the whole absolute
+# deviation is charged at the same weight as a shift-count excess.
+W_WEEKEND_ERROR = W_SHIFT
 W_LAST_POST = 50
 W_BRIDGE = 10
 
@@ -809,17 +826,30 @@ DEADZONE_LAST_POST = 0.20
 TIEBREAK_WEIGHT = 1
 
 
+def weekend_count_error(deviation: float, target: float) -> float:
+    """Weekend shifts that count as an error.
+
+    A deviation within ±15% of the weekend target is not an error. Above that
+    band, the whole absolute deviation is the error.
+    """
+    abs_dev = abs(deviation)
+    if target <= 0:
+        return abs_dev
+    if abs_dev > DEADZONE_WEEKEND * target:
+        return abs_dev
+    return 0.0
+
+
 def _deviation_score(metrics: dict[str, dict[str, Any]]) -> float:
     """Weighted total deviation used to compare before/after OR-Tools.
 
     Debe reflejar EXACTAMENTE la misma noción de "desviación" que el objetivo
-    CP-SAT (``ORToolsPhase._build_model``): desviaciones de turnos/weekend/
-    último-puesto dentro de la zona muerta (±10% / ±15% / ±20%) no se
-    penalizan con el peso principal, pero sí contribuyen con
-    ``TIEBREAK_WEIGHT`` para evitar que el solver redistribuya desviaciones
-    libremente dentro de la zona muerta y dispare esta métrica sin que el
-    objetivo del solver lo refleje (lo que provocaba que soluciones válidas
-    del solver fuesen revertidas siempre).
+    CP-SAT (``ORToolsPhase._build_model``): desviaciones de turnos y de
+    último puesto dentro de su zona muerta (±10% / ±20%) no se penalizan con
+    el peso principal. Una desviación de fines de semana dentro de ±15%
+    tampoco. Por encima de ±15% la desviación entera es un error
+    (``W_WEEKEND_ERROR``). Dentro de cada zona muerta sigue el desempate
+    ``TIEBREAK_WEIGHT``.
     """
     total = 0.0
     for m in metrics.values():
@@ -830,8 +860,8 @@ def _deviation_score(metrics: dict[str, dict[str, Any]]) -> float:
 
         weekend_target = m.get("weekend_target", 0)
         weekend_dev = abs(m.get("weekend_deviation", 0))
-        weekend_excess = max(0.0, weekend_dev - DEADZONE_WEEKEND * weekend_target)
-        total += W_WEEKEND * weekend_excess + TIEBREAK_WEIGHT * weekend_dev
+        total += W_WEEKEND_ERROR * weekend_count_error(weekend_dev, weekend_target)
+        total += TIEBREAK_WEIGHT * weekend_dev
 
         last_post_target = m.get("last_post_target", 0)
         last_post_dev = abs(m.get("last_post_deviation", 0))
@@ -855,6 +885,7 @@ class ORToolsPhase:
     # Pesos del objetivo multi-dimensión (ver constantes de módulo más arriba).
     W_SHIFT = W_SHIFT
     W_WEEKEND = W_WEEKEND
+    W_WEEKEND_ERROR = W_WEEKEND_ERROR
     W_LAST_POST = W_LAST_POST
     W_BRIDGE = W_BRIDGE
     DEADZONE_SHIFT = DEADZONE_SHIFT
@@ -884,7 +915,7 @@ class ORToolsPhase:
 
         from ortools.sat.python import cp_model
 
-        from saldo27.constraint_checker import _GAP2_WEEKEND_PROHIBITED_PAIRS
+        from saldo27.constraint_checker import candidate_spacing_rejection
         from saldo27.utilities import get_effective_min_gap
 
         def _build_model(
@@ -988,7 +1019,7 @@ class ORToolsPhase:
             worker_min_gap = {wid: get_effective_min_gap(worker_data_by_id[wid], gap) for wid in worker_ids}
             max_window = max([14, *worker_min_gap.values()]) if worker_min_gap else 14
 
-            candidate_pairs: list[tuple[int, int, int, bool]] = []
+            candidate_pairs: list[tuple[int, int]] = []
             # slots is already sorted by date (step 1 iterates sorted(self.schedule.items()))
             for idx_a in range(n_slots):
                 date_a = slots[idx_a][0]
@@ -997,19 +1028,32 @@ class ORToolsPhase:
                     delta = (date_b - date_a).days  # positive because sorted
                     if delta > max_window:
                         break
-                    candidate_pairs.append((idx_a, idx_b, delta, date_a.weekday() == date_b.weekday()))
+                    candidate_pairs.append((idx_a, idx_b))
 
             for wi, wid in enumerate(worker_ids):
                 min_gap = worker_min_gap[wid]
-                for idx_a, idx_b, delta, same_weekday in candidate_pairs:
-                    if 0 < delta < min_gap or (delta in (7, 14) and same_weekday):
-                        # Skip if the current schedule already has this worker on both slots.
-                        # The greedy phase may have intentionally allowed such placements
-                        # (e.g. via allow_714_violation).  Forcing CP-SAT to resolve them
-                        # would make the warm-start infeasible and cause the solver to spend
-                        # the full time limit searching for an alternative — the main cause
-                        # of the perceived "infinite loop".
+                for idx_a, idx_b in candidate_pairs:
+                    date_a = slots[idx_a][0]
+                    date_b = slots[idx_b][0]
+                    if (
+                        candidate_spacing_rejection(
+                            date_b,
+                            (date_a,),
+                            min_gap=min_gap,
+                            date_is_mandatory=False,
+                            block_gap2_weekend_pairs=(min_gap == 2),
+                        )
+                        is not None
+                    ):
+                        # A pair already occupied by this worker is left in place so the
+                        # warm start stays feasible. Final validation removes a non-mandatory
+                        # 7/14 or Friday-Monday pair afterwards. Both-mandatory pairs stay.
                         if slots[idx_a][2] == wid and slots[idx_b][2] == wid:
+                            continue
+                        both_mandatory = self.engine._is_mandatory(wid, date_a) and self.engine._is_mandatory(
+                            wid, date_b
+                        )
+                        if both_mandatory:
                             continue
                         model.add(x[wi, idx_a] + x[wi, idx_b] <= 1)
 
@@ -1031,14 +1075,18 @@ class ORToolsPhase:
                     hi = bisect.bisect_right(slot_dates, prior_date + timedelta(days=max_window))
                     for si in range(lo, hi):
                         date_s = slots[si][0]
-                        delta = abs((date_s - prior_date).days)
-                        if delta == 0:
-                            continue
-                        if delta < min_gap or (delta in (7, 14) and date_s.weekday() == prior_date.weekday()):
-                            # If the current schedule already placed this worker here, the
-                            # greedy phase accepted the assignment.  Do not force CP-SAT to
-                            # remove them — that would again make the warm-start infeasible.
-                            if slots[si][2] == wid:
+                        if (
+                            candidate_spacing_rejection(
+                                date_s,
+                                (prior_date,),
+                                min_gap=min_gap,
+                                date_is_mandatory=False,
+                                block_gap2_weekend_pairs=(min_gap == 2),
+                            )
+                            is not None
+                        ):
+                            # Keep an already accepted placement, and never forbid a mandatory shift.
+                            if slots[si][2] == wid or self.engine._is_mandatory(wid, date_s):
                                 continue
                             model.add(x[wi, si] == 0)
 
@@ -1119,19 +1167,24 @@ class ORToolsPhase:
                     # desviaciones "gratis" (coste 0 en eff_s) de forma arbitraria.
                     obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_s + dminus_s))
 
-                # Weekend deviation (con zona muerta ±DEADZONE_WEEKEND, alineada
-                # con optimization_metrics._calculate_weekend_balance_score).
+                # Weekend deviation. Within ±15% only the tie-break applies.
+                # Above ±15% the whole absolute deviation is an error.
                 wknd_tgt = self.engine._weekend_target_for(raw_tgt)
                 actual_wknd = sum(x[wi, si] for si in range(n_slots) if slot_is_weekend[si])
                 dplus_w = model.new_int_var(0, n_slots, f"dpw_{wi}")
                 dminus_w = model.new_int_var(0, n_slots, f"dmw_{wi}")
                 model.add(actual_wknd - wknd_tgt == dplus_w - dminus_w)
-                weekend_threshold = int(self.DEADZONE_WEEKEND * wknd_tgt)
-                eff_w = model.new_int_var(0, n_slots, f"effw_{wi}")
-                model.add(eff_w >= dplus_w + dminus_w - weekend_threshold)
-                obj_terms.append(self.W_WEEKEND * eff_w)
-                # Tiebreak: mismo razonamiento que para turnos.
-                obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_w + dminus_w))
+                weekend_abs = dplus_w + dminus_w
+                # floor(15% of target): every integer deviation above this is > ±15%.
+                max_ok = int(self.DEADZONE_WEEKEND * wknd_tgt)
+                weekend_is_error = model.new_bool_var(f"werr_{wi}")
+                model.add(weekend_abs >= max_ok + 1).only_enforce_if(weekend_is_error)
+                model.add(weekend_abs <= max_ok).only_enforce_if(weekend_is_error.Not())
+                weekend_error = model.new_int_var(0, n_slots, f"werrn_{wi}")
+                model.add(weekend_error == weekend_abs).only_enforce_if(weekend_is_error)
+                model.add(weekend_error == 0).only_enforce_if(weekend_is_error.Not())
+                obj_terms.append(self.W_WEEKEND_ERROR * weekend_error)
+                obj_terms.append(self.TIEBREAK_WEIGHT * weekend_abs)
 
                 # Bridge deviation (sin zona muerta: no existe un umbral
                 # equivalente documentado en el score de calidad para puentes).

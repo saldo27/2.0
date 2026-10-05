@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 
+from saldo27.constraint_checker import candidate_spacing_rejection
 from saldo27.event_bus import EventType, get_event_bus
+from saldo27.prior_schedule_handler import get_effective_assignments
 from saldo27.utilities import get_effective_min_gap
 
 
@@ -412,8 +414,6 @@ class LiveValidator:
 
     def _check_gap_constraints(self, worker_id: str, shift_date: datetime) -> ValidationResult:
         """Check minimum gap between shifts including 7/14 day pattern and Friday-Monday rules"""
-        worker_assignments = self.scheduler.worker_assignments.get(worker_id, set())
-
         # Get worker data for part-time adjustments
         worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
         if not worker_data:
@@ -424,59 +424,54 @@ class LiveValidator:
                 constraint_type="gap_constraint",
             )
 
-        work_percentage = worker_data.get("work_percentage", 100)
-
-        # Determine minimum days required between shifts (calendar days, per-worker)
         min_required_days_between = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
 
-        # If gap_between_shifts is 0, allow consecutive work (no gap validation needed)
-        if self.scheduler.gap_between_shifts == 0:
+        shift_is_mandatory = False
+        mandatory_str = worker_data.get("mandatory_days", "")
+        if mandatory_str:
+            try:
+                shift_is_mandatory = shift_date in set(self.scheduler.date_utils.parse_dates(mandatory_str))
+            except (TypeError, ValueError):
+                shift_is_mandatory = False
+
+        existing_dates = get_effective_assignments(
+            worker_id,
+            self.scheduler.worker_assignments,
+            getattr(self.scheduler, "prior_assignments", {}),
+            self.scheduler.start_date,
+        )
+        rejection = candidate_spacing_rejection(
+            shift_date,
+            existing_dates,
+            min_gap=min_required_days_between,
+            date_is_mandatory=shift_is_mandatory,
+            block_gap2_weekend_pairs=(min_required_days_between == 2),
+        )
+        if rejection is not None:
+            other = rejection.other_date.strftime("%Y-%m-%d")
+            if rejection.reason == "friday_monday":
+                message = (
+                    f"Friday-Monday rule violated: {rejection.days_between} days from {other} "
+                    "(Friday-Monday not allowed)"
+                )
+            elif rejection.reason == "pattern_714":
+                message = (
+                    f"7/14 day pattern violated: {rejection.days_between} days from {other} (same weekday not allowed)"
+                )
+            elif rejection.reason == "gap2_weekend":
+                message = f"Gap-2 weekend pair violated with {other}"
+            else:
+                message = (
+                    f"Gap constraint violated: {rejection.days_between} days from {other} "
+                    f"(minimum: {min_required_days_between})"
+                )
             return ValidationResult(
-                is_valid=True,
-                severity=ValidationSeverity.INFO,
-                message="Gap constraint not applicable (consecutive work allowed)",
+                is_valid=False,
+                severity=ValidationSeverity.ERROR,
+                message=message,
                 constraint_type="gap_constraint",
+                affected_items=[other],
             )
-
-        for assigned_date in worker_assignments:
-            days_between = abs((shift_date - assigned_date).days)
-
-            # Basic gap check
-            if days_between < min_required_days_between:
-                return ValidationResult(
-                    is_valid=False,
-                    severity=ValidationSeverity.ERROR,
-                    message=f"Gap constraint violated: {days_between} days from {assigned_date.strftime('%Y-%m-%d')} (minimum: {min_required_days_between})",
-                    constraint_type="gap_constraint",
-                    affected_items=[assigned_date.strftime("%Y-%m-%d")],
-                )
-
-            # Friday-Monday rule: only apply if effective gap > 3
-            if min_required_days_between > 3:
-                if days_between == 3:
-                    if (assigned_date.weekday() == 4 and shift_date.weekday() == 0) or (
-                        shift_date.weekday() == 4 and assigned_date.weekday() == 0
-                    ):
-                        return ValidationResult(
-                            is_valid=False,
-                            severity=ValidationSeverity.ERROR,
-                            message=f"Friday-Monday rule violated: {days_between} days from {assigned_date.strftime('%Y-%m-%d')} (Friday-Monday not allowed)",
-                            constraint_type="gap_constraint",
-                            affected_items=[assigned_date.strftime("%Y-%m-%d")],
-                        )
-
-            # 7/14 day pattern check: prevent same weekday assignments exactly 7 or 14 days apart.
-            # CRITICAL: This constraint applies to ALL days (weekdays AND weekends), matching the
-            # canonical implementation in ConstraintChecker._check_gap_constraint() and
-            # ScheduleBuilder._check_gap_constraints() — no weekend exemption here.
-            if (days_between == 7 or days_between == 14) and shift_date.weekday() == assigned_date.weekday():
-                return ValidationResult(
-                    is_valid=False,
-                    severity=ValidationSeverity.ERROR,
-                    message=f"7/14 day pattern violated: {days_between} days from {assigned_date.strftime('%Y-%m-%d')} (same weekday not allowed)",
-                    constraint_type="gap_constraint",
-                    affected_items=[assigned_date.strftime("%Y-%m-%d")],
-                )
 
         return ValidationResult(
             is_valid=True,
@@ -795,20 +790,41 @@ class LiveValidator:
         conflicts = []
 
         for worker_id, assignments in self.scheduler.worker_assignments.items():
-            assignments_list = sorted(list(assignments))
+            assignments_list = sorted(assignments)
             worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
             effective_gap = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
+            existing = get_effective_assignments(
+                worker_id,
+                self.scheduler.worker_assignments,
+                getattr(self.scheduler, "prior_assignments", {}),
+                self.scheduler.start_date,
+            )
 
-            for i in range(len(assignments_list) - 1):
-                gap = (assignments_list[i + 1] - assignments_list[i]).days
-                if 0 < gap < effective_gap:
+            current_dates = set(assignments)
+            for later in assignments_list:
+                for earlier in existing:
+                    if earlier >= later:
+                        continue
+                    rejection = candidate_spacing_rejection(
+                        later,
+                        (earlier,),
+                        min_gap=effective_gap,
+                        date_is_mandatory=False,
+                        block_gap2_weekend_pairs=(effective_gap == 2),
+                    )
+                    if rejection is None:
+                        continue
+                    prior_note = "" if earlier in current_dates else " against a prior shift"
                     conflicts.append(
                         ConflictInfo(
                             conflict_type="gap_violation",
-                            description=f"Worker {worker_id} has {gap} day gap (minimum: {effective_gap})",
+                            description=(
+                                f"Worker {worker_id} fails {rejection.reason}{prior_note} "
+                                f"({rejection.days_between} days, minimum {effective_gap})"
+                            ),
                             severity=ValidationSeverity.ERROR,
                             workers_involved=[worker_id],
-                            dates_involved=[assignments_list[i], assignments_list[i + 1]],
+                            dates_involved=[earlier, later],
                             resolution_suggestions=[f"Reassign worker {worker_id} from one of the conflicting dates"],
                         )
                     )

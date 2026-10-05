@@ -18,10 +18,11 @@ import random
 from datetime import datetime, timedelta
 
 from saldo27.balance_validator import BalanceValidator
+from saldo27.domain.engine_state_mixin import EngineStateMixin
 from saldo27.utilities import get_effective_min_gap
 
 
-class AdvancedDistributionEngine:
+class AdvancedDistributionEngine(EngineStateMixin):
     """Motor avanzado de distribución de turnos"""
 
     def __init__(self, scheduler, schedule_builder):
@@ -34,6 +35,8 @@ class AdvancedDistributionEngine:
         """
         self.scheduler = scheduler
         self.builder = schedule_builder
+        self.schedule = scheduler.schedule
+        self.worker_assignments = scheduler.worker_assignments
         self.config = scheduler.config
 
         # Cache y memoria para backtracking
@@ -622,17 +625,20 @@ class AdvancedDistributionEngine:
 
     def _progressive_relaxation_fill(self, max_iterations: int) -> int:
         """
-        Llenado con relajación progresiva de constraints
+        Fill empty slots, strict first and then with the one real relaxation step.
 
-        Comienza estricto y va relajando constraints soft gradualmente.
+        Scoring only distinguishes levels 0 and 1. Former levels 2 and 3 were
+        clamped to 1, so three quarters of the attempts stay on level 1 and the
+        total number of attempts is unchanged (``4 * (max_iterations // 4)``).
         """
         filled_count = 0
-
-        for relaxation_level in range(4):  # 0, 1, 2, 3
+        per_level = max_iterations // 4
+        # Level 0 keeps its quarter; the other three quarters stay on level 1.
+        for relaxation_level, level_budget in ((0, per_level), (1, per_level * 3)):
             logging.info(f"  Relaxation level {relaxation_level}")
 
             iteration = 0
-            while iteration < max_iterations // 4:
+            while iteration < level_budget:
                 iteration += 1
 
                 # Obtener slots vacíos
@@ -784,18 +790,6 @@ class AdvancedDistributionEngine:
                             return True
 
         return False
-
-    def _save_state(self) -> dict:
-        """Guardar estado actual del schedule para posible rollback"""
-        return {
-            "schedule": {k: v[:] for k, v in self.scheduler.schedule.items()},
-            "assignments": {k: set(v) for k, v in self.scheduler.worker_assignments.items()},
-        }
-
-    def _restore_state(self, state: dict):
-        """Restaurar estado previo"""
-        self.scheduler.schedule = {k: v[:] for k, v in state["schedule"].items()}
-        self.scheduler.worker_assignments = {k: set(v) for k, v in state["assignments"].items()}
 
     def _count_filled_slots(self) -> int:
         """Contar slots llenos"""

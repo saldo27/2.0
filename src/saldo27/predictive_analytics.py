@@ -626,7 +626,7 @@ class PredictiveAnalyticsEngine:
             "components": {
                 "historical_data_manager": True,
                 "demand_forecaster": True,
-                "predictive_optimizer": False,  # Not implemented yet
+                "predictive_optimizer": getattr(self.scheduler, "predictive_optimizer", None) is not None,
             },
             "configuration": self.config.copy(),
             "status": {},
@@ -692,19 +692,6 @@ class PredictiveAnalyticsEngine:
         except Exception as e:
             logging.error(f"Error getting predictive insights: {e}")
             return {"success": False, "message": f"Insights generation failed: {e!s}", "error": "INSIGHTS_FAILED"}
-
-    def collect_historical_data_dict(self) -> dict[str, Any]:
-        """Collect current schedule data for historical analysis; returns Scheduler-compatible dict."""
-        try:
-            result = self.collect_and_store_current_data()
-            return {
-                "success": result.get("status") == "success",
-                "message": result.get("message", "Data collection completed"),
-                "data_summary": result.get("data_summary"),
-            }
-        except Exception as e:
-            logging.error(f"Error collecting historical data: {e}")
-            return {"success": False, "message": f"Data collection failed: {e!s}", "error": "DATA_COLLECTION_FAILED"}
 
     def get_optimization_suggestions_list(self) -> list[str]:
         """Return optimization suggestions as a plain list."""

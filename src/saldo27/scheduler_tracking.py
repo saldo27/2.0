@@ -358,12 +358,6 @@ class SchedulerTrackingState:
                         current_weekends.sort()
                     scheduler.worker_weekend_counts[worker_id] = scheduler.worker_weekend_counts.get(worker_id, 0) + 1
 
-            if hasattr(scheduler, "eligibility_tracker") and scheduler.eligibility_tracker:
-                if removing:
-                    scheduler.eligibility_tracker.remove_worker_assignment(worker_id, date)
-                else:
-                    scheduler.eligibility_tracker.update_worker_status(worker_id, date)
-
             if hasattr(
                 scheduler, "_validate_assignment_consistency"
             ) and not scheduler._validate_assignment_consistency(worker_id, date, removing):

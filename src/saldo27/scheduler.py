@@ -2,7 +2,6 @@ from __future__ import annotations
 
 # Imports
 import logging
-import math
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -12,13 +11,12 @@ from saldo27.scheduler_initializer import SchedulerInitializer
 from saldo27.scheduler_reporting import SchedulerReportingService
 from saldo27.scheduler_tracking import SchedulerTrackingState
 from saldo27.scheduler_validation import SchedulerValidationService
-from saldo27.utilities import DateTimeUtils, get_effective_min_gap
+from saldo27.utilities import DateTimeUtils
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from saldo27.application.contracts import GenerationProgressEvent
-    from saldo27.domain.schedule_state import ScheduleState
 
 # Initialize logging using the configuration module
 setup_logging()
@@ -85,13 +83,6 @@ class Scheduler:
     def set_phase_trace(self, trace: list[Any]) -> None:
         self._phase_trace = list(trace)
 
-    def snapshot_state(self, *, include_locked: bool = True) -> ScheduleState:
-        from saldo27.domain.schedule_state import ScheduleState
-
-        return ScheduleState.from_scheduler(self, include_locked=include_locked)
-
-    def restore_state(self, state: ScheduleState) -> None:
-        state.apply_to_scheduler(self)
 
     def get_locked_mandatory(self) -> set[Any]:
         if hasattr(self, "schedule_builder") and self.schedule_builder is not None:
@@ -119,24 +110,6 @@ class Scheduler:
             if incompatible_with:
                 worker["incompatible_with"] = [str(w_id) for w_id in incompatible_with]
 
-    def _init_config(self, config: dict[str, Any]) -> None:
-        self._initializer.apply_config(config)
-
-    def _init_incompatibilities(self) -> None:
-        self._initializer.initialize_incompatibilities()
-
-    def _init_tracking_state(self) -> None:
-        self._tracking_state.initialize()
-
-    def _init_modules(self, config: dict[str, Any]) -> None:
-        self._initializer.initialize_modules(config)
-
-    def _init_targets_and_prior(self) -> None:
-        self._initializer.initialize_targets_and_prior()
-
-    # =========================================================================
-    # PRIOR SCHEDULE INTEGRATION
-    # =========================================================================
 
     def load_prior_schedule_data(self, json_source) -> dict[str, Any]:
         """
@@ -214,11 +187,6 @@ class Scheduler:
 
         return get_effective_assignments(worker_id, self.worker_assignments, self.prior_assignments, self.start_date)
 
-    def _get_effective_weekend_count(self, worker_id: str) -> int:
-        """Return prior-period weekend count + current-period weekend count."""
-        from saldo27.prior_schedule_handler import get_effective_weekend_count
-
-        return get_effective_weekend_count(worker_id, self.prior_weekend_counts, self.worker_weekend_counts)
 
     def _get_prior_weekend_count(self, worker_id: str) -> int:
         """Return just the prior-period weekend count."""
@@ -245,36 +213,9 @@ class Scheduler:
         """Clear the cache"""
         self._cache.clear()
 
-    def _validate_config(self, config: dict[str, Any]) -> None:
-        self._initializer.validate_config(config)
-
-    def _log_initialization(self):
-        self._initializer.log_initialization()
-
-    def _prepare_worker_data(self):
-        """
-        Prepare worker data before schedule generation:
-        - Set empty work periods to the full schedule period
-        - Handle other default values
-        """
-        logging.info("Preparing worker data...")
-
-        for worker in self.workers_data:
-            # Handle empty work periods - default to full schedule period
-            if "work_periods" not in worker or not worker["work_periods"].strip():
-                start_str = self.start_date.strftime("%d-%m-%Y")
-                end_str = self.end_date.strftime("%d-%m-%Y")
-                worker["work_periods"] = f"{start_str} - {end_str}"
-                logging.info(f"Worker {worker['id']}: Empty work period set to full schedule period")
-
-    # ========================================
-    # 2. DATA STRUCTURE MANAGEMENT
-    # ========================================
     def _initialize_schedule_with_variable_shifts(self):
         self._tracking_state.initialize_schedule_with_variable_shifts()
 
-    def _reset_schedule(self):
-        self._tracking_state.reset()
 
     def _ensure_data_integrity(self):
         return self._tracking_state.ensure_data_integrity()
@@ -325,23 +266,6 @@ class Scheduler:
 
         return TargetCalculator(self).calculate()
 
-    def _calculate_manual_targets(self, manual_workers: list) -> int:
-        """Delegate manual-target calculation to TargetCalculator (used by legacy callers)."""
-        from saldo27.target_calculator import TargetCalculator
-
-        return TargetCalculator(self)._calculate_manual_targets(manual_workers)
-
-    def _calculate_monthly_targets(self) -> bool:
-        """Delegate monthly-target calculation to TargetCalculator (used by legacy callers)."""
-        from saldo27.target_calculator import TargetCalculator
-
-        return TargetCalculator(self)._calculate_monthly_targets()
-
-    def _get_schedule_months(self) -> dict:
-        """Delegate schedule-months lookup to TargetCalculator (used by legacy callers)."""
-        from saldo27.target_calculator import TargetCalculator
-
-        return TargetCalculator(self)._get_schedule_months()
 
     def _get_shifts_for_date(self, date):
         """Determine the number of shifts for a specific date based on variable_shifts."""
@@ -455,275 +379,7 @@ class Scheduler:
     # ========================================
     # 4. ASSIGNMENT AND CONSTRAINT CHECKING
     # ========================================
-    def _is_allowed_assignment(self, worker_id: str, date: datetime, shift_num: int) -> bool:
-        """
-        Optimized constraint checking with caching for better performance.
 
-        Args:
-            worker_id: ID of the worker
-            date: Date for the assignment
-            shift_num: Shift number (often unused but kept for compatibility)
-
-        Returns:
-            bool: True if assignment is allowed, False otherwise
-        """
-        # Check cache first for repeated constraint checks
-        cache_key = self._get_cache_key("_is_allowed_assignment", worker_id, date, shift_num)
-        cached_result = self._get_cached_result(cache_key)
-        if cached_result is not None:
-            return cached_result
-
-        try:
-            worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
-            if not worker:
-                logging.warning(f"_is_allowed_assignment: Worker {worker_id} not found in workers_data.")
-                result = False
-                self._set_cached_result(cache_key, result)
-                return result
-
-            # Check if worker is already assigned on this date (any post)
-            if date in self.schedule and worker_id in self.schedule.get(date, []):
-                logging.debug(
-                    f"_is_allowed_assignment: Worker {worker_id} already assigned on {date.strftime('%Y-%m-%d')}"
-                )
-                result = False
-                self._set_cached_result(cache_key, result)
-                return result
-
-            worker_assignments_set = self.worker_assignments.get(worker_id, set())
-            if not isinstance(worker_assignments_set, set):
-                worker_assignments_set = set()
-
-            # Get work percentage once for efficiency
-            work_percentage = worker.get("work_percentage", 100)
-            min_days_required_between = get_effective_min_gap(worker, self.gap_between_shifts)
-
-            # Optimized constraint checking loop
-            for assigned_date in worker_assignments_set:
-                if assigned_date == date:
-                    continue
-
-                days_difference = abs((date - assigned_date).days)
-
-                # 1. Basic minimum gap check
-                if days_difference < min_days_required_between:
-                    logging.debug(
-                        f"_is_allowed_assignment: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails gap with {assigned_date.strftime('%Y-%m-%d')} ({days_difference} < {min_days_required_between})"
-                    )
-                    result = False
-                    self._set_cached_result(cache_key, result)
-                    return result
-
-                # 2. Special case for Friday-Monday — only if effective gap > 3
-                if min_days_required_between > 3 and days_difference == 3:
-                    assigned_weekday = assigned_date.weekday()
-                    date_weekday = date.weekday()
-                    if (assigned_weekday == 4 and date_weekday == 0) or (assigned_weekday == 0 and date_weekday == 4):
-                        logging.debug(
-                            f"_is_allowed_assignment: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails Fri-Mon rule with {assigned_date.strftime('%Y-%m-%d')}"
-                        )
-                        result = False
-                        self._set_cached_result(cache_key, result)
-                        return result
-
-                # 3. Reject 7- or 14-day same-weekday patterns
-                if self._is_weekly_pattern(days_difference) and date.weekday() == assigned_date.weekday():
-                    logging.debug(
-                        f"_is_allowed_assignment: Worker {worker_id} on {date.strftime('%Y-%m-%d')} fails 7/14 day pattern with {assigned_date.strftime('%Y-%m-%d')}"
-                    )
-                    result = False
-                    self._set_cached_result(cache_key, result)
-                    return result
-
-            # 4. Optimized incompatibility check
-            if date in self.schedule:
-                assigned_on_date_others = [
-                    w_id for w_id in self.schedule[date] if w_id is not None and w_id != worker_id
-                ]
-                worker_incompat_list = worker.get("incompatible_with", [])
-
-                # Quick check if any incompatible workers are assigned
-                if worker_incompat_list and any(
-                    str(other_id) in worker_incompat_list for other_id in assigned_on_date_others
-                ):
-                    logging.debug(
-                        f"_is_allowed_assignment: Worker {worker_id} incompatible with assigned workers on {date.strftime('%Y-%m-%d')}"
-                    )
-                    result = False
-                    self._set_cached_result(cache_key, result)
-                    return result
-
-            result = True
-            self._set_cached_result(cache_key, result)
-            return result
-
-        except Exception as e:
-            logging.error(
-                f"Error in Scheduler._is_allowed_assignment for worker {worker_id} on {date}: {e!s}", exc_info=True
-            )
-            return False
-
-    def _assign_workers_simple(self):
-        """
-        Simple method to directly assign workers to shifts based on targets and ensuring
-        all constraints are properly respected:
-        - Special Friday-Monday constraint
-        - 7/14 day pattern avoidance
-        - Worker incompatibility checking
-        """
-        logging.info("Using simplified assignment method to ensure schedule population")
-
-        # 1. Get all dates that need to be scheduled
-        all_dates = sorted(list(self.schedule.keys()))
-        if not all_dates:
-            all_dates = self._get_date_range(self.start_date, self.end_date)
-
-        # 2. Prepare worker assignments based on target shifts
-        worker_assignment_counts = {w["id"]: 0 for w in self.workers_data}
-        worker_targets = {w["id"]: w.get("target_shifts", 1) for w in self.workers_data}
-
-        # Sort workers by targets (highest first) to prioritize those who need more shifts
-        workers_by_priority = sorted(self.workers_data, key=lambda w: worker_targets.get(w["id"], 0), reverse=True)
-
-        # 3. Go through each date and assign workers
-        for date in all_dates:
-            # For each shift on this date
-            for post in range(self.num_shifts):
-                # If the shift is already assigned, skip it
-                if date in self.schedule and len(self.schedule[date]) > post and self.schedule[date][post] is not None:
-                    continue
-
-                # Find the best worker for this shift
-                best_worker = None
-
-                # Get currently assigned workers for this date
-                currently_assigned = []
-                if date in self.schedule:
-                    currently_assigned = [w for w in self.schedule[date] if w is not None]
-
-                # Try each worker in priority order
-                for worker in workers_by_priority:
-                    worker_id = worker["id"]
-
-                    # Skip if worker is already assigned to this date
-                    if worker_id in currently_assigned:
-                        continue
-
-                    # Skip if worker has reached their target
-                    if worker_assignment_counts[worker_id] >= worker_targets[worker_id]:
-                        continue
-
-                    # Initialize too_close flag
-                    too_close = False
-
-                    # Inside the loop where we check minimum gap
-                    for assigned_date in self.worker_assignments.get(worker_id, set()):
-                        days_difference = abs((date - assigned_date).days)
-
-                        # Minimum gap (calendar days) per worker type
-                        min_days_between = get_effective_min_gap(worker, self.gap_between_shifts)
-                        if days_difference < min_days_between:
-                            too_close = True
-                            break
-
-                        # Special case: Friday-Monday — only block if effective gap > 3
-                        if days_difference == 3 and min_days_between > 3:
-                            if (date.weekday() == 0 and assigned_date.weekday() == 4) or (
-                                date.weekday() == 4 and assigned_date.weekday() == 0
-                            ):
-                                too_close = True
-                                break
-
-                        # Check for weekly-pattern (7 or 14 days, same weekday)
-                        if self._is_weekly_pattern(days_difference) and date.weekday() == assigned_date.weekday():
-                            too_close = True
-
-                    if too_close:
-                        continue
-
-                    # Check for worker incompatibilities
-                    incompatible_with = worker.get("incompatible_with", [])
-                    if incompatible_with:
-                        has_conflict = False
-                        for incompatible_id in incompatible_with:
-                            if incompatible_id in currently_assigned:
-                                has_conflict = True
-                                break
-
-                        if has_conflict:
-                            continue
-
-                    # CRITICAL: no_last_post workers cannot be assigned to the last post
-                    if post == self.num_shifts - 1 and worker.get("no_last_post", False):
-                        continue
-
-                    # This worker is a good candidate
-                    # CRITICAL: Final check - verify tolerance before assigning
-                    if hasattr(self, "schedule_builder") and self.schedule_builder:
-                        if self.schedule_builder._would_violate_tolerance(worker_id, date, allow_relaxation=True):
-                            logging.debug(
-                                f"Simple assignment: {worker_id} rejected for {date.strftime('%Y-%m-%d')} - tolerance violation"
-                            )
-                            continue  # Try next worker
-
-                    best_worker = worker
-                    break
-
-                # If we found a suitable worker, assign them
-                if best_worker:
-                    worker_id = best_worker["id"]
-
-                    # Make sure the schedule list exists and has the right size
-                    if date not in self.schedule:
-                        self.schedule[date] = []
-
-                    while len(self.schedule[date]) <= post:
-                        self.schedule[date].append(None)
-
-                    # CRITICAL: Verify slot is not protected by mandatory
-                    if self.schedule[date][post] is not None:
-                        existing = self.schedule[date][post]
-                        if hasattr(self, "schedule_builder"):
-                            if self.schedule_builder.is_locked_mandatory(
-                                existing, date
-                            ) or self.schedule_builder.is_mandatory(existing, date):
-                                logging.warning(
-                                    f"🔒 BLOCKED: Cannot overwrite MANDATORY {existing} on {date.strftime('%Y-%m-%d')} post {post}"
-                                )
-                                continue
-
-                    # Assign the worker
-                    self.schedule[date][post] = worker_id
-
-                    # Update tracking data
-                    self._update_tracking_data(worker_id, date, post)
-
-                    # Update the assignment count
-                    worker_assignment_counts[worker_id] += 1
-
-                    # Update currently_assigned for this date
-                    currently_assigned.append(worker_id)
-
-                    # Log the assignment
-                    logging.info(f"Assigned worker {worker_id} to {date.strftime('%d-%m-%Y')}, post {post}")
-                else:
-                    # No suitable worker found, leave unassigned
-                    if date not in self.schedule:
-                        self.schedule[date] = []
-
-                    while len(self.schedule[date]) <= post:
-                        self.schedule[date].append(None)
-
-                    logging.debug(f"No suitable worker found for {date.strftime('%d-%m-%Y')}, post {post}")
-
-        # 4. Return the number of assignments made
-        total_assigned = sum(worker_assignment_counts.values())
-        total_shifts = len(all_dates) * self.num_shifts
-        logging.info(
-            f"Simple assignment complete: {total_assigned}/{total_shifts} shifts assigned ({total_assigned / total_shifts * 100:.1f}%)"
-        )
-
-        return total_assigned > 0
 
     def _check_schedule_constraints(self):
         """Check the current schedule for constraint violations.
@@ -751,6 +407,10 @@ class Scheduler:
                     elif v["type"] == "weekly_pattern":
                         logging.warning(
                             f"Violation {i + 1}: Worker {v['worker_id']} has shifts exactly {v['days_between']} days apart on {v['date1']} and {v['date2']}"
+                        )
+                    elif v["type"] == "gap2_weekend":
+                        logging.warning(
+                            f"Violation {i + 1}: Worker {v['worker_id']} has a gap-2 weekend pair on {v['date1']} and {v['date2']}"
                         )
                     elif v["type"] == "incompatibility":
                         logging.warning(
@@ -783,10 +443,11 @@ class Scheduler:
             logging.info(f"Attempting to fix {len(violations)} constraint violations")
             fixes_made = 0
             schedule_builder = self.schedule_builder if hasattr(self, "schedule_builder") else None
+            from saldo27.constraint_checker import SPACING_VIOLATION_TYPES
 
             # Fix each violation
             for violation in violations:
-                if violation["type"] in {"min_rest_days", "friday_monday_pattern", "weekly_pattern"}:
+                if violation["type"] in SPACING_VIOLATION_TYPES:
                     # Fix by unassigning one of the shifts
                     worker_id = violation["worker_id"]
                     date1 = violation["date1"]
@@ -999,185 +660,10 @@ class Scheduler:
         """Delegate to DateTimeUtils.get_date_range (canonical implementation)."""
         return self.date_utils.get_date_range(start_date, end_date)
 
-    def _cleanup_schedule(self):
-        """
-        Clean up the schedule before validation
-
-        - Ensure all dates have proper shift lists
-        - Remove any empty shifts at the end of lists
-        - Sort schedule by date
-        """
-        logging.info("Cleaning up schedule...")
-
-        # Ensure each date matches its variable-shifts count
-        for date in self._get_date_range(self.start_date, self.end_date):
-            expected = self._get_shifts_for_date(date)
-            if date not in self.schedule:
-                self.schedule[date] = [None] * expected
-            else:
-                actual = len(self.schedule[date])
-                if actual < expected:
-                    self.schedule[date].extend([None] * (expected - actual))
-                elif actual > expected:
-                    self.schedule[date] = self.schedule[date][:expected]
-        # Create a sorted version of the schedule
-        sorted_schedule = {}
-        for date in sorted(self.schedule.keys()):
-            sorted_schedule[date] = self.schedule[date]
-
-        self.schedule = sorted_schedule
-
-        logging.info("Schedule cleanup complete")
-        return True
-
-    # ========================================
-    # 6. SCORING AND EVALUATION
-    # ========================================
     def calculate_score(self, schedule_to_score=None, assignments_to_score=None):
         return self._reporting_service.calculate_score(schedule_to_score, assignments_to_score)
 
-    def _calculate_coverage(self):
-        return self._reporting_service.calculate_coverage()
 
-    def _calculate_post_rotation(self):
-        return self._reporting_service.calculate_post_rotation()
-
-    def _calculate_post_rotation_coverage(self):
-        return self._reporting_service.calculate_post_rotation_coverage()
-
-    # ========================================
-    # 7. BACKUP AND RESTORE OPERATIONS
-    # ========================================
-    def _save_global_best(self):
-        """
-        Save the scheduler-level global best schedule snapshot.
-
-        Named distinctly from ``ScheduleBuilder._save_current_as_best``, which is
-        the snapshot used during iterative construction/optimization and is the
-        authoritative one consulted by ``SchedulerCore``.  This method captures a
-        coarser, scheduler-level copy for optional external use (e.g. after the
-        full generation pipeline completes).
-        """
-        try:
-            logging.debug("Saving scheduler-level global best schedule...")
-
-            # Create a deep copy of the current schedule
-            best_schedule = {}
-            for date, shifts in self.schedule.items():
-                best_schedule[date] = shifts.copy()
-
-            # Save all tracking data
-            self.global_best_schedule_data = {
-                "schedule": best_schedule,
-                "worker_assignments": {
-                    w_id: assignments.copy() for w_id, assignments in self.worker_assignments.items()
-                },
-                "worker_posts": {w_id: posts.copy() for w_id, posts in self.worker_posts.items()},
-                "worker_weekdays": {w_id: counts.copy() for w_id, counts in self.worker_weekdays.items()},
-                "worker_weekends": {w_id: dates.copy() for w_id, dates in self.worker_weekends.items()},
-                "worker_shift_counts": self.worker_shift_counts.copy()
-                if hasattr(self, "worker_shift_counts")
-                else None,
-                "worker_weekend_counts": self.worker_weekend_counts.copy()
-                if hasattr(self, "worker_weekend_counts")
-                else None,
-                "score": self.calculate_score(),
-            }
-
-            logging.debug(f"Saved global best schedule with score: {self.global_best_schedule_data['score']}")
-            return True
-        except Exception as e:
-            logging.error(f"Error saving global best schedule: {e!s}", exc_info=True)
-            return False
-
-    def _backup_best_schedule(self):
-        """Save a backup of the current best schedule"""
-        try:
-            # Create deep copies of all structures
-            self.backup_schedule = {}
-            for date, shifts in self.schedule.items():
-                self.backup_schedule[date] = shifts.copy() if shifts else []
-
-            self.backup_worker_assignments = {}
-            for worker_id, assignments in self.worker_assignments.items():
-                self.backup_worker_assignments[worker_id] = assignments.copy()
-
-            # Include other backup structures if needed
-            self.backup_worker_posts = {worker_id: posts.copy() for worker_id, posts in self.worker_posts.items()}
-
-            self.backup_worker_weekdays = {
-                worker_id: weekdays.copy() for worker_id, weekdays in self.worker_weekdays.items()
-            }
-
-            self.backup_worker_weekends = {
-                worker_id: weekends.copy() for worker_id, weekends in self.worker_weekends.items()
-            }
-
-            # Only backup constraint_skips if it exists to avoid errors
-            if hasattr(self, "constraint_skips"):
-                self.backup_constraint_skips = {}
-                for worker_id, skips in self.constraint_skips.items():
-                    self.backup_constraint_skips[worker_id] = {}
-                    for skip_type, skip_values in skips.items():
-                        if skip_values is not None:
-                            self.backup_constraint_skips[worker_id][skip_type] = skip_values.copy()
-
-            filled_shifts = sum(1 for shifts in self.schedule.values() for worker in shifts if worker is not None)
-            logging.info(f"Backed up current schedule in scheduler with {filled_shifts} filled shifts")
-            return True
-        except Exception as e:
-            logging.error(f"Error in scheduler backup: {e!s}", exc_info=True)
-            return False
-
-    def _restore_best_schedule(self):
-        """Restore the backed up schedule"""
-        try:
-            if not hasattr(self, "backup_schedule"):
-                logging.warning("No scheduler backup available to restore")
-                return False
-
-            # Restore from our backups
-            self.schedule = {}
-            for date, shifts in self.backup_schedule.items():
-                self.schedule[date] = shifts.copy() if shifts else []
-
-            self.worker_assignments = {}
-            for worker_id, assignments in self.backup_worker_assignments.items():
-                self.worker_assignments[worker_id] = assignments.copy()
-
-            # Restore other structures if they exist
-            if hasattr(self, "backup_worker_posts"):
-                self.worker_posts = {worker_id: posts.copy() for worker_id, posts in self.backup_worker_posts.items()}
-
-            if hasattr(self, "backup_worker_weekdays"):
-                self.worker_weekdays = {
-                    worker_id: weekdays.copy() for worker_id, weekdays in self.backup_worker_weekdays.items()
-                }
-
-            if hasattr(self, "backup_worker_weekends"):
-                self.worker_weekends = {
-                    worker_id: weekends.copy() for worker_id, weekends in self.backup_worker_weekends.items()
-                }
-
-            # Only restore constraint_skips if backup exists
-            if hasattr(self, "backup_constraint_skips"):
-                self.constraint_skips = {}
-                for worker_id, skips in self.backup_constraint_skips.items():
-                    self.constraint_skips[worker_id] = {}
-                    for skip_type, skip_values in skips.items():
-                        if skip_values is not None:
-                            self.constraint_skips[worker_id][skip_type] = skip_values.copy()
-
-            filled_shifts = sum(1 for shifts in self.schedule.values() for worker in shifts if worker is not None)
-            logging.info(f"Restored schedule in scheduler with {filled_shifts} filled shifts")
-            return True
-        except Exception as e:
-            logging.error(f"Error in scheduler restore: {e!s}", exc_info=True)
-            return False
-
-    # ========================================
-    # 8. VALIDATION AND VERIFICATION
-    # ========================================
     def validate_and_fix_final_schedule(self):
         return self._validation_service.validate_and_fix_final_schedule()
 
@@ -1205,46 +691,12 @@ class Scheduler:
     # ========================================
     # 10. UTILITY METHODS
     # ========================================
-    def _is_weekly_pattern(self, days_difference):
-        """Return True if this is a 7- or 14-day same-weekday pattern."""
-        return days_difference in (7, 14)
 
-    def _redistribute_excess_shifts(self, excess_shifts, excluded_worker_id, mandatory_shifts_by_worker):
-        """Helper method to redistribute excess shifts from one worker to others, respecting mandatory assignments"""
-        eligible_workers = [w for w in self.workers_data if w["id"] != excluded_worker_id]
-
-        if not eligible_workers:
-            return
-
-        # Sort by work percentage (give more to workers with higher percentage)
-        eligible_workers.sort(key=lambda w: float(w.get("work_percentage", 100)), reverse=True)
-
-        # Distribute excess shifts
-        for i in range(excess_shifts):
-            worker = eligible_workers[i % len(eligible_workers)]
-            worker["target_shifts"] += 1
-            logging.info(f"Redistributed 1 shift to worker {worker['id']}")
-
-    # ========================================
-    # 11. REAL-TIME OPERATIONS
-    # ========================================
-    _RT_DISABLED: ClassVar[dict[str, Any]] = {
-        "success": False,
-        "message": "Real-time features not enabled",
-        "error": "REAL_TIME_DISABLED",
-    }
 
     def is_real_time_enabled(self) -> bool:
         """Return True if the real-time engine is active."""
         return self.real_time_engine is not None
 
-    def enable_real_time_features(self) -> bool:
-        """Activate real-time features; returns True on success."""
-        if not self.is_real_time_enabled():
-            logging.warning("Cannot enable real-time features: real-time engine not initialized")
-            return False
-        assert self.real_time_engine is not None
-        return self.real_time_engine.enable_features()
 
     def assign_worker_real_time(
         self, worker_id: str, shift_date: datetime, post_index: int, user_id: str | None = None, validate: bool = True
@@ -1352,12 +804,6 @@ class Scheduler:
         assert self.predictive_optimizer is not None
         return self.predictive_optimizer.run_predictive_optimization_dict()
 
-    def collect_historical_data(self) -> dict[str, Any]:
-        """Collect current schedule data for historical analysis; returns plain dict."""
-        if not self.is_predictive_analytics_enabled():
-            return self._PA_DISABLED
-        assert self.predictive_analytics is not None
-        return self.predictive_analytics.collect_historical_data_dict()
 
     def get_optimization_suggestions(self) -> list[str]:
         """Return optimization suggestions from predictive analytics."""
@@ -1377,13 +823,3 @@ class Scheduler:
             logging.error(f"Error getting analytics summary: {e}")
             return {"enabled": True, "error": str(e), "message": "Error getting analytics summary"}
 
-    def apply_predictive_adjustments(self, optimization_result: dict[str, Any]) -> dict[str, Any]:
-        """Apply parameter adjustments recommended by predictive optimization; returns plain dict."""
-        if not self.is_predictive_analytics_enabled() or not self.predictive_optimizer:
-            return {
-                "success": False,
-                "message": "Predictive optimization not available",
-                "error": "PREDICTIVE_OPTIMIZER_DISABLED",
-            }
-        assert self.predictive_optimizer is not None
-        return self.predictive_optimizer.apply_predictive_adjustments_dict(optimization_result)

@@ -4,6 +4,8 @@ import logging
 from collections import Counter
 from typing import TYPE_CHECKING
 
+from saldo27.constraint_checker import SPACING_VIOLATION_TYPES
+
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
 
@@ -26,7 +28,7 @@ class SchedulerValidationService:
             "Final validation complete: Found %s incompatibility issues, %s gap/pattern issues, "
             "%s other issues. Made %s fixes. Remaining violations: %s.",
             violation_counts.get("incompatibility", 0),
-            sum(violation_counts.get(kind, 0) for kind in ("min_rest_days", "friday_monday_pattern", "weekly_pattern")),
+            sum(violation_counts.get(kind, 0) for kind in SPACING_VIOLATION_TYPES),
             other_issues,
             fixes_made,
             len(remaining_violations),

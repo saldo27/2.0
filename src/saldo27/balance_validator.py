@@ -7,8 +7,8 @@ estrictamente controlados durante todo el proceso de optimización.
 
 SISTEMA DE TOLERANCIA POR FASES:
 - Fase 1 (Initial): ±10% tolerancia objetivo estricta
-- Fase 2 (Emergency): ±12% LÍMITE ABSOLUTO (solo si cobertura < 95%)
-- Crítico: >12% NUNCA debe ocurrir (sistema debe bloquear)
+- Fase 2 (Emergency): ±13% LÍMITE ABSOLUTO (solo si cobertura < 95%)
+- Crítico: >13% NUNCA debe ocurrir; el sistema busca otra asignación
 
 IMPORTANTE: Este validador clasifica violaciones. El enforcement activo
 está en schedule_builder._would_violate_tolerance()
@@ -64,8 +64,8 @@ class BalanceValidator:
             tolerance_percentage: Tolerancia objetivo en porcentaje (default: 10% para Fase 1)
         """
         self.tolerance_percentage = tolerance_percentage
-        self.emergency_limit = 12.0  # Fase 2: LÍMITE ABSOLUTO ±12%
-        self.critical_threshold = 12.0  # Cualquier cosa >12% es un error del sistema
+        self.emergency_limit = 13.0  # Fase 2: LÍMITE ABSOLUTO ±13%
+        self.critical_threshold = 13.0  # Cualquier cosa >13% es un error del sistema
 
         logging.info("BalanceValidator initialized with phase system:")
         logging.info(f"  Phase 1 target: ±{tolerance_percentage}%")
@@ -85,9 +85,9 @@ class BalanceValidator:
         """
         violations = {
             "within_tolerance": [],  # Fase 1: Dentro de ±8%
-            "within_emergency": [],  # Fase 2: Entre 8% y 12% (límite absoluto)
-            "critical": [],  # >12% (NO debería ocurrir - error del sistema)
-            "extreme": [],  # >12% (deprecated, same as critical now)
+            "within_emergency": [],  # Fase 2: entre el objetivo y el 13%
+            "critical": [],  # >13% (NO debería ocurrir - error del sistema)
+            "extreme": [],  # >13% (deprecated, same as critical now)
         }
 
         stats = {"total_workers": len(workers_data), "max_deviation": 0.0, "avg_deviation": 0.0, "total_deviation": 0.0}
@@ -132,7 +132,7 @@ class BalanceValidator:
                 # Fase 2: Within absolute limit (should only occur if Phase 2 activated)
                 violations["within_emergency"].append(worker_info)
             else:
-                # >12% = CRITICAL ERROR - system should have blocked this
+                # >13% = CRITICAL ERROR - system should have blocked this
                 violations["critical"].append(worker_info)
                 violations["extreme"].append(worker_info)  # Keep for backward compatibility
 
@@ -159,7 +159,7 @@ class BalanceValidator:
 
         # Warnings para problemas críticos
         if violations["critical"]:
-            logging.error(f"🚨 SYSTEM ERROR: {len(violations['critical'])} workers EXCEED ±12% ABSOLUTE LIMIT:")
+            logging.error(f"🚨 SYSTEM ERROR: {len(violations['critical'])} workers EXCEED ±13% ABSOLUTE LIMIT:")
             for worker_info in violations["critical"]:
                 logging.error(
                     f"      {worker_info['worker_id']}: {worker_info['deviation_percentage']:+.1f}% "

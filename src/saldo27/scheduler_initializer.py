@@ -10,7 +10,6 @@ from saldo27.exceptions import ConfigurationError
 from saldo27.infrastructure.optional_engines import load_optional_engines
 from saldo27.scheduler_config import SchedulerConfig
 from saldo27.statistics_calculator import StatisticsCalculator
-from saldo27.worker_eligibility import WorkerEligibilityTracker
 
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
@@ -203,16 +202,6 @@ class SchedulerInitializer:
         scheduler.stats = StatisticsCalculator(scheduler)
         scheduler.constraint_checker = ConstraintChecker(scheduler)
         scheduler.data_manager = DataManager(scheduler)
-        scheduler.eligibility_tracker = WorkerEligibilityTracker(
-            scheduler.workers_data,
-            scheduler.holidays,
-            scheduler.gap_between_shifts,
-            scheduler.max_consecutive_weekends,
-            start_date=scheduler.start_date,
-            end_date=scheduler.end_date,
-            date_utils=scheduler.date_utils,
-            scheduler=scheduler,
-        )
 
         loaded_optional = load_optional_engines(scheduler, config)
 

@@ -898,6 +898,13 @@ def render_final_adjustment_result(result: dict[str, Any]) -> None:
     else:
         st.info("ℹ️ El calendario ya estaba bien equilibrado. No se realizaron cambios.")
 
+    weekend_errors = fa_stats.get("weekend_errors", 0)
+    if weekend_errors:
+        st.error(
+            f"Desviación de fines de semana superior al ±15% en {weekend_errors} trabajador(es). "
+            "Esa desviación queda penalizada como error."
+        )
+
     # Show before/after comparison table
     rows = []
     for wid, bef in before_metrics.items():
@@ -1518,7 +1525,10 @@ with st.sidebar:
             min_value=0,
             max_value=3,
             value=st.session_state.config.get("weekend_tolerance", 1),
-            help="Tolerancia permitida en la desviación de fines de semana asignados",
+            help=(
+                "Tope de generación: este número de guardias de fin de semana por encima del objetivo proporcional. "
+                "En Ajuste final, una desviación superior al ±15% de ese objetivo se penaliza como error."
+            ),
         )
         st.session_state.config["weekend_tolerance"] = weekend_tolerance
 

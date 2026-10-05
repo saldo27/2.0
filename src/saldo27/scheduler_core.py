@@ -55,9 +55,9 @@ class SchedulerCore:
 
         # Initialize tolerance validation and iterative optimization
         self.tolerance_validator = ShiftToleranceValidator(scheduler)
-        # Iterative optimizer works with Phase 2 tolerance (±12% absolute limit)
+        # Iterative optimizer works with Phase 2 tolerance (±13% absolute limit)
         # Note: Initial distribution uses Phase 1 (±10% objective), optimizer handles both phases
-        self.iterative_optimizer = IterativeOptimizer(max_iterations=80, tolerance=0.12)
+        self.iterative_optimizer = IterativeOptimizer(max_iterations=80, tolerance=0.13)
 
         # Shared BalanceValidator — single source of truth for all balance engines.
         # IterativeOptimizer, AdvancedDistributionEngine (via config["balance_tolerance"]),
@@ -176,7 +176,7 @@ class SchedulerCore:
 
         logging.info(f"🔄 STARTING {max_complete_attempts} COMPLETE SCHEDULE ATTEMPTS")
         logging.info("   Each attempt will respect Phase 1 (±10% OBJECTIVE) tolerance initially")
-        logging.info("   Phase 2 (±12% ABSOLUTE LIMIT) activates if coverage < 95%")
+        logging.info("   Phase 2 (±13% ABSOLUTE LIMIT) activates if coverage < 95%")
         logging.info("=" * 80)
 
         complete_attempts = []
@@ -287,6 +287,13 @@ class SchedulerCore:
         if self.balance_optimizer is not None:
             self.balance_optimizer.schedule = self.scheduler.schedule
             self.balance_optimizer.worker_assignments = self.scheduler.worker_assignments
+
+        # The advanced engine rolls back through the same aliases. Rebind them
+        # whenever the scheduler dicts are replaced, or its snapshot restores
+        # the objects captured at construction.
+        if self.advanced_engine is not None:
+            self.advanced_engine.schedule = self.scheduler.schedule
+            self.advanced_engine.worker_assignments = self.scheduler.worker_assignments
 
         # Also sync StatisticsCalculator so its cached methods don't use stale dicts
         if hasattr(self.scheduler, "stats") and self.scheduler.stats is not None:
@@ -528,9 +535,9 @@ class SchedulerCore:
                     return False
 
             logging.info("   - Phase 1 target: ±10% objective (adjusted by work_percentage)")
-            logging.info("   - Phase 2 emergency: ±12% ABSOLUTE LIMIT (if needed)")
+            logging.info("   - Phase 2 emergency: ±13% ABSOLUTE LIMIT (if needed)")
             logging.info("   - Gap reduction: NOT allowed")
-            logging.info("   - Pattern 7/14: Allowed if worker needs 3+ more shifts (prevents blocking)")
+            logging.info("   - Pattern 7/14 and Friday-Monday: blocked unless the shift is mandatory")
             logging.info("   - Mandatory shifts: NEVER modified")
             logging.info("   - Incompatibilities: ALWAYS respected")
             logging.info("   - Days off: NEVER violated")
@@ -1678,11 +1685,10 @@ class SchedulerCore:
             # CRITICAL: Switch to RELAXED MODE for iterative optimization
             self.scheduler.schedule_builder.enable_relaxed_mode()
             logging.info("🔓 RELAXED MODE activated for iterative optimization phase")
-            logging.info("   - Target tolerance: ±10% objective (Phase 1) or ±12% limit (Phase 2 if needed)")
-            logging.info("   - ABSOLUTE LIMIT: ±12% NEVER exceeded")
-            logging.info("   - Gap reduction: -1 ONLY (with deficit ≥3)")
-            logging.info("   - Pattern 7/14: Allows violation if deficit >10% of target")
-            logging.info("   - Balance tolerance: ±10% for guardias/mes, weekends")
+            logging.info("   - Target tolerance: ±10% objective (Phase 1) or ±13% limit (Phase 2 if needed)")
+            logging.info("   - ABSOLUTE LIMIT: ±13% NEVER exceeded; above that, another assignment is sought")
+            logging.info("   - Gap reduction: -1 ONLY (relaxation level ≥ 1 and deficit ≥ 2)")
+            logging.info("   - Pattern 7/14 and Friday-Monday: blocked unless the shift is mandatory")
             logging.info("   - Mandatory/Incompatibilities/Days off: ALWAYS respected")
 
             # Apply iterative optimization

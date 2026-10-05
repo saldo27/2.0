@@ -14,7 +14,7 @@ class ShiftToleranceValidator:
 
     Sistema de tolerancia por fases:
     - Fase 1 (Initial): ±10% (objetivo estricto)
-    - Fase 2 (Emergency): ±12% (límite absoluto, solo si cobertura < 95%)
+    - Fase 2 (Emergency): ±13% (límite absoluto, solo si cobertura < 95%)
 
     IMPORTANTE: Este validador verifica contra los límites configurados.
     El enforcement activo está en schedule_builder._would_violate_tolerance()
@@ -32,8 +32,8 @@ class ShiftToleranceValidator:
         self.schedule = scheduler.schedule
         # Phase 1 tolerance: ±10% (strict target objective)
         self.tolerance_percentage = 10.0
-        # Phase 2 tolerance: ±12% (absolute maximum - NEVER exceed)
-        self.emergency_tolerance_percentage = 12.0
+        # Phase 2 tolerance: ±13% (absolute maximum - NEVER exceed)
+        self.emergency_tolerance_percentage = 13.0
 
     def calculate_tolerance_bounds(
         self, target_shifts: int, is_weekend: bool = False, worker_id: str | None = None
