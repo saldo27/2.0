@@ -47,7 +47,7 @@ class CoreMethodPhase:
         success = self.runner(core)
         if not success:
             return False, state
-        scheduler = core.scheduler  # type: ignore[attr-defined]
+        scheduler = core.scheduler
         return True, ScheduleState.from_scheduler(scheduler)
 
 

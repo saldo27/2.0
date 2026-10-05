@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from saldo27.domain.schedule_state import ScheduleState
+    from saldo27.scheduler import Scheduler
 
 
 class BuildEngine(Protocol):
@@ -46,6 +47,9 @@ class SchedulerCoreProtocol(Protocol):
     def _finalization_phase(self) -> bool: ...
 
     def report_phase_progress(self, event: GenerationProgressEvent) -> None: ...
+
+    @property
+    def scheduler(self) -> Scheduler: ...
 
 
 @dataclass(frozen=True)

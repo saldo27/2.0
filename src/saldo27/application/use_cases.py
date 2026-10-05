@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from saldo27.scheduler import Scheduler
 from saldo27.scheduler_config import SchedulerConfig
@@ -168,7 +168,11 @@ def generate_schedule(
     )
 
 
-def cancel_scheduler(scheduler: Scheduler) -> None:
+class CancellableScheduler(Protocol):
+    def request_cancellation(self) -> None: ...
+
+
+def cancel_scheduler(scheduler: CancellableScheduler) -> None:
     """Signal the scheduler to stop generation at the next cancellation checkpoint."""
     scheduler.request_cancellation()
 
