@@ -1514,7 +1514,11 @@ class IterativeOptimizer:
 
                 # Get weekend/holiday dates from worker assignments (consistent with rest of code)
                 weekend_dates = sorted(
-                    [d for d in worker_assignments if self._active_scheduler().date_utils.is_weekend_day(d, holidays_set)]
+                    [
+                        d
+                        for d in worker_assignments
+                        if self._active_scheduler().date_utils.is_weekend_day(d, holidays_set)
+                    ]
                 )
 
                 # ========================================
@@ -1745,9 +1749,7 @@ class IterativeOptimizer:
                 return False
 
             date_obj = date_key if isinstance(date_key, datetime) else datetime.strptime(date_key, "%Y-%m-%d")
-            monthly_target = schedule_builder._get_expected_monthly_target(
-                worker_data, date_obj.year, date_obj.month
-            )
+            monthly_target = schedule_builder._get_expected_monthly_target(worker_data, date_obj.year, date_obj.month)
 
             if monthly_target <= 0:
                 return False
