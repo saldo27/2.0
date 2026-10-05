@@ -45,7 +45,6 @@ packaging/                # PyInstaller hooks, .spec file, Windows installer
 | `schedule_analyzer.py` | PDF/Excel/CSV schedule reader; generates analysis reports |
 | `final_adjustment_engine.py` | Post-generation balancing of remaining deviations |
 | `adaptive_iterations.py` | Dynamically adjusts optimiser iteration counts |
-| `adjustment_utils.py` | Shared helpers for shift adjustment operations |
 | `demand_forecaster.py` | Demand-forecasting model for predictive analytics |
 | `predictive_analytics.py` | Insights, recommendations, and demand trend analysis |
 | `predictive_optimizer.py` | Applies predictive recommendations to the scheduler |
@@ -60,7 +59,6 @@ packaging/                # PyInstaller hooks, .spec file, Windows installer
 | `scheduler_tracking.py` | Records per-run tracking data |
 | `scheduler_validation.py` | Pre-run validation of configuration and worker data |
 | `scheduler_config.py` | `SchedulerConfig` dataclass and logging setup |
-| `worker_eligibility.py` | Determines eligible workers for each shift slot |
 | `shift_tolerance_validator.py` | Validates per-worker shift-count tolerances |
 | `target_calculator.py` | Computes per-worker target shift counts |
 | `exceptions.py` | Custom exception hierarchy |
