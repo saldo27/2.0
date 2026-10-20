@@ -447,8 +447,10 @@ class FinalAdjustmentEngine(EngineStateMixin):
                 self.schedule[day] = slots
 
             # Prefer original post; otherwise first free post; otherwise overwrite original post.
-            target_post = post if post < len(slots) and slots[post] is None else next(
-                (idx for idx, occupant in enumerate(slots) if occupant is None), post
+            target_post = (
+                post
+                if post < len(slots) and slots[post] is None
+                else next((idx for idx, occupant in enumerate(slots) if occupant is None), post)
             )
             if target_post >= len(slots):
                 slots.extend([None] * (target_post + 1 - len(slots)))
