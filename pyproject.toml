@@ -119,6 +119,8 @@ include = ["src", "tests"]
 # ── deptry ──────────────────────────────────────────────────────────
 
 [tool.deptry]
+package_module_name_map = { "scikit-learn" = "sklearn" }
+
 [tool.deptry.per_rule_ignores]
 # altair is a transitive streamlit dep we pin explicitly for compatibility
 # python-dateutil is used by pandas and dateutil.parser at runtime
