@@ -1389,18 +1389,23 @@ with st.sidebar:
     # Período de reparto (Fecha Inicial - Fecha Final)
     st.subheader("📅 Período de Reparto")
 
+    today = date.today()
+    default_end = date(today.year, 12, 31)
+    if default_end <= today:
+        default_end = date(today.year + 1, 12, 31)
+
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input(
             "Fecha Inicial (L-D)",
-            value=datetime(2026, 1, 1),
+            value=today,
             help="Fecha de inicio del período a programar. Calendario: Lunes a Domingo",
             format="DD/MM/YYYY",
         )
     with col2:
         end_date = st.date_input(
             "Fecha Final (L-D)",
-            value=datetime(2026, 12, 31),
+            value=default_end,
             help="Fecha de fin del período a programar. Calendario: Lunes a Domingo",
             format="DD/MM/YYYY",
         )
