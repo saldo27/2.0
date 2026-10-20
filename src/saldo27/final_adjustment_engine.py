@@ -12,7 +12,8 @@ trabajadores en tres dimensiones:
 3. Puentes (bridges): igual que weekends pero aplicado a días de puente.
 4. OR-Tools CP-SAT: refinamiento global post-greedy que optimiza turnos,
    weekends y puentes de forma conjunta respetando todas las restricciones
-   duras (gap, incompatibilidades, disponibilidad, mandatory).
+   duras (gap/patrones, incompatibilidades, disponibilidad, mandatory,
+   límites de fines de semana consecutivos y ≤1 fin de semana por semana).
 
 Estrategia de intercambio "pareado" (paired swap) para weekends/bridges
 -----------------------------------------------------------------------
@@ -28,15 +29,25 @@ aplicarlo, y se revierte si no produce mejora neta en la dimensión objetivo.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from saldo27.scheduler import Scheduler
 
 from saldo27.domain.engine_state_mixin import EngineStateMixin
 from saldo27.infrastructure.optional_engines import ortools_available
+
+
+def _normalize_schedule_date(value: datetime | Any) -> datetime:
+    """Normalize a schedule/config date to midnight naive datetime for reliable compares."""
+    if isinstance(value, datetime):
+        return value.replace(hour=0, minute=0, second=0, microsecond=0)
+    # ``datetime.date`` (no time) and anything with ``year/month/day``
+    try:
+        return datetime(value.year, value.month, value.day)
+    except AttributeError:
+        return value  # type: ignore[return-value]
 
 
 class FinalAdjustmentEngine(EngineStateMixin):
@@ -89,6 +100,13 @@ class FinalAdjustmentEngine(EngineStateMixin):
         logging.info("FINAL ADJUSTMENT ENGINE - Starting")
         logging.info("=" * 70)
 
+        # Ensure every currently-assigned config-mandatory date is locked before
+        # any swap/OR-Tools mutation. Protects against stale/empty
+        # ``_locked_mandatory`` (e.g. after import) while still honouring
+        # ``mandatory_days`` / cadence for the whole FA run.
+        self._ensure_mandatory_locks()
+        mandatory_snapshot = self._snapshot_mandatory_assignments()
+
         before = self.compute_metrics()
 
         iters_per_phase = max(max_iterations // 3, 1)
@@ -128,6 +146,15 @@ class FinalAdjustmentEngine(EngineStateMixin):
             self.scheduler._run_final_validation_and_fix()
         except Exception as exc:
             logging.error(f"FinalAdjustmentEngine consecutive last-post validation error: {exc}", exc_info=True)
+
+        # Safety net: FA must never strip a mandatory/cadence assignment.
+        restored = self._restore_missing_mandatory_assignments(mandatory_snapshot)
+        if restored:
+            logging.warning(
+                "FinalAdjustmentEngine restored %s mandatory assignment(s) that a prior phase had removed",
+                restored,
+            )
+            self.stats["mandatory_restored"] = restored
 
         after = self.compute_metrics()
 
@@ -313,27 +340,139 @@ class FinalAdjustmentEngine(EngineStateMixin):
     # Internal: constraint validation helpers
     # ------------------------------------------------------------------
 
+    def _config_mandatory_dates(self, worker_id: str) -> set[datetime]:
+        """Return normalized mandatory dates from worker config (incl. cadence)."""
+        worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
+        if not worker:
+            return set()
+        mandatory_str = (worker.get("mandatory_days") or "").strip()
+        if not mandatory_str:
+            return set()
+        date_utils = getattr(self.scheduler, "date_utils", None)
+        if date_utils is None or not hasattr(date_utils, "parse_dates"):
+            return set()
+        try:
+            return {_normalize_schedule_date(d) for d in date_utils.parse_dates(mandatory_str)}
+        except (TypeError, ValueError, AttributeError):
+            return set()
+
     def _is_locked(self, worker_id: str, date: datetime) -> bool:
-        """True si la asignación está bloqueada (mandatory)."""
+        """True si la asignación está bloqueada (locked mandatory)."""
         if self.schedule_builder is None:
             return False
+        norm = _normalize_schedule_date(date)
         is_locked_mandatory = getattr(self.schedule_builder, "is_locked_mandatory", None)
         if callable(is_locked_mandatory):
-            return bool(is_locked_mandatory(worker_id, date))
-        locked_mandatory = getattr(self.schedule_builder, "_locked_mandatory", ())
-        return (worker_id, date) in locked_mandatory
+            if bool(is_locked_mandatory(worker_id, date)) or bool(is_locked_mandatory(worker_id, norm)):
+                return True
+        locked_mandatory = getattr(self.schedule_builder, "_locked_mandatory", ()) or ()
+        return (worker_id, date) in locked_mandatory or (worker_id, norm) in locked_mandatory
 
     def _is_mandatory(self, worker_id: str, date: datetime) -> bool:
-        """True si la asignación es un turno obligatorio (config mandatory)."""
-        if self.schedule_builder is None:
-            return False
-        is_mandatory = getattr(self.schedule_builder, "is_mandatory", None)
-        if callable(is_mandatory):
-            return bool(is_mandatory(worker_id, date))
-        legacy_is_mandatory = getattr(self.schedule_builder, "_is_mandatory", None)
-        if callable(legacy_is_mandatory):
-            return bool(legacy_is_mandatory(worker_id, date))
-        return False
+        """True si la fecha es obligatoria (config ``mandatory_days`` / cadencia).
+
+        Checks schedule_builder first, then falls back to parsing the worker's
+        ``mandatory_days`` directly so FA still protects obligatory shifts when
+        the builder cache/lock set is stale or empty.
+        """
+        norm = _normalize_schedule_date(date)
+        if self.schedule_builder is not None:
+            is_mandatory = getattr(self.schedule_builder, "is_mandatory", None)
+            if callable(is_mandatory) and (bool(is_mandatory(worker_id, date)) or bool(is_mandatory(worker_id, norm))):
+                return True
+            legacy_is_mandatory = getattr(self.schedule_builder, "_is_mandatory", None)
+            if callable(legacy_is_mandatory) and (
+                bool(legacy_is_mandatory(worker_id, date)) or bool(legacy_is_mandatory(worker_id, norm))
+            ):
+                return True
+        return norm in self._config_mandatory_dates(worker_id)
+
+    def _is_protected_assignment(self, worker_id: str, date: datetime) -> bool:
+        """True if the (worker, date) pair must not be moved by Ajuste Final."""
+        return self._is_locked(worker_id, date) or self._is_mandatory(worker_id, date)
+
+    def _ensure_mandatory_locks(self) -> None:
+        """Lock every currently assigned config-mandatory date on the builder."""
+        sb = self.schedule_builder
+        if sb is None:
+            return
+        locked = getattr(sb, "_locked_mandatory", None)
+        if locked is None:
+            return
+        if not isinstance(locked, set):
+            locked = set(locked)
+            sb._locked_mandatory = locked
+        added = 0
+        for worker in self.workers_data:
+            wid = worker["id"]
+            mandatory_dates = self._config_mandatory_dates(wid)
+            if not mandatory_dates:
+                continue
+            for day, slots in self.schedule.items():
+                if wid not in (slots or []):
+                    continue
+                norm = _normalize_schedule_date(day)
+                if norm not in mandatory_dates:
+                    continue
+                key = (wid, day)
+                if key not in locked:
+                    locked.add(key)
+                    added += 1
+        if added:
+            logging.info("FinalAdjustmentEngine: locked %s assigned mandatory date(s) before FA", added)
+
+    def _snapshot_mandatory_assignments(self) -> dict[tuple[str, datetime], int]:
+        """Map (worker_id, date) → post for every protected assignment currently placed."""
+        snapshot: dict[tuple[str, datetime], int] = {}
+        for day, slots in self.schedule.items():
+            if not isinstance(slots, list):
+                continue
+            for post, wid in enumerate(slots):
+                if wid is None:
+                    continue
+                if self._is_protected_assignment(wid, day):
+                    snapshot[(wid, day)] = post
+        return snapshot
+
+    def _restore_missing_mandatory_assignments(self, snapshot: dict[tuple[str, datetime], int]) -> int:
+        """Re-place any protected assignment that disappeared during FA. Returns count restored."""
+        restored = 0
+        for (wid, day), post in snapshot.items():
+            slots = self.schedule.get(day)
+            if isinstance(slots, list) and wid in slots:
+                continue  # still present (possibly on a different post — OK)
+
+            if not isinstance(slots, list):
+                slots = [None] * max(post + 1, getattr(self.scheduler, "num_shifts", 1))
+                self.schedule[day] = slots
+
+            # Prefer original post; otherwise first free post; otherwise overwrite original post.
+            target_post = post if post < len(slots) and slots[post] is None else next(
+                (idx for idx, occupant in enumerate(slots) if occupant is None), post
+            )
+            if target_post >= len(slots):
+                slots.extend([None] * (target_post + 1 - len(slots)))
+
+            displaced = slots[target_post]
+            if displaced is not None and displaced != wid:
+                self.worker_assignments.get(displaced, set()).discard(day)
+                self.scheduler._update_tracking_data(displaced, day, target_post, removing=True)
+
+            slots[target_post] = wid
+            self.worker_assignments.setdefault(wid, set()).add(day)
+            self.scheduler._update_tracking_data(wid, day, target_post, removing=False)
+            if self.schedule_builder is not None:
+                locked = getattr(self.schedule_builder, "_locked_mandatory", None)
+                if isinstance(locked, set):
+                    locked.add((wid, day))
+            restored += 1
+            logging.warning(
+                "Restored mandatory assignment %s → %s post %s",
+                wid,
+                day.strftime("%Y-%m-%d") if hasattr(day, "strftime") else day,
+                target_post,
+            )
+        return restored
 
     def _can_swap_away(self, worker_id: str, date: datetime) -> bool:
         """
@@ -343,9 +482,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         un intercambio pareado el total de turnos del mes no cambia.
         Solo bloquea asignaciones verdaderamente inmovibles (locked o config mandatory).
         """
-        if self._is_locked(worker_id, date):
-            return False
-        if self._is_mandatory(worker_id, date):
+        if self._is_protected_assignment(worker_id, date):
             return False
         return True
 
@@ -368,12 +505,14 @@ class FinalAdjustmentEngine(EngineStateMixin):
 
         A diferencia de _can_take_shift / _calculate_worker_score, esta función
         NO verifica límites de objetivo ni tolerancia (el total de turnos no cambia
-        en un intercambio pareado). Sólo valida:
+        en un intercambio pareado). Sólo valida restricciones hard:
           1. Disponibilidad del trabajador en date_gain (días libres, periodos de trabajo).
-          2. Restricciones no_last_post / only_last_post.
+          2. Restricciones no_last_post / only_last_post y máx. 2 últimos puestos seguidos.
           3. Incompatibilidades con otros trabajadores asignados ese mismo día.
-          4. Restricción de gap mínimo (usando asignaciones simuladas: sin date_lose,
-             con date_gain aún no incluida para que la comprobación sea correcta).
+          4. Gap mínimo / patrón 7-14 / viernes-lunes / puente gap-2 (asignaciones
+             simuladas: sin date_lose; date_gain aún no incluida).
+          5. Límites de fin de semana (consecutivos, 1 por semana ISO, tope proporcional),
+             usando el mismo checker que StrictBalanceOptimizer.
         """
         sb = self.schedule_builder
 
@@ -430,14 +569,22 @@ class FinalAdjustmentEngine(EngineStateMixin):
         if not sb._check_incompatibility_with_list(worker_id, others_on_date):
             return False
 
-        # 4. Gap constraint — simulate the post-swap assignment set:
-        #    remove date_lose (the date this worker gives up), do NOT yet add date_gain
-        #    (_check_gap_constraint_simulated checks date_gain against the remaining dates).
+        # Simulated post-swap assignment set for this worker:
+        # remove date_lose (ceded), do NOT yet add date_gain (checkers add it).
         current_dates = self.worker_assignments.get(worker_id, set())
-        simulated_worker_dates = current_dates - {date_lose} if date_lose is not None else current_dates
-        # _check_gap_constraint_simulated only reads simulated[worker_id]; a single-entry
-        # dict is sufficient and avoids copying the entire worker_assignments mapping.
-        if not sb._check_gap_constraint_simulated(worker_id, date_gain, {worker_id: simulated_worker_dates}):
+        simulated_worker_dates = current_dates - {date_lose} if date_lose is not None else set(current_dates)
+        simulated = {worker_id: simulated_worker_dates}
+
+        # 4. Gap / Friday-Monday / 7-14 / gap2-weekend constraints
+        if not sb._check_gap_constraint_simulated(worker_id, date_gain, simulated):
+            return False
+
+        # 5. Weekend hard limits (consecutive weeks, ≤1 weekend/week, proportional cap).
+        #    Same checker StrictBalanceOptimizer uses; without it, weekend/bridge paired
+        #    swaps in Ajuste Final could create consecutive-weekend violations.
+        if hasattr(sb, "_would_exceed_weekend_limit_simulated") and sb._would_exceed_weekend_limit_simulated(
+            worker_id, date_gain, simulated
+        ):
             return False
 
         return True
@@ -757,11 +904,26 @@ class FinalAdjustmentEngine(EngineStateMixin):
 
         # Apply the solution grouped by date to avoid transient same-day duplicates
         # (worker_assignments is date-based, while the schedule has multiple posts per date).
+        # CRITICAL: never apply a change that would strip a locked/config-mandatory
+        # worker from their obligatory date — even if the CP-SAT model somehow
+        # proposed it (stale lock set, conflicting hard constraints, etc.).
         changes_by_date: dict = {}
+        skipped_mandatory = 0
         for (date, post), (old_worker, new_worker) in result.items():
             if old_worker == new_worker:
                 continue
+            if old_worker is not None and self._is_protected_assignment(old_worker, date) and new_worker != old_worker:
+                skipped_mandatory += 1
+                logging.warning(
+                    "OR-Tools: skipped change that would remove mandatory %s from %s",
+                    old_worker,
+                    date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else date,
+                )
+                continue
             changes_by_date.setdefault(date, []).append((post, old_worker, new_worker))
+
+        if skipped_mandatory:
+            logging.warning("OR-Tools: blocked %s mandatory-removing change(s)", skipped_mandatory)
 
         changes = 0
         for date, entries in changes_by_date.items():
@@ -963,10 +1125,10 @@ class ORToolsPhase:
                     if len(slot_indices) > 1:
                         model.add(sum(x[wi, si] for si in slot_indices) <= 1)
 
-            # 3c. Mandatory / locked assignments are fixed
+            # 3c. Mandatory / locked assignments are fixed (worker must stay on that date)
             for wi, wid in enumerate(worker_ids):
                 for si, (date, post, current_worker) in enumerate(slots):
-                    if self.engine._is_locked(wid, date) or self.engine._is_mandatory(wid, date):
+                    if self.engine._is_protected_assignment(wid, date):
                         model.add(x[wi, si] == (1 if current_worker == wid else 0))
 
             # 3d. Worker unavailability (days_off / work_periods)
@@ -1137,6 +1299,54 @@ class ORToolsPhase:
                 self.scheduler.date_utils.is_bridge_day(slots[si][0], self.scheduler.bridge_periods)
                 for si in range(n_slots)
             ]
+
+            # 3j. Weekend hard limits (must run after slot_is_weekend is known):
+            #     - at most 1 weekend/holiday shift per ISO calendar week
+            #     - at most max_consecutive_weekends consecutive weekend-weeks
+            #     Mirrors ScheduleBuilder._would_exceed_weekend_limit_simulated
+            #     checks 1 and 2 (proportional cap stays soft via the objective).
+            max_consecutive_weekends = int(getattr(self.scheduler, "max_consecutive_weekends", 3) or 3)
+            weekend_slots_by_week: dict = {}
+            for si in range(n_slots):
+                if not slot_is_weekend[si]:
+                    continue
+                week_start = slots[si][0] - timedelta(days=slots[si][0].weekday())
+                weekend_slots_by_week.setdefault(week_start, []).append(si)
+
+            sorted_weekend_weeks = sorted(weekend_slots_by_week.keys())
+            if sorted_weekend_weeks:
+                for wi in range(n_workers):
+                    week_flags = []
+                    for week_start in sorted_weekend_weeks:
+                        week_slot_indices = weekend_slots_by_week[week_start]
+                        week_sum = sum(x[wi, si] for si in week_slot_indices)
+                        # ≤1 weekend shift per calendar week
+                        model.add(week_sum <= 1)
+                        # flag ↔ (week_sum >= 1). Avoid ``week_sum == flag`` which
+                        # can trip native CP-SAT heuristics on some OR-Tools builds.
+                        flag = model.new_bool_var(f"wkndw_{wi}_{week_start.strftime('%Y%m%d')}")
+                        model.add(week_sum >= 1).only_enforce_if(flag)
+                        model.add(week_sum == 0).only_enforce_if(flag.Not())
+                        week_flags.append(flag)
+
+                    # Sliding window over consecutive calendar weeks
+                    if max_consecutive_weekends >= 1:
+                        window = max_consecutive_weekends + 1
+                        for start_idx in range(len(sorted_weekend_weeks) - max_consecutive_weekends):
+                            consecutive = True
+                            for offset in range(max_consecutive_weekends):
+                                delta_days = (
+                                    sorted_weekend_weeks[start_idx + offset + 1]
+                                    - sorted_weekend_weeks[start_idx + offset]
+                                ).days
+                                if delta_days != 7:
+                                    consecutive = False
+                                    break
+                            if consecutive:
+                                model.add(
+                                    sum(week_flags[start_idx + offset] for offset in range(window))
+                                    <= max_consecutive_weekends
+                                )
 
             obj_terms = []
             for wi, wid in enumerate(worker_ids):

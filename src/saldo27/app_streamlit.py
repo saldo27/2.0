@@ -1588,11 +1588,14 @@ with st.sidebar:
         - ✅ Guardias obligatorias protegidas
         - ✅ Incompatibilidades entre médicos
         - ✅ Patrón 7/14 días (mismo día de semana)
+        - ✅ Patrón viernes–lunes
         - ✅ Días mínimos entre guardias configurables
+        - ✅ Puente fin de semana con gap = 2
         - ✅ Fines de semana consecutivos máximos
         - ✅ Balance proporcional de fines de semana
         - ✅ Días fuera (no disponibles)
         - ✅ Períodos personalizados por médico
+        - ✅ Reglas de último puesto (no_last_post / only_last_post)
         - ✅ Guardias variables por día/período
 
         **Parámetros configurables:**
@@ -2808,69 +2811,114 @@ with tab4:
     else:
         violations = check_violations()
 
-        # Resumen de violaciones
-        total_violations = sum(len(v) for v in violations.values())
+        # Categorías alineadas con las restricciones que aplica el motor
+        violation_categories = [
+            {
+                "key": "incompatibilidades",
+                "title": "🚫 Incompatibilidades",
+                "hint": "Médicos marcados como incompatibles no deben coincidir el mismo día.",
+                "recommendation": "Revise las incompatibilidades configuradas en los trabajadores.",
+            },
+            {
+                "key": "gap_minimo",
+                "title": "⏳ Días mínimos entre guardias",
+                "hint": "Gap mínimo configurado (y el efectivo por médico a tiempo parcial).",
+                "recommendation": "Aumente la plantilla o reduzca el gap si las violaciones son inevitables.",
+            },
+            {
+                "key": "patron_7_14",
+                "title": "📅 Patrón 7/14 días",
+                "hint": "Evita dos guardias del mismo día de la semana a exactamente 7 o 14 días.",
+                "recommendation": "Ajuste días obligatorios o aumente el número de trabajadores.",
+            },
+            {
+                "key": "patron_viernes_lunes",
+                "title": "🔀 Patrón viernes–lunes",
+                "hint": "Bloquea el par viernes↔lunes (3 días de separación).",
+                "recommendation": "Revise asignaciones cercanas al fin de semana o los días obligatorios.",
+            },
+            {
+                "key": "gap2_fin_semana",
+                "title": "🌉 Puente fin de semana (gap 2)",
+                "hint": "Con gap efectivo = 2, evita pares que cruzan el fin de semana (jue-sáb, vie-dom, etc.).",
+                "recommendation": "Revise el gap configurado o reasigne una de las dos fechas del par.",
+            },
+            {
+                "key": "mandatory",
+                "title": "🔒 Turnos obligatorios",
+                "hint": "Días marcados como obligatorios (o cadencia) deben quedar asignados.",
+                "recommendation": "Algunos turnos obligatorios faltan o fueron liberados en la optimización.",
+            },
+            {
+                "key": "dias_no_disponibles",
+                "title": "🚫 Días no disponibles",
+                "hint": "No se debe asignar a un médico en sus días fuera (vacaciones / days_off).",
+                "recommendation": "Revise los rangos de días no disponibles del trabajador afectado.",
+            },
+            {
+                "key": "periodos_trabajo",
+                "title": "📆 Períodos de trabajo",
+                "hint": "Si hay work_periods, solo se asigna dentro de esos rangos.",
+                "recommendation": "Amplíe el período de trabajo o quite asignaciones fuera de rango.",
+            },
+            {
+                "key": "fines_semana_consecutivos",
+                "title": "📆 Fines de semana consecutivos",
+                "hint": "Máximo de fines de semana/festivos consecutivos (semanas ISO).",
+                "recommendation": "Suba el límite o redistribuya fines de semana entre la plantilla.",
+            },
+            {
+                "key": "ultimo_puesto",
+                "title": "🔢 Último puesto",
+                "hint": "Respeta no_last_post / only_last_post y evita >2 últimos puestos seguidos.",
+                "recommendation": "Revise flags de último puesto o reasigne el puesto del día conflictivo.",
+            },
+        ]
+
+        total_violations = sum(len(violations.get(cat["key"], [])) for cat in violation_categories)
 
         if total_violations == 0:
             st.success("✅ ¡Excelente! No se encontraron violaciones de restricciones")
         else:
             st.error(f"❌ Se encontraron {total_violations} violaciones de restricciones")
 
+        st.caption(
+            "Comprueba todas las restricciones hard del sistema: incompatibilidades, gaps, "
+            "patrones 7/14 y viernes–lunes, puente gap-2, obligatorias, días fuera, "
+            "períodos de trabajo, fines de semana consecutivos y reglas de último puesto."
+        )
+
         st.markdown("---")
 
-        # Detalles de violaciones
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.subheader("🚫 Incompatibilidades")
-            incomp_count = len(violations["incompatibilidades"])
-            if incomp_count == 0:
+        def _render_violation_category(category: dict) -> int:
+            items = violations.get(category["key"], [])
+            count = len(items)
+            st.subheader(category["title"])
+            st.caption(category["hint"])
+            if count == 0:
                 st.success("✅ 0 violaciones")
             else:
-                st.error(f"❌ {incomp_count} violaciones")
+                st.error(f"❌ {count} violaciones")
                 with st.expander("Ver detalles"):
-                    for v in violations["incompatibilidades"]:
-                        st.write(f"• {v}")
+                    for item in items[:20]:
+                        st.write(f"• {item}")
+                    if count > 20:
+                        st.write(f"... y {count - 20} más")
+            return count
 
-        with col2:
-            st.subheader("📅 Patrón 7/14 Días")
-            pattern_count = len(violations["patron_7_14"])
-            if pattern_count == 0:
-                st.success("✅ 0 violaciones")
-            else:
-                st.error(f"❌ {pattern_count} violaciones")
-                with st.expander("Ver detalles"):
-                    for v in violations["patron_7_14"][:20]:  # Mostrar máximo 20
-                        st.write(f"• {v}")
-                    if pattern_count > 20:
-                        st.write(f"... y {pattern_count - 20} más")
+        category_counts: dict[str, int] = {}
+        for row_start in range(0, len(violation_categories), 3):
+            cols = st.columns(3)
+            for col, category in zip(cols, violation_categories[row_start : row_start + 3], strict=False):
+                with col:
+                    category_counts[category["key"]] = _render_violation_category(category)
 
-        with col3:
-            st.subheader("🔒 Turnos Obligatorios")
-            mandatory_count = len(violations["mandatory"])
-            if mandatory_count == 0:
-                st.success("✅ 0 violaciones")
-            else:
-                st.error(f"❌ {mandatory_count} violaciones")
-                with st.expander("Ver detalles"):
-                    for v in violations["mandatory"]:
-                        st.write(f"• {v}")
-
-        # Recomendaciones
         if total_violations > 0:
             st.markdown("---")
             st.subheader("💡 Recomendaciones")
-
-            if incomp_count > 0:
-                st.warning("⚠️ Revise las incompatibilidades configuradas en los trabajadores")
-
-            if pattern_count > 0:
-                st.warning(
-                    "⚠️ El patrón 7/14 días se está violando. Considere ajustar los días obligatorios o aumentar el número de trabajadores"
-                )
-
-            if mandatory_count > 0:
-                st.warning("⚠️ Algunos turnos obligatorios fueron modificados durante la optimización")
+            for category in violation_categories:
+                if category_counts.get(category["key"], 0) > 0:
+                    st.warning(f"⚠️ {category['recommendation']}")
 
 # ==================== TAB 5: PREDICTIVE ANALYTICS ====================
 with tab5:
