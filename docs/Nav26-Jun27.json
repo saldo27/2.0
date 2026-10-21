@@ -197,7 +197,7 @@
     "work_percentage": 80.0,
     "is_incompatible": false,
     "incompatible_with": [],
-    "mandatory_days": "25-12-2026",
+    "mandatory_days": "24-12-2026",
     "days_off": "",
     "work_periods": "23-12-2026 - 31-12-2026;10-01-2027 - 30-06-2027",
     "auto_calculate_shifts": true,
