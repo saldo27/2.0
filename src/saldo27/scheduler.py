@@ -684,6 +684,40 @@ class Scheduler:
                             f"between {date1} and {date2}"
                         )
 
+                elif violation["type"] == "outside_cadence":
+                    # Cadence workers must only keep their cadence dates: drop any
+                    # extra assignment outside the pattern (never mandatory).
+                    worker_id = violation["worker_id"]
+                    date_to_unassign = violation["date"]
+
+                    shift_num = None
+                    if date_to_unassign in self.schedule:
+                        for i, worker in enumerate(self.schedule[date_to_unassign]):
+                            if worker == worker_id:
+                                shift_num = i
+                                break
+
+                    if shift_num is not None:
+                        if schedule_builder and not schedule_builder._can_modify_assignment(
+                            worker_id,
+                            date_to_unassign,
+                            "fix_outside_cadence",
+                            enforce_monthly_target_floor=False,
+                        ):
+                            logging.warning(
+                                f"🔒 BLOCKED: Cannot unassign {worker_id} from {date_to_unassign} "
+                                f"(unexpected lock on outside-cadence date)"
+                            )
+                            continue
+
+                        self.schedule[date_to_unassign][shift_num] = None
+                        self.worker_assignments[worker_id].discard(date_to_unassign)
+                        self._update_tracking_data(worker_id, date_to_unassign, shift_num, removing=True)
+                        logging.info(
+                            f"Fixed outside-cadence violation: Unassigned worker {worker_id} from {date_to_unassign}"
+                        )
+                        fixes_made += 1
+
             # Check if we fixed all violations
             remaining_violations = self._check_schedule_constraints()
             if remaining_violations:

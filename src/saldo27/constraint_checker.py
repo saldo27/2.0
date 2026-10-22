@@ -932,6 +932,25 @@ class ConstraintChecker:
                             }
                         )
 
+            # Cadence exclusivity: cadence workers must not hold any shift
+            # outside their mandatory cadence dates.
+            if worker.get("has_cadence"):
+                mandatory_str = worker.get("mandatory_days", "")
+                try:
+                    cadence_dates = set(self.date_utils.parse_dates(mandatory_str)) if mandatory_str else set()
+                except Exception as exc:
+                    logging.debug(f"Could not parse cadence mandatory_days for {worker_id}: {exc}")
+                    cadence_dates = set()
+                for assigned_date in assigned_dates:
+                    if assigned_date not in cadence_dates:
+                        violations.append(
+                            {
+                                "type": "outside_cadence",
+                                "worker_id": worker_id,
+                                "date": assigned_date,
+                            }
+                        )
+
         # Incompatibility violations
         mandatory_pairs: set[tuple] = set()
         if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:

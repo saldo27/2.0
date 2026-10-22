@@ -648,12 +648,14 @@ def get_worker_statistics():
 
     weekend_ratio = total_weekend_slots / total_all_slots if total_all_slots > 0 else 0
 
-    # Rosell (último puesto) pre-calculations
-    last_post_idx = scheduler.num_shifts - 1
+    # Rosell = último puesto de cada día (un slot por día con al menos 1 turno).
+    # Se cuenta igual que el resto de slots: solo si ese puesto está cubierto
+    # (worker is not None). Con variable_shifts el índice del último puesto
+    # es len(shifts)-1 de ese día, no un índice fijo num_shifts-1.
     total_last_post_slots = sum(
         1
         for date in scheduler._get_date_range(scheduler.start_date, scheduler.end_date)
-        if scheduler._get_shifts_for_date(date) > last_post_idx
+        if scheduler._get_shifts_for_date(date) > 0
     )
 
     # Proportional Rosell target: each eligible worker should cover
@@ -667,6 +669,15 @@ def get_worker_statistics():
         for w in scheduler.workers_data
         if w["id"] not in excluded_from_pool
     )
+
+    # Pre-count covered Rosell assignments per worker from the schedule
+    rosell_by_worker: dict[str, int] = {}
+    for _date, shifts in scheduler.schedule.items():
+        if not shifts:
+            continue
+        last_worker = shifts[-1]
+        if last_worker is not None:
+            rosell_by_worker[last_worker] = rosell_by_worker.get(last_worker, 0) + 1
 
     stats = []
     for worker_id, data in core_stats["workers"].items():
@@ -692,12 +703,8 @@ def get_worker_statistics():
         weekend_deviation = weekend_shifts - weekend_target
         weekend_deviation_pct = (weekend_deviation / weekend_target * 100) if weekend_target > 0 else 0
 
-        # Rosell (último puesto)
-        rosell_count = sum(
-            1
-            for date, shifts in scheduler.schedule.items()
-            if len(shifts) > last_post_idx and shifts[last_post_idx] == worker_id
-        )
+        # Rosell (último puesto cubierto de cada día)
+        rosell_count = rosell_by_worker.get(worker_id, 0)
         # Workers with no_last_post=True have rosell target = 0
         # Workers with only_last_post=True: target = all their shifts, deviation = 0
         if worker_data and worker_data.get("no_last_post", False):
@@ -766,13 +773,18 @@ def build_summary_pdf_stats_data(scheduler: Scheduler) -> dict[str, Any]:
         post_counts: dict[int, int] = {}
         weekday_counts: dict[int, int] = {}
         shift_list: list[dict[str, Any]] = []
+        last_post_count = 0
 
         for assigned_date in assignments:
+            day_shifts = scheduler.schedule.get(assigned_date, [])
             try:
-                p_idx = scheduler.schedule[assigned_date].index(w_id)
+                p_idx = day_shifts.index(w_id)
                 post_counts[p_idx] = post_counts.get(p_idx, 0) + 1
+                # Rosell = último puesto real del día (cubierto), no índice fijo
+                if day_shifts and p_idx == len(day_shifts) - 1:
+                    last_post_count += 1
             except (ValueError, KeyError):
-                pass
+                p_idx = -1
 
             wd = assigned_date.weekday()
             weekday_counts[wd] = weekday_counts.get(wd, 0) + 1
@@ -785,7 +797,7 @@ def build_summary_pdf_stats_data(scheduler: Scheduler) -> dict[str, Any]:
                 {
                     "date": assigned_date,
                     "day": assigned_date.strftime("%A"),
-                    "post": scheduler.schedule[assigned_date].index(w_id) + 1,
+                    "post": p_idx + 1 if p_idx >= 0 else 0,
                     "is_weekend": is_weekend_day or is_holiday or is_pre_holiday,
                     "is_holiday": is_holiday,
                     "is_pre_holiday": is_pre_holiday,
@@ -799,7 +811,7 @@ def build_summary_pdf_stats_data(scheduler: Scheduler) -> dict[str, Any]:
             "total": len(assignments),
             "weekends": weekends_count,
             "holidays": holidays_count,
-            "last_post": post_counts.get(scheduler.num_shifts - 1, 0),
+            "last_post": last_post_count,
             "weekday_counts": weekday_counts,
             "post_counts": post_counts,
         }
@@ -2848,6 +2860,12 @@ with tab4:
                 "title": "🔒 Turnos obligatorios",
                 "hint": "Días marcados como obligatorios (o cadencia) deben quedar asignados.",
                 "recommendation": "Algunos turnos obligatorios faltan o fueron liberados en la optimización.",
+            },
+            {
+                "key": "fuera_cadencia",
+                "title": "🔁 Fuera de cadencia",
+                "hint": "Un médico con cadencia solo puede tener guardias en las fechas de su patrón.",
+                "recommendation": "Elimine las asignaciones extra o regenere el reparto.",
             },
             {
                 "key": "dias_no_disponibles",

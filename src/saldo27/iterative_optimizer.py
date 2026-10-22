@@ -1181,6 +1181,28 @@ class IterativeOptimizer:
 
             logging.debug(f"Found worker data for {worker_name}: {worker_data.get('id')}")
 
+            # CRITICAL: Cadence workers may only work on their cadence dates
+            # (mandatory_days expanded by SchedulerInitializer). Extra shifts
+            # outside the pattern are never allowed.
+            if worker_data.get("has_cadence"):
+                mandatory_str = worker_data.get("mandatory_days", "")
+                try:
+                    if self.scheduler and hasattr(self.scheduler, "date_utils"):
+                        cadence_dates = (
+                            set(self.scheduler.date_utils.parse_dates(mandatory_str)) if mandatory_str else set()
+                        )
+                    else:
+                        from datetime import datetime as _dt
+
+                        cadence_dates = {
+                            _dt.strptime(p.strip(), "%d-%m-%Y") for p in mandatory_str.split(";") if p.strip()
+                        }
+                except Exception:
+                    cadence_dates = set()
+                if shift_date not in cadence_dates:
+                    logging.debug(f"❌ {worker_name} blocked: {shift_date.date()} outside cadencia")
+                    return False
+
             # CRITICAL: Check work_periods — worker can only be assigned within defined periods
             work_periods_str = worker_data.get("work_periods", "")
             if work_periods_str and work_periods_str.strip():

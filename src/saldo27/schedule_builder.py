@@ -436,6 +436,21 @@ class ScheduleBuilder:
             self._unavailability_cache[cache_key] = True
             return True
 
+        # Cadence ("cadencia") workers: exclusive to their fixed cadence dates
+        # (stored in mandatory_days by SchedulerInitializer). They must never
+        # receive shifts outside that pattern — critical because cadence
+        # workers have target_shifts=0 so tolerance checks do not block them.
+        if worker_data.get("has_cadence"):
+            mandatory_str = worker_data.get("mandatory_days", "")
+            try:
+                cadence_dates = set(self.date_utils.parse_dates(mandatory_str)) if mandatory_str else set()
+            except Exception as e:
+                logging.error(f"Error parsing cadence mandatory_days for {worker_id}: {e}")
+                cadence_dates = set()
+            if date not in cadence_dates:
+                self._unavailability_cache[cache_key] = True
+                return True
+
         # Check work periods - if work_periods is empty, worker is available for all dates
         work_periods_str = worker_data.get("work_periods", "")
         if work_periods_str:
