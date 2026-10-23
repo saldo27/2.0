@@ -123,12 +123,14 @@ class ConstraintViolations:
     incompatibilidades: list[str]
     patron_7_14: list[str]
     mandatory: list[str]
+    ultimo_puesto: list[str]
 
     def as_dict(self) -> dict[str, list[str]]:
         return {
             "incompatibilidades": list(self.incompatibilidades),
             "patron_7_14": list(self.patron_7_14),
             "mandatory": list(self.mandatory),
+            "ultimo_puesto": list(self.ultimo_puesto),
         }
 
 
@@ -345,7 +347,7 @@ def build_generation_summary_log(scheduler: Scheduler) -> str | None:
 
 def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
     core_violations = scheduler._check_schedule_constraints()
-    violations = ConstraintViolations(incompatibilidades=[], patron_7_14=[], mandatory=[])
+    violations = ConstraintViolations(incompatibilidades=[], patron_7_14=[], mandatory=[], ultimo_puesto=[])
 
     for violation in core_violations:
         violation_type = violation.get("type")
@@ -356,6 +358,10 @@ def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
         elif violation_type == "weekly_pattern":
             violations.patron_7_14.append(
                 f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → {violation['date2'].strftime('%d-%m-%Y')} ({violation['days_between']} días)"
+            )
+        elif violation_type == "consecutive_last_post":
+            violations.ultimo_puesto.append(
+                f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → {violation['date2'].strftime('%d-%m-%Y')} ({violation['run_length']} guardias consecutivas)"
             )
 
     return violations.as_dict()
