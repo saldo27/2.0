@@ -79,6 +79,24 @@ def test_collect_constraint_violations_formats_core_output(sample_workers_data, 
     assert result["ultimo_puesto"] == []
 
 
+def test_collect_constraint_violations_formats_consecutive_last_post(sample_workers_data, monkeypatch):
+    scheduler = _build_scheduler(sample_workers_data)
+    violations = [
+        {
+            "type": "consecutive_last_post",
+            "worker_id": "DOC001",
+            "date1": datetime(2026, 3, 1),
+            "date2": datetime(2026, 3, 15),
+            "run_length": 2,
+        },
+    ]
+    monkeypatch.setattr(scheduler, "_check_schedule_constraints", lambda: violations)
+
+    result = collect_constraint_violations(scheduler)
+
+    assert result["ultimo_puesto"] == ["DOC001: 01-03-2026 → 15-03-2026 (2 guardias consecutivas)"]
+
+
 def test_execute_generation_workflow_returns_success_summary(sample_workers_data, monkeypatch):
     request = _build_request(sample_workers_data)
     preparation = prepare_generation_workflow(request, limitations={"max_workers": None, "max_days": None})
