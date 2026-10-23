@@ -3,14 +3,17 @@ Final Adjustment Engine
 =======================
 
 Motor de ajuste final post-generación que equilibra las desviaciones de los
-trabajadores en tres dimensiones:
+trabajadores en estas dimensiones:
 
 1. Turnos/mes (shifts): delegado al StrictBalanceOptimizer existente.
 2. Fines de semana (weekends): intercambio de turno de fin-de-semana de un
    trabajador sobrecargado por un turno de día-laborable del trabajador
    subcargado, de forma que el balance global de turnos no se vea afectado.
 3. Puentes (bridges): igual que weekends pero aplicado a días de puente.
-4. OR-Tools CP-SAT: refinamiento global post-greedy que optimiza turnos,
+4. Último puesto en fin de semana: intercambio de puesto el mismo día entre
+   trabajadores ya asignados, para repartir los last_post de viernes, sábado,
+   domingo, festivo y prefestivo.
+5. OR-Tools CP-SAT: refinamiento global post-greedy que optimiza turnos,
    weekends y puentes de forma conjunta respetando todas las restricciones
    duras (gap/patrones, incompatibilidades, disponibilidad, mandatory,
    límites de fines de semana consecutivos y ≤1 fin de semana por semana).
@@ -21,6 +24,14 @@ Para no romper el balance de turnos al reequilibrar weekends/bridges:
   - A (excess weekends) cede `date_wknd` a B (deficit weekends).
   - B cede `date_wkday` a A.
   - El total de turnos de A y B no varía; solo cambia qué días trabajan.
+
+Un cambio laborable↔fin de semana solo se acepta si no aleja a ninguno de
+los dos de su objetivo de fines de semana. El balance de turnos (fase 1) y
+OR-Tools tampoco pueden empeorar esa desviación para cuadrar otra dimensión.
+El intercambio de puentes prefiere un día del mismo tipo (laborable con
+laborable, fin de semana con fin de semana) y solo cruza el tipo si eso
+acerca a los dos a su objetivo de fines de semana. El intercambio de fines
+de semana no puede empeorar el objetivo de puentes.
 
 Cada intercambio se valida con el ConstraintChecker del scheduler antes de
 aplicarlo, y se revierte si no produce mejora neta en la dimensión objetivo.
@@ -78,6 +89,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
             "shift_swaps": 0,
             "weekend_swaps": 0,
             "bridge_swaps": 0,
+            "weekend_last_post_swaps": 0,
             "ortools_reassignments": 0,
         }
 
@@ -134,7 +146,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         self.stats["ortools_reassignments"] = self._run_ortools_phase()
 
         # --- Phase 5: Consecutive last-post safety net ---------------------
-        # Re-validates and fixes any residual "worker with >2 consecutive
+        # Re-validates and fixes any residual "worker with 2 or more consecutive
         # last-post shifts" violation. All swap/assignment paths above already
         # guard against introducing new violations, but this final full
         # re-scan catches edge cases (e.g. prior-period boundary effects)
@@ -156,6 +168,15 @@ class FinalAdjustmentEngine(EngineStateMixin):
             )
             self.stats["mandatory_restored"] = restored
 
+        # --- Phase 6: weekend last-post balance ----------------------------
+        # Runs last so OR-Tools cannot undo same-day post swaps. Dates and
+        # weekend totals stay; only who holds the last post on a weekend moves.
+        logging.info("Phase FA-6: Weekend last-post balance")
+        for _ in range(iters_per_phase):
+            if not self._improve_weekend_last_post_balance():
+                break
+            self.stats["weekend_last_post_swaps"] += 1
+
         after = self.compute_metrics()
 
         weekend_errors = [
@@ -176,6 +197,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         logging.info(f"  Shift swaps:          {self.stats['shift_swaps']}")
         logging.info(f"  Weekend swaps:        {self.stats['weekend_swaps']}")
         logging.info(f"  Bridge swaps:         {self.stats['bridge_swaps']}")
+        logging.info(f"  Weekend last-post:    {self.stats['weekend_last_post_swaps']}")
         logging.info(f"  OR-Tools changes:     {self.stats['ortools_reassignments']}")
         logging.info(f"  Weekend errors >±15%: {self.stats['weekend_errors']}")
         logging.info("=" * 70)
@@ -332,6 +354,58 @@ class FinalAdjustmentEngine(EngineStateMixin):
             return raw
         return worker.get("target_shifts", 0)
 
+    def _is_weekend_date(self, date: datetime) -> bool:
+        return self.scheduler.date_utils.is_weekend_day(date, self.holidays_set)
+
+    def _is_bridge_date(self, date: datetime) -> bool:
+        return self.scheduler.date_utils.is_bridge_day(date, self.scheduler.bridge_periods)
+
+    def _kind_count(self, worker_id: str, kind: str) -> int:
+        """Assigned shifts of one kind, counted the same way as ``compute_metrics``."""
+        predicate = self._is_weekend_date if kind == "weekend" else self._is_bridge_date
+        return sum(1 for day in self.worker_assignments.get(worker_id, ()) if predicate(day))
+
+    def _kind_abs_deviation(self, worker_id: str, kind: str, count: int | None = None) -> int:
+        if count is None:
+            count = self._kind_count(worker_id, kind)
+        raw_target = self._raw_targets.get(worker_id, 0)
+        target = self._weekend_target_for(raw_target) if kind == "weekend" else self._bridge_target_for(raw_target)
+        return abs(count - target)
+
+    def _weekend_deviation(self, worker_id: str) -> int:
+        """Signed weekend deviation (assigned − target) from the live schedule."""
+        raw_target = self._raw_targets.get(worker_id, 0)
+        return self._kind_count(worker_id, "weekend") - self._weekend_target_for(raw_target)
+
+    def _exchange_abs_after(self, worker_id: str, lose: datetime, gain: datetime, kind: str) -> tuple[int, int]:
+        """Absolute deviation of ``kind`` before and after losing ``lose`` and gaining ``gain``."""
+        count = self._kind_count(worker_id, kind)
+        predicate = self._is_weekend_date if kind == "weekend" else self._is_bridge_date
+        after = count - int(predicate(lose)) + int(predicate(gain))
+        return self._kind_abs_deviation(worker_id, kind, count), self._kind_abs_deviation(worker_id, kind, after)
+
+    def _exchange_preserves(self, worker_a: str, date_a: datetime, worker_b: str, date_b: datetime, kind: str) -> bool:
+        """True when swapping the two dates does not increase either worker's |deviation| on ``kind``.
+
+        ``date_a`` is currently held by ``worker_a`` and ``date_b`` by ``worker_b``.
+        """
+        for worker_id, lose, gain in ((worker_a, date_a, date_b), (worker_b, date_b, date_a)):
+            before, after = self._exchange_abs_after(worker_id, lose, gain, kind)
+            if after > before:
+                return False
+        return True
+
+    def _exchange_improves_weekend(self, worker_a: str, date_a: datetime, worker_b: str, date_b: datetime) -> bool:
+        """True when a weekday↔weekend swap strictly reduces both weekend |deviations|."""
+        improved = False
+        for worker_id, lose, gain in ((worker_a, date_a, date_b), (worker_b, date_b, date_a)):
+            before, after = self._exchange_abs_after(worker_id, lose, gain, "weekend")
+            if after > before:
+                return False
+            if after < before:
+                improved = True
+        return improved
+
     # ------------------------------------------------------------------
     # Internal: state save/restore (mirrors StrictBalanceOptimizer)
     # ------------------------------------------------------------------
@@ -476,6 +550,125 @@ class FinalAdjustmentEngine(EngineStateMixin):
             )
         return restored
 
+    def _swap_posts_same_day(self, date: datetime, post_a: int, post_b: int) -> None:
+        """Exchange the workers in two posts of the same day. Dates do not change."""
+        shifts = self.schedule[date]
+        worker_a = shifts[post_a]
+        worker_b = shifts[post_b]
+        shifts[post_a] = worker_b
+        shifts[post_b] = worker_a
+        self.scheduler._update_tracking_data(worker_a, date, post_a, removing=True)
+        self.scheduler._update_tracking_data(worker_b, date, post_b, removing=True)
+        self.scheduler._update_tracking_data(worker_b, date, post_a, removing=False)
+        self.scheduler._update_tracking_data(worker_a, date, post_b, removing=False)
+
+    def _weekend_last_post_snapshot(self) -> dict[str, Any]:
+        """Counts and proportional targets for last-post shifts on weekend days.
+
+        Weekend here is the scheduler definition: Friday, Saturday, Sunday,
+        holiday and pre-holiday. ``only_last_post`` slots stay reserved.
+        ``no_last_post`` workers have a target of 0.
+        """
+        no_last = {w["id"] for w in self.workers_data if w.get("no_last_post", False)}
+        only_last = {w["id"] for w in self.workers_data if w.get("only_last_post", False)}
+        weekend_shifts: dict[str, int] = {w["id"]: 0 for w in self.workers_data}
+        weekend_last: dict[str, int] = {w["id"]: 0 for w in self.workers_data}
+        shared_slots = 0
+        swappable_days: list[tuple[datetime, int, str]] = []
+
+        for date, shifts in self.schedule.items():
+            if not shifts or not self.scheduler.date_utils.is_weekend_day(date, self.holidays_set):
+                continue
+            for worker_id in shifts:
+                if worker_id is not None:
+                    weekend_shifts[worker_id] = weekend_shifts.get(worker_id, 0) + 1
+            last_idx = len(shifts) - 1
+            holder = shifts[last_idx]
+            if holder is None:
+                continue
+            weekend_last[holder] = weekend_last.get(holder, 0) + 1
+            if holder not in only_last:
+                shared_slots += 1
+                swappable_days.append((date, last_idx, holder))
+
+        eligible_weekend_shifts = sum(
+            count
+            for worker_id, count in weekend_shifts.items()
+            if worker_id not in no_last and worker_id not in only_last
+        )
+        expected: dict[str, float] = {}
+        deviation: dict[str, float] = {}
+        for worker in self.workers_data:
+            worker_id = worker["id"]
+            if worker_id in no_last:
+                target = 0.0
+            elif worker_id in only_last or eligible_weekend_shifts == 0 or shared_slots == 0:
+                target = float(weekend_last.get(worker_id, 0))
+            else:
+                target = weekend_shifts.get(worker_id, 0) / eligible_weekend_shifts * shared_slots
+            expected[worker_id] = target
+            deviation[worker_id] = weekend_last.get(worker_id, 0) - target
+
+        return {
+            "deviation": deviation,
+            "swappable_days": swappable_days,
+            "no_last": no_last,
+            "only_last": only_last,
+        }
+
+    def _improve_weekend_last_post_balance(self) -> bool:
+        """Swap last post with another worker already assigned that weekend day.
+
+        One improving swap per call. Shift totals and weekend totals stay the
+        same; only the last-post holder of that day changes.
+        """
+        snapshot = self._weekend_last_post_snapshot()
+        deviation: dict[str, float] = snapshot["deviation"]
+        no_last: set[str] = snapshot["no_last"]
+        only_last: set[str] = snapshot["only_last"]
+        over = sorted(
+            (worker_id for worker_id, dev in deviation.items() if dev > 0.5),
+            key=lambda wid: deviation[wid],
+            reverse=True,
+        )
+        under = {
+            worker_id
+            for worker_id, dev in deviation.items()
+            if dev < -0.5 and worker_id not in no_last and worker_id not in only_last
+        }
+        if not over or not under:
+            return False
+
+        for date, last_idx, holder in snapshot["swappable_days"]:
+            if holder not in over and holder not in no_last:
+                continue
+            if holder in only_last:
+                continue
+            shifts = self.schedule.get(date) or []
+            for post, partner in enumerate(shifts):
+                if post == last_idx or partner is None or partner not in under:
+                    continue
+                if partner in no_last or partner in only_last:
+                    continue
+                checker = self.constraint_checker
+                if checker is not None and checker._would_exceed_consecutive_last_post(partner, date, True):
+                    continue
+                new_holder = deviation[holder] - 1
+                new_partner = deviation[partner] + 1
+                if abs(new_holder) + abs(new_partner) >= abs(deviation[holder]) + abs(deviation[partner]):
+                    continue
+                self._swap_posts_same_day(date, last_idx, post)
+                logging.info(
+                    "  ✅ Weekend last-post swap on %s: %s (P%s) ↔ %s (P%s)",
+                    date.strftime("%Y-%m-%d"),
+                    holder,
+                    last_idx,
+                    partner,
+                    post,
+                )
+                return True
+        return False
+
     def _can_swap_away(self, worker_id: str, date: datetime) -> bool:
         """
         True si una asignación puede cederse en un intercambio.
@@ -509,7 +702,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         NO verifica límites de objetivo ni tolerancia (el total de turnos no cambia
         en un intercambio pareado). Sólo valida restricciones hard:
           1. Disponibilidad del trabajador en date_gain (días libres, periodos de trabajo).
-          2. Restricciones no_last_post / only_last_post y máx. 2 últimos puestos seguidos.
+          2. Restricciones no_last_post / only_last_post y prohibido tener 2 o más últimos puestos seguidos.
           3. Incompatibilidades con otros trabajadores asignados ese mismo día.
           4. Gap mínimo / patrón 7-14 / viernes-lunes / puente gap-2 (asignaciones
              simuladas: sin date_lose; date_gain aún no incluida).
@@ -548,7 +741,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
                 if not is_last_post and worker_config.get("only_last_post", False):
                     return False
 
-        # 2b. CRITICAL: worker cannot end up with >2 consecutive last-post shifts
+        # 2b. CRITICAL: worker cannot end up with 2 or more consecutive last-post shifts
         #     (in their own chronological sequence), unless only_last_post. The date
         #     being ceded (date_lose) is excluded so the check reflects the post-swap state.
         num_shifts = getattr(sb, "num_shifts", None)
@@ -604,6 +797,11 @@ class FinalAdjustmentEngine(EngineStateMixin):
             from saldo27.strict_balance_optimizer import StrictBalanceOptimizer
 
             sbo = StrictBalanceOptimizer(self.scheduler, self.schedule_builder)
+            # Moving a weekend shift to fix the shift count is a weekday↔weekend
+            # change. Keep it only when neither worker ends further from their
+            # weekend target.
+            sbo.protect_weekend_balance = True
+            sbo.weekend_deviation = self._weekend_deviation
             sbo.optimize_balance(max_iterations=max_iters, target_tolerance=1)
             self.stats["shift_swaps"] = sbo.stats["swaps_performed"]
         except Exception as exc:
@@ -697,6 +895,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
                             continue
                         if not self._can_take_in_swap(over_id, date_wkday, post_d, date_wknd):
                             continue
+                        # The weekday coming back must not push either worker off their bridge target.
+                        if not self._exchange_preserves(over_id, date_wknd, under_id, date_wkday, "bridge"):
+                            continue
 
                         # --- Attempt paired swap ---
                         state = self._save_state()
@@ -714,11 +915,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
                         self.scheduler._update_tracking_data(under_id, date_wkday, post_d, removing=True)
                         self.scheduler._update_tracking_data(over_id, date_wkday, post_d, removing=False)
 
-                        # Evaluate: did weekend deviations improve?
-                        new_over_wknd = self.scheduler.worker_weekend_counts.get(over_id, 0)
-                        new_under_wknd = self.scheduler.worker_weekend_counts.get(under_id, 0)
-                        new_over_dev = new_over_wknd - self._weekend_target_for(self._raw_targets.get(over_id, 0))
-                        new_under_dev = new_under_wknd - self._weekend_target_for(self._raw_targets.get(under_id, 0))
+                        # Evaluate from the schedule, same count compute_metrics uses.
+                        new_over_dev = self._weekend_deviation(over_id)
+                        new_under_dev = self._weekend_deviation(under_id)
 
                         improved = abs(new_over_dev) < abs(over_dev) and abs(new_under_dev) < abs(under_dev)
                         if not improved:
@@ -805,12 +1004,28 @@ class FinalAdjustmentEngine(EngineStateMixin):
                     except (ValueError, KeyError):
                         continue
 
-                    for date_nonbridge in under_nonbridge_dates:
+                    bridge_is_weekend = self._is_weekend_date(date_bridge)
+                    same_kind = [
+                        day for day in under_nonbridge_dates if self._is_weekend_date(day) == bridge_is_weekend
+                    ]
+                    cross_kind = [
+                        day for day in under_nonbridge_dates if self._is_weekend_date(day) != bridge_is_weekend
+                    ]
+                    for date_nonbridge in same_kind + cross_kind:
                         if date_nonbridge == date_bridge:
                             continue
                         try:
                             post_n = self.schedule[date_nonbridge].index(under_id)
                         except (ValueError, KeyError):
+                            continue
+
+                        # A bridge day that is a weekend traded for a weekday (or the
+                        # reverse) moves the weekend load. Allow that only when both
+                        # workers get closer to their weekend target.
+                        crosses_weekend = self._is_weekend_date(date_nonbridge) != bridge_is_weekend
+                        if crosses_weekend and not self._exchange_improves_weekend(
+                            over_id, date_bridge, under_id, date_nonbridge
+                        ):
                             continue
 
                         # Swap-aware constraint check (no target/tolerance gate)
@@ -909,12 +1124,28 @@ class FinalAdjustmentEngine(EngineStateMixin):
         # CRITICAL: never apply a change that would strip a locked/config-mandatory
         # worker from their obligatory date — even if the CP-SAT model somehow
         # proposed it (stale lock set, conflicting hard constraints, etc.).
+        def _remains_on_date(worker: str, date: datetime) -> bool:
+            day_slots = self.schedule.get(date) or []
+            for post, current in enumerate(day_slots):
+                change = result.get((date, post))
+                final = change[1] if change is not None else current
+                if final == worker:
+                    return True
+            return False
+
         changes_by_date: dict = {}
         skipped_mandatory = 0
         for (date, post), (old_worker, new_worker) in result.items():
             if old_worker == new_worker:
                 continue
-            if old_worker is not None and self._is_protected_assignment(old_worker, date) and new_worker != old_worker:
+            # A same-day post move keeps the mandatory worker on the date.
+            # Only a change that drops them from the day is rejected.
+            if (
+                old_worker is not None
+                and self._is_protected_assignment(old_worker, date)
+                and new_worker != old_worker
+                and not _remains_on_date(old_worker, date)
+            ):
                 skipped_mandatory += 1
                 logging.warning(
                     "OR-Tools: skipped change that would remove mandatory %s from %s",
@@ -1079,7 +1310,7 @@ class ORToolsPhase:
 
         from ortools.sat.python import cp_model
 
-        from saldo27.constraint_checker import candidate_spacing_rejection
+        from saldo27.constraint_checker import MAX_CONSECUTIVE_LAST_POSTS, candidate_spacing_rejection
         from saldo27.utilities import get_effective_min_gap
 
         def _build_model(
@@ -1127,11 +1358,20 @@ class ORToolsPhase:
                     if len(slot_indices) > 1:
                         model.add(sum(x[wi, si] for si in slot_indices) <= 1)
 
-            # 3c. Mandatory / locked assignments are fixed (worker must stay on that date)
+            # 3c. Mandatory / locked assignments stay on that date, but the post
+            # may rotate among the slots the worker is allowed to take.
+            protected_slots: dict[tuple[int, datetime], list[int]] = {}
             for wi, wid in enumerate(worker_ids):
-                for si, (date, post, current_worker) in enumerate(slots):
-                    if self.engine._is_protected_assignment(wid, date):
-                        model.add(x[wi, si] == (1 if current_worker == wid else 0))
+                for si, (date, _post, current_worker) in enumerate(slots):
+                    if current_worker == wid and self.engine._is_protected_assignment(wid, date):
+                        protected_slots.setdefault((wi, date), []).append(si)
+            for (wi, date), indexes in protected_slots.items():
+                # Every slot of this date is in ``indexes`` only for the posts
+                # where this worker is the current occupant. Include the other
+                # posts of the same date so the worker can move, but must keep
+                # exactly one assignment that day.
+                all_date_slots = date_to_slots.get(date, indexes)
+                model.add(sum(x[wi, si] for si in all_date_slots) == 1)
 
             # 3d. Worker unavailability (days_off / work_periods)
             sb = self.engine.schedule_builder
@@ -1260,7 +1500,7 @@ class ORToolsPhase:
                 for wi in range(n_workers):
                     model.add(sum(x[wi, si] for si in range(n_slots)) <= max_shifts)
 
-            # 3i. Max 2 consecutive last-post shifts in the worker's own
+            # 3i. At most 1 consecutive last-post shift in the worker's own
             # chronological assignment sequence (mirrors ConstraintChecker.
             # _would_exceed_consecutive_last_post, but as a hard CP-SAT
             # constraint since Ajuste Final/OR-Tools must honor it too).
@@ -1271,9 +1511,9 @@ class ORToolsPhase:
             # consecutive last-post assignments, resetting on any
             # non-last-post assignment and passing through unchanged when
             # the worker isn't assigned that slot at all.
-            slot_is_last_post = [slots[si][1] == num_shifts - 1 for si in range(n_slots)]
+            slot_is_last_post = [slots[si][1] == len(self.schedule.get(slots[si][0], [])) - 1 for si in range(n_slots)]
             if num_shifts > 1 and n_slots > 0:
-                max_consecutive_last_post = 2
+                max_consecutive_last_post = MAX_CONSECUTIVE_LAST_POSTS
                 for wi, wid in enumerate(worker_ids):
                     wd = worker_data_by_id[wid]
                     if wd.get("only_last_post", False):
@@ -1387,6 +1627,10 @@ class ORToolsPhase:
                 dminus_w = model.new_int_var(0, n_slots, f"dmw_{wi}")
                 model.add(actual_wknd - wknd_tgt == dplus_w - dminus_w)
                 weekend_abs = dplus_w + dminus_w
+                # Do not move a worker further from their weekend target in order to
+                # fix shifts or bridges. The incumbent already satisfies this.
+                current_wknd = sum(1 for si in range(n_slots) if slot_is_weekend[si] and slots[si][2] == wid)
+                model.add(weekend_abs <= abs(current_wknd - wknd_tgt))
                 # floor(15% of target): every integer deviation above this is > ±15%.
                 max_ok = int(self.DEADZONE_WEEKEND * wknd_tgt)
                 weekend_is_error = model.new_bool_var(f"werr_{wi}")

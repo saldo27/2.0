@@ -899,7 +899,8 @@ def render_final_adjustment_result(result: dict[str, Any]) -> None:
         st.success(
             f"✅ Ajuste completado: {fa_stats['shift_swaps']} swap(s) de turno, "
             f"{fa_stats['weekend_swaps']} swap(s) de fin-de-semana, "
-            f"{fa_stats['bridge_swaps']} swap(s) de puente"
+            f"{fa_stats['bridge_swaps']} swap(s) de puente, "
+            f"{fa_stats.get('weekend_last_post_swaps', 0)} swap(s) de último puesto en finde"
             f"{ortools_msg}."
         )
         if refreshed_pdfs:
@@ -2405,6 +2406,7 @@ with tab2:
                                 _fa_stats["shift_swaps"]
                                 + _fa_stats["weekend_swaps"]
                                 + _fa_stats["bridge_swaps"]
+                                + _fa_stats.get("weekend_last_post_swaps", 0)
                                 + _fa_stats.get("ortools_reassignments", 0)
                             )
                             _fa_changes = compute_schedule_changes(_schedule_before_fa, _sched_fa.schedule)
@@ -2888,7 +2890,7 @@ with tab4:
             {
                 "key": "ultimo_puesto",
                 "title": "🔢 Último puesto",
-                "hint": "Respeta no_last_post / only_last_post y evita >2 últimos puestos seguidos.",
+                "hint": "Un médico no puede tener 2 o más Rosell seguidos en sus propias guardias. También respeta no_last_post / only_last_post.",
                 "recommendation": "Revise flags de último puesto o reasigne el puesto del día conflictivo.",
             },
         ]

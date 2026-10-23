@@ -44,6 +44,12 @@ class StrictBalanceOptimizer(EngineStateMixin):
         # Estadísticas
         self.stats = {"swaps_performed": 0, "workers_balanced": 0, "max_deviation_before": 0, "max_deviation_after": 0}
 
+        # Set by FinalAdjustmentEngine so a shift move cannot push either worker
+        # further from their weekend target. The generation-time optimizer leaves
+        # this off.
+        self.protect_weekend_balance = False
+        self.weekend_deviation = None
+
         logging.info("💎 Strict Balance Optimizer initialized")
 
     def _sort_dates_by_monthly_excess(self, worker_id, dates):
@@ -82,6 +88,41 @@ class StrictBalanceOptimizer(EngineStateMixin):
         )
         # Allow at most 1 below target (since target may be fractional/rounded)
         return (current - 1) >= (target - 1)
+
+    def _date_is_weekend(self, date) -> bool:
+        return self.scheduler.date_utils.is_weekend_day(date, self.scheduler.holidays)
+
+    def _transfer_deltas(self, transfers: list[tuple]) -> dict[str, int]:
+        """Net weekend-count change for ``(loser_or_None, gainer, date)`` moves."""
+        deltas: dict[str, int] = {}
+        for loser, gainer, date in transfers:
+            if not self._date_is_weekend(date):
+                continue
+            if loser is not None:
+                deltas[loser] = deltas.get(loser, 0) - 1
+            deltas[gainer] = deltas.get(gainer, 0) + 1
+        return deltas
+
+    def _weekend_baseline(self) -> dict[str, int] | None:
+        if not self.protect_weekend_balance or self.weekend_deviation is None:
+            return None
+        return {worker["id"]: self.weekend_deviation(worker["id"]) for worker in self.workers_data}
+
+    def _weekend_deltas_ok(self, deltas: dict[str, int], baseline: dict[str, int] | None = None) -> bool:
+        """True when applying ``deltas`` does not increase any |weekend deviation|.
+
+        ``baseline`` is the signed deviation captured before a partial mutation
+        (the reassignment path removes the giver before it tries receivers).
+        """
+        if not self.protect_weekend_balance or self.weekend_deviation is None or not deltas:
+            return True
+        for worker_id, delta in deltas.items():
+            if not delta:
+                continue
+            before = baseline[worker_id] if baseline is not None else self.weekend_deviation(worker_id)
+            if abs(before + delta) > abs(before):
+                return False
+        return True
 
     def optimize_balance(self, max_iterations: int = 500, target_tolerance: int = 1) -> bool:
         """
@@ -395,6 +436,9 @@ class StrictBalanceOptimizer(EngineStateMixin):
                             logging.debug(f"Strict balance: {under_id} blocked by monthly limit")
                             continue
 
+                    if not self._weekend_deltas_ok(self._transfer_deltas([(over_id, under_id, date)])):
+                        continue
+
                     # Validate consecutive weekends (including holidays and pre-holidays)
                     # Use builder's method that includes holidays for consistency
                     if hasattr(self.builder, "_is_weekend_or_holiday") and self.builder._is_weekend_or_holiday(date):
@@ -615,6 +659,11 @@ class StrictBalanceOptimizer(EngineStateMixin):
                             if skip_b_take:
                                 continue
 
+                            if not self._weekend_deltas_ok(
+                                self._transfer_deltas([(over_id, c_id, date_a), (c_id, under_id, date_c)])
+                            ):
+                                continue
+
                             # ¡Encontramos un intercambio válido a 3 bandas!
                             state = self._save_state()
 
@@ -698,6 +747,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
 
                 # Remover el turno temporalmente
                 state = self._save_state()
+                weekend_baseline = self._weekend_baseline()
 
                 self.schedule[date][post] = None
                 self.worker_assignments[over_id].discard(date)
@@ -745,6 +795,11 @@ class StrictBalanceOptimizer(EngineStateMixin):
                                     skip_assign = True
 
                         if skip_assign:
+                            continue
+
+                        if not self._weekend_deltas_ok(
+                            self._transfer_deltas([(over_id, under_id, date)]), weekend_baseline
+                        ):
                             continue
 
                         # Asignar
@@ -817,6 +872,9 @@ class StrictBalanceOptimizer(EngineStateMixin):
                     score = self.builder._calculate_worker_score(worker_under, date, post, relaxation_level=1)
 
                     if score > float("-inf"):
+                        if not self._weekend_deltas_ok(self._transfer_deltas([(over_id, under_id, date)])):
+                            continue
+
                         state = self._save_state()
 
                         # ── Pre-swap counts ──────────────────────────────────────────
@@ -1030,6 +1088,11 @@ class StrictBalanceOptimizer(EngineStateMixin):
                             if skip_b_take:
                                 continue
 
+                            if not self._weekend_deltas_ok(
+                                self._transfer_deltas([(over_id, c_id, date_a), (c_id, under_id, date_c)])
+                            ):
+                                continue
+
                             # Intentar el intercambio
                             state = self._save_state()
 
@@ -1200,6 +1263,13 @@ class StrictBalanceOptimizer(EngineStateMixin):
 
     def _apply_chain(self, chain: list) -> bool:
         """Aplica una cadena de intercambios."""
+        chain_deltas: dict[str, int] = {}
+        for from_id, date, _post, to_id in chain:
+            for worker_id, delta in self._transfer_deltas([(from_id, to_id, date)]).items():
+                chain_deltas[worker_id] = chain_deltas.get(worker_id, 0) + delta
+        if not self._weekend_deltas_ok(chain_deltas):
+            return False
+
         state = self._save_state()
 
         try:
@@ -1274,6 +1344,8 @@ class StrictBalanceOptimizer(EngineStateMixin):
                         # Verificar si puede tomar este slot
                         score = self.builder._calculate_worker_score(worker_under, date, post, relaxation_level=1)
                         if score > float("-inf"):
+                            if not self._weekend_deltas_ok(self._transfer_deltas([(None, under_id, date)])):
+                                continue
                             # Asignar directamente
                             self.schedule[date][post] = under_id
                             self.worker_assignments.setdefault(under_id, set()).add(date)
@@ -1328,6 +1400,8 @@ class StrictBalanceOptimizer(EngineStateMixin):
 
                         score = self.builder._calculate_worker_score(worker_under, date, post, relaxation_level=1)
                         if score > float("-inf"):
+                            if not self._weekend_deltas_ok(self._transfer_deltas([(mid_id, under_id, date)])):
+                                continue
                             state = self._save_state()
                             pre_mid_count = len(self.worker_assignments.get(mid_id, set()))
                             pre_under_count = len(self.worker_assignments.get(under_id, set()))

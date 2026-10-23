@@ -31,6 +31,11 @@ _GAP2_WEEKEND_PROHIBITED_PAIRS: frozenset[tuple[int, int]] = frozenset(
     }
 )
 
+# Maximum Rosell (last-post) shifts in a row in a worker's own assignment
+# sequence. 1 means a second consecutive Rosell is already a violation,
+# whether or not the calendar days are adjacent.
+MAX_CONSECUTIVE_LAST_POSTS = 1
+
 # Violation types produced from candidate_spacing_rejection. Repair treats them alike.
 SPACING_VIOLATION_TYPES: frozenset[str] = frozenset(
     {
@@ -556,20 +561,24 @@ class ConstraintChecker:
             assigned_dates if assigned_dates is not None else self.scheduler.worker_assignments.get(worker_id, set())
         )
 
-        num_shifts = getattr(self.scheduler, "num_shifts", 1)
-        last_post_index = num_shifts - 1
-
         sequence = []
         for d in sorted(dates):
             if exclude_date is not None and d == exclude_date:
                 continue
             day_slots = sched.get(d, [])
-            try:
-                post = day_slots.index(worker_id)
-            except (ValueError, AttributeError):
-                continue
-            sequence.append((d, post == last_post_index))
+            sequence.append((d, self._occupies_last_post(day_slots, worker_id)))
         return sequence
+
+    @staticmethod
+    def _occupies_last_post(day_slots, worker_id) -> bool:
+        """True when the worker fills Rosell: the last slot of that day."""
+        if not day_slots:
+            return False
+        try:
+            post = day_slots.index(worker_id)
+        except (ValueError, AttributeError):
+            return False
+        return post == len(day_slots) - 1
 
     def _would_exceed_consecutive_last_post(
         self,
@@ -579,7 +588,7 @@ class ConstraintChecker:
         schedule=None,
         assigned_dates=None,
         exclude_date=None,
-        max_consecutive=2,
+        max_consecutive=MAX_CONSECUTIVE_LAST_POSTS,
     ):
         """Check whether assigning/keeping `worker_id` on `date` (last-post flag
         `is_last_post`) would create a run of more than `max_consecutive`
@@ -901,36 +910,32 @@ class ConstraintChecker:
                         }
                     )
 
-            # Consecutive last-post violation: worker has >2 consecutive
-            # last-post shifts in their own chronological sequence (exempt
-            # for only_last_post workers, who always occupy the last post).
+            # Consecutive last-post violation: 2 or more Rosell shifts in a row in
+            # the worker's own sequence (ELENA on 17-03-2027 and 29-03-2027, with
+            # no shift of hers in between, is a violation). only_last_post workers
+            # are exempt.
             if not worker.get("only_last_post", False) and getattr(self.scheduler, "num_shifts", 1) > 1:
-                last_post_idx = self.scheduler.num_shifts - 1
-                run_start = None
-                run_len = 0
-                for d in assigned_dates:
-                    day_slots = self.scheduler.schedule.get(d, [])
-                    try:
-                        is_last = day_slots.index(worker_id) == last_post_idx
-                    except (ValueError, AttributeError):
-                        is_last = False
-                    if is_last:
-                        if run_len == 0:
-                            run_start = d
-                        run_len += 1
-                    else:
-                        run_len = 0
-                        run_start = None
-                    if run_len > 2:
+                run_dates: list = []
+
+                def _flush_last_post_run() -> None:
+                    if len(run_dates) > MAX_CONSECUTIVE_LAST_POSTS:
                         violations.append(
                             {
                                 "type": "consecutive_last_post",
                                 "worker_id": worker_id,
-                                "date1": run_start,
-                                "date2": d,
-                                "run_length": run_len,
+                                "date1": run_dates[0],
+                                "date2": run_dates[-1],
+                                "run_length": len(run_dates),
                             }
                         )
+                    run_dates.clear()
+
+                for d in assigned_dates:
+                    if self._occupies_last_post(self.scheduler.schedule.get(d, []), worker_id):
+                        run_dates.append(d)
+                    else:
+                        _flush_last_post_run()
+                _flush_last_post_run()
 
             # Cadence exclusivity: cadence workers must not hold any shift
             # outside their mandatory cadence dates.

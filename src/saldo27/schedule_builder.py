@@ -365,15 +365,21 @@ class ScheduleBuilder:
         Returns:
             bool: True si se puede modificar, False si está protegido
         """
+        # Same-day post swaps may move a mandatory worker between posts they are
+        # allowed to take. The date stays. Removing the date (balance, repairs,
+        # fix_consecutive_last_post) stays blocked.
+        same_day_post_swap = operation_name.startswith(("adjust_last_post", "strict_last_post"))
+        worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
+
         # Verificar locked mandatory
-        if (worker_id, date) in self._locked_mandatory:
+        if (worker_id, date) in self._locked_mandatory and not same_day_post_swap:
             logging.debug(
                 f"🚫 BLOCKED {operation_name}: Cannot modify LOCKED MANDATORY assignment for {worker_id} on {date.strftime('%Y-%m-%d')}"
             )
             return False
 
         # Verificar config mandatory
-        if self._is_mandatory(worker_id, date):
+        if self._is_mandatory(worker_id, date) and not same_day_post_swap:
             logging.debug(
                 f"🚫 BLOCKED {operation_name}: Cannot modify CONFIG MANDATORY assignment for {worker_id} on {date.strftime('%Y-%m-%d')}"
             )
@@ -384,7 +390,8 @@ class ScheduleBuilder:
         # when two workers swap positions on the SAME date.
         _is_position_swap = "last_post" in operation_name
         if not _is_position_swap and enforce_monthly_target_floor:
-            worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
+            if worker_config is None:
+                worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if worker_config and not worker_config.get("auto_calculate_shifts", True):
                 monthly_target = self._get_expected_monthly_target(worker_config, date.year, date.month)
                 if monthly_target > 0:
@@ -856,7 +863,7 @@ class ScheduleBuilder:
             if post != self.num_shifts - 1 and worker.get("only_last_post", False):
                 return False
 
-            # CRITICAL: worker cannot have more than 2 consecutive last-post shifts
+            # CRITICAL: worker cannot have 2 or more consecutive last-post shifts
             # (in their own chronological assignment sequence), unless only_last_post.
             if self.constraint_checker._would_exceed_consecutive_last_post(
                 worker_id, date, post == self.num_shifts - 1
@@ -2616,79 +2623,143 @@ class ScheduleBuilder:
     # ========================================
     # 6. SCHEDULE GENERATION METHODS
     # ========================================
+    def _mandatory_posts_allowed(self, worker: dict, n_posts: int) -> list[int]:
+        """Posts a worker may occupy on a day with ``n_posts`` slots.
+
+        ``only_last_post`` is locked to the day's real last post.
+        ``no_last_post`` may use every post except that last one.
+        """
+        if n_posts <= 0:
+            return []
+        last_post = n_posts - 1
+        if worker.get("only_last_post", False):
+            return [last_post]
+        if worker.get("no_last_post", False):
+            return list(range(last_post))
+        return list(range(n_posts))
+
+    def _commit_mandatory_assignment(self, worker_id: str, date: datetime, post: int) -> None:
+        """Write a mandatory assignment and lock it. Same-day post moves are not commits."""
+        self.schedule[date][post] = worker_id
+        self.worker_assignments.setdefault(worker_id, set()).add(date)
+        self.scheduler._update_tracking_data(worker_id, date, post, removing=False)
+        self._locked_mandatory.add((worker_id, date))
+        logging.info(f"🔒 MANDATORY ASSIGNED AND LOCKED: {worker_id} → {date.strftime('%Y-%m-%d')} post {post}")
+
+    def _relocate_mandatory_post(self, worker_id: str, date: datetime, from_post: int, to_post: int) -> None:
+        """Move an already-locked mandatory worker to another post on the same day."""
+        self.schedule[date][from_post] = None
+        self.scheduler._update_tracking_data(worker_id, date, from_post, removing=True)
+        self.schedule[date][to_post] = worker_id
+        self.scheduler._update_tracking_data(worker_id, date, to_post, removing=False)
+        logging.info(
+            f"🔒 MANDATORY MOVED: {worker_id} on {date.strftime('%Y-%m-%d')} post {from_post} → post {to_post}"
+        )
+
+    def _place_mandatory_on_date(self, worker: dict, date: datetime, workers_by_id: dict[str, dict]) -> bool:
+        """Place one mandatory shift, displacing a less-restricted worker on the same day if needed.
+
+        Mandatory dates override gap, pattern and incompatibility. The only hard
+        blocks are unavailability and post restrictions (``no_last_post`` /
+        ``only_last_post``). A flexible worker already sitting on a post the
+        newcomer needs is moved onto an empty post they are allowed to take.
+        """
+        worker_id = worker["id"]
+        if worker_id in self.schedule.get(date, []):
+            self._locked_mandatory.add((worker_id, date))
+            return True
+
+        n_posts = self.scheduler._get_shifts_for_date(date)
+        if n_posts <= 0:
+            return False
+
+        row = self.schedule.setdefault(date, [None] * n_posts)
+        if len(row) < n_posts:
+            row.extend([None] * (n_posts - len(row)))
+
+        # Unavailability (days_off / work_periods / cadence) is the only hard block.
+        if self._is_worker_unavailable(worker_id, date):
+            logging.warning(
+                f"Mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')} "
+                "conflicts with days_off or work_periods. This is a configuration error."
+            )
+            return False
+
+        allowed_posts = self._mandatory_posts_allowed(worker, n_posts)
+        # Rotate across the posts this worker may take. A mandatory date locks
+        # the day, not the slot: successive mandatory days must not all land on
+        # post 0. only_last_post has a single allowed post, so it does not rotate.
+        placement_order = allowed_posts
+        rotates_posts = len(allowed_posts) > 1
+        if rotates_posts:
+            if not hasattr(self, "_mandatory_post_cursor"):
+                self._mandatory_post_cursor = {}
+            cursor = self._mandatory_post_cursor.get(worker_id, 0) % len(allowed_posts)
+            placement_order = allowed_posts[cursor:] + allowed_posts[:cursor]
+
+        for post in placement_order:
+            if self.schedule[date][post] is None:
+                self._commit_mandatory_assignment(worker_id, date, post)
+                if rotates_posts:
+                    chosen = allowed_posts.index(post)
+                    self._mandatory_post_cursor[worker_id] = (chosen + 1) % len(allowed_posts)
+                return True
+
+        # No empty allowed post. Move a worker who can vacate one onto an empty post.
+        for post in placement_order:
+            occupant_id = self.schedule[date][post]
+            if occupant_id is None:
+                continue
+            occupant = workers_by_id.get(occupant_id)
+            if occupant is None:
+                continue
+            occupant_posts = self._mandatory_posts_allowed(occupant, n_posts)
+            for alt_post in occupant_posts:
+                if alt_post == post or self.schedule[date][alt_post] is not None:
+                    continue
+                self._relocate_mandatory_post(occupant_id, date, post, alt_post)
+                self._commit_mandatory_assignment(worker_id, date, post)
+                if rotates_posts:
+                    chosen = allowed_posts.index(post)
+                    self._mandatory_post_cursor[worker_id] = (chosen + 1) % len(allowed_posts)
+                return True
+
+        logging.warning(
+            f"Could not place mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')}. "
+            "All posts filled or incompatible."
+        )
+        return False
+
     def _assign_mandatory_guards(self):
         logging.info("Starting mandatory guard assignment…")
         assigned_count = 0
-        for worker in self.workers_data:  # Use self.workers_data
+        workers_by_id = {worker["id"]: worker for worker in self.workers_data}
+
+        # Most restricted first: only_last_post, then no_last_post, then anyone.
+        # Otherwise unrestricted workers fill the non-last posts and a later
+        # no_last_post worker is left out even though the last post is still free.
+        pending: list[tuple[datetime, int, dict]] = []
+        for worker in self.workers_data:
             worker_id = worker["id"]
-            mandatory_str = worker.get("mandatory_days", "")
             try:
-                dates = self.date_utils.parse_dates(mandatory_str)
+                dates = self.date_utils.parse_dates(worker.get("mandatory_days", ""))
             except Exception as e:
                 logging.error(f"Error parsing mandatory_days for worker {worker_id}: {e}")
                 continue
-
-            # Determine which posts this worker is allowed to occupy when placing
-            # mandatory shifts, honoring the same last-post constraints enforced
-            # everywhere else in the scheduler:
-            # - only_last_post: worker must ALWAYS occupy the last post, even if
-            #   earlier posts are free that day — never any other post.
-            # - no_last_post: worker must NEVER occupy the last post.
             if worker.get("only_last_post", False):
-                allowed_posts = [self.num_shifts - 1]
+                rank = 0
             elif worker.get("no_last_post", False):
-                allowed_posts = list(range(self.num_shifts - 1))
+                rank = 1
             else:
-                allowed_posts = list(range(self.num_shifts))
-
+                rank = 2
             for date in dates:
-                if not (self.start_date <= date <= self.end_date):
-                    continue
+                if self.start_date <= date <= self.end_date:
+                    pending.append((date, rank, worker))
+        pending.sort(key=lambda item: (item[0], item[1]))
 
-                if date not in self.schedule:  # self.schedule is scheduler.schedule
-                    self.schedule[date] = [None] * self.num_shifts
-
-                # Try to place in an allowed post for that date
-                placed_mandatory = False
-                for post in allowed_posts:
-                    if len(self.schedule[date]) <= post:
-                        self.schedule[date].extend([None] * (post + 1 - len(self.schedule[date])))
-
-                    if self.schedule[date][post] is None:
-                        # CRITICAL: For MANDATORY assignments, ONLY check work_periods/unavailability
-                        # INCOMPATIBILITY DOES NOT APPLY to mandatory shifts - if two incompatible
-                        # workers both have mandatory on the same day, BOTH must be assigned
-                        # because mandatory_days override ALL other constraints (including incompatibility)
-
-                        # Check if worker is unavailable (days off, work periods) - ONLY HARD constraint for mandatory
-                        if self._is_worker_unavailable(worker_id, date):
-                            logging.warning(
-                                f"Mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')} conflicts with days_off or work_periods. This is a configuration error."
-                            )
-                            continue
-
-                        # NOTE: We do NOT check gap, 7/14 pattern, or weekend limits for mandatory assignments
-                        # because mandatory_days override these soft constraints
-
-                        self.schedule[date][post] = worker_id
-                        self.worker_assignments.setdefault(worker_id, set()).add(date)  # Use self.worker_assignments
-                        self.scheduler._update_tracking_data(
-                            worker_id, date, post, removing=False
-                        )  # Call scheduler's central update
-
-                        # CRITICAL: Lock the mandatory assignment IMMEDIATELY
-                        self._locked_mandatory.add((worker_id, date))
-                        logging.info(
-                            f"🔒 MANDATORY ASSIGNED AND LOCKED: {worker_id} → {date.strftime('%Y-%m-%d')} post {post}"
-                        )
-
-                        assigned_count += 1
-                        placed_mandatory = True
-                        break
-                if not placed_mandatory:
-                    logging.warning(
-                        f"Could not place mandatory shift for {worker_id} on {date.strftime('%Y-%m-%d')}. All posts filled or incompatible."
-                    )
+        for date, _rank, worker in pending:
+            if self._place_mandatory_on_date(worker, date, workers_by_id):
+                assigned_count += 1
 
         # Log summary of locked mandatory shifts
         logging.info("=" * 80)
@@ -6540,7 +6611,7 @@ class ScheduleBuilder:
             worker_cfg = next((w for w in self.workers_data if w["id"] == worker_id), None)
             if worker_cfg and worker_cfg.get("only_last_post", False):
                 return False
-        # CRITICAL: worker cannot end up with >2 consecutive last-post shifts
+        # CRITICAL: worker cannot end up with 2 or more consecutive last-post shifts
         if self.constraint_checker._would_exceed_consecutive_last_post(
             worker_id, date, post == self.num_shifts - 1, exclude_date=giving_up_date
         ):
@@ -6600,7 +6671,7 @@ class ScheduleBuilder:
             if worker_cfg and worker_cfg.get("only_last_post", False):
                 return False
 
-        # CRITICAL: worker cannot end up with >2 consecutive last-post shifts
+        # CRITICAL: worker cannot end up with 2 or more consecutive last-post shifts
         if self.constraint_checker._would_exceed_consecutive_last_post(
             worker_id, date, post == self.num_shifts - 1, exclude_date=giving_up_date
         ):
@@ -7500,8 +7571,9 @@ class ScheduleBuilder:
 
                         if var_after < var_before - 1e-9:
                             # CRITICAL: no_last_post workers cannot be swapped into the last post
-                            # CRITICAL: only_last_post workers can ONLY be swapped into the last post
+                            # CRITICAL: only_last_post workers can ONLY stay on the last post
                             last_post = num_shifts - 1
+                            post_swap_blocked = False
                             if j == last_post or i == last_post:
                                 w_going_to_last = w_i if j == last_post else w_j
                                 w_going_to_nonlast = w_j if j == last_post else w_i
@@ -7510,20 +7582,25 @@ class ScheduleBuilder:
                                     (w for w in self.workers_data if w["id"] == w_going_to_nonlast), None
                                 )
                                 if cfg_last and cfg_last.get("no_last_post", False):
-                                    continue
+                                    post_swap_blocked = True
                                 if cfg_nonlast and cfg_nonlast.get("only_last_post", False):
-                                    continue
-                                # CRITICAL: worker cannot end up with >2 consecutive last-post shifts
-                                if self.constraint_checker._would_exceed_consecutive_last_post(
-                                    w_going_to_last, date, True
+                                    post_swap_blocked = True
+                                # CRITICAL: worker cannot end up with 2 or more consecutive last-post shifts
+                                if (
+                                    not post_swap_blocked
+                                    and self.constraint_checker._would_exceed_consecutive_last_post(
+                                        w_going_to_last, date, True
+                                    )
                                 ):
-                                    continue
+                                    post_swap_blocked = True
                             else:
-                                # Neither i nor j is the last post — block only_last_post workers from non-last swaps
+                                # Neither post is last — only_last_post workers cannot leave it
                                 for w_check in (w_i, w_j):
                                     cfg_check = next((w for w in self.workers_data if w["id"] == w_check), None)
                                     if cfg_check and cfg_check.get("only_last_post", False):
-                                        continue
+                                        post_swap_blocked = True
+                            if post_swap_blocked:
+                                continue
 
                             # Commit swap
                             posts[i], posts[j] = w_j, w_i
@@ -8048,7 +8125,7 @@ class ScheduleBuilder:
                             if valid_swap and self._are_workers_incompatible(worker_A_id, worker_B_id):
                                 valid_swap = False
 
-                            # CRITICAL: worker_B cannot end up with >2 consecutive last-post shifts
+                            # CRITICAL: worker_B cannot end up with 2 or more consecutive last-post shifts
                             if valid_swap and self.constraint_checker._would_exceed_consecutive_last_post(
                                 worker_B_id, date_to_adjust, True
                             ):

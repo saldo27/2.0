@@ -415,6 +415,43 @@ class DateTimeUtils:
 
         return bridge_periods
 
+    def identify_bridge_periods_for_span(
+        self,
+        holidays: list[datetime],
+        start_date: datetime,
+        end_date: datetime | None = None,
+    ) -> list[dict]:
+        """Bridge periods for every year covered by the schedule or the holiday list.
+
+        A schedule that starts in one year and ends in the next must include
+        holidays of both years. A Friday holiday such as 19-03-2027 is itself
+        the first day of its bridge.
+        """
+        years: set[int] = set()
+        if start_date is not None and hasattr(start_date, "year"):
+            years.add(start_date.year)
+        if end_date is not None and hasattr(end_date, "year") and start_date is not None:
+            years.update(range(start_date.year, end_date.year + 1))
+        for holiday in holidays or []:
+            if hasattr(holiday, "year"):
+                years.add(holiday.year)
+
+        periods: list[dict] = []
+        seen: set[str] = set()
+        for year in sorted(years):
+            for period in self.identify_bridge_periods(holidays, year):
+                if period["id"] in seen:
+                    continue
+                if (
+                    start_date is not None
+                    and end_date is not None
+                    and (period["end_date"] < start_date or period["start_date"] > end_date)
+                ):
+                    continue
+                seen.add(period["id"])
+                periods.append(period)
+        return periods
+
     def get_bridge_period_for_date(self, date: datetime, bridge_periods: list[dict]) -> dict | None:
         """
         Get the bridge period that contains the given date.

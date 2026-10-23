@@ -288,10 +288,9 @@ class ScheduleAnalyzer:
 
         # Identificar períodos de puente
         date_utils = DateTimeUtils()
-        year = start_date.year if hasattr(start_date, "year") else datetime.now().year
-        self.bridge_periods = date_utils.identify_bridge_periods(self.holidays, year)
+        self.bridge_periods = date_utils.identify_bridge_periods_for_span(self.holidays, self.start_date)
 
-        logging.info(f"ScheduleAnalyzer: Detectados {len(self.bridge_periods)} períodos de puente para año {year}")
+        logging.info(f"ScheduleAnalyzer: Detectados {len(self.bridge_periods)} períodos de puente")
 
         # Crear conjunto de fechas de puente para búsqueda rápida
         self.bridge_dates = set()

@@ -695,7 +695,7 @@ class AdvancedDistributionEngine(EngineStateMixin):
                 if w_data and w_data.get("no_last_post", False):
                     return False
 
-            # CRITICAL: worker cannot end up with >2 consecutive last-post shifts
+            # CRITICAL: worker cannot end up with 2 or more consecutive last-post shifts
             if self.builder.constraint_checker._would_exceed_consecutive_last_post(
                 worker_id, date, post == self.scheduler.num_shifts - 1
             ):

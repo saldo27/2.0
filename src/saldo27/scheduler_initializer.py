@@ -106,8 +106,9 @@ class SchedulerInitializer:
         scheduler.weekend_tolerance = config.get("weekend_tolerance", 1)
         scheduler.bridge_tolerance = config.get("bridge_tolerance", 0.5)
 
-        year = scheduler.start_date.year
-        scheduler.bridge_periods = scheduler.date_utils.identify_bridge_periods(scheduler.holidays, year)
+        scheduler.bridge_periods = scheduler.date_utils.identify_bridge_periods_for_span(
+            scheduler.holidays, scheduler.start_date, scheduler.end_date
+        )
         scheduler.worker_bridge_counts = {worker["id"]: set() for worker in scheduler.workers_data}
 
         default_config = SchedulerConfig.get_default_config()
