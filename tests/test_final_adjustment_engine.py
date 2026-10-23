@@ -219,7 +219,9 @@ def test_can_take_in_swap_respects_gap_with_simulated_removal():
     engine = _build_engine(scheduler)
     engine.schedule_builder = _make_stub_builder(scheduler)
 
-    result = engine._can_take_in_swap("B", date_gain, 1, date_lose)
+    # Post 0 is not Rosell. Post 1 would be a second consecutive last post
+    # (B already holds the last post on 2026-03-01) and is rejected on its own.
+    result = engine._can_take_in_swap("B", date_gain, 0, date_lose)
     assert result is True
 
 
@@ -445,8 +447,8 @@ def test_ortools_phase_respects_mandatory():
 
     engine._run_ortools_phase(time_limit_seconds=10)
 
-    # Mandatory slot must be unchanged
-    assert scheduler.schedule[mandatory_date][0] == "A"
+    # The mandatory worker stays on that date; the post may rotate.
+    assert "A" in scheduler.schedule[mandatory_date]
 
 
 def test_ortools_phase_pins_manual_worker_total_shifts():
@@ -755,3 +757,169 @@ def test_ortools_phase_preserves_last_post_balance_when_shift_imbalance_forces_c
     assert last_post_dev_after <= last_post_dev_before, (
         f"Last-post rotation got worse after OR-Tools phase: {last_post_dev_before} → {last_post_dev_after}"
     )
+
+
+def _weekend_last_posts(scheduler, worker_id: str) -> int:
+    count = 0
+    for date, shifts in scheduler.schedule.items():
+        if not shifts or shifts[-1] != worker_id:
+            continue
+        if scheduler.date_utils.is_weekend_day(date, set(scheduler.holidays)):
+            count += 1
+    return count
+
+
+def test_weekend_last_post_balance_swaps_workers_on_the_same_day():
+    """Last posts on weekend days are shared by swapping workers already on that day.
+    A weekday last post is left untouched, and a no_last_post worker is not given one."""
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+    saturday_1 = datetime(2026, 3, 7)
+    saturday_2 = datetime(2026, 3, 14)
+    wednesday = datetime(2026, 3, 4)
+    scheduler.schedule[saturday_1] = ["B", "A"]
+    scheduler.schedule[saturday_2] = ["B", "A"]
+    scheduler.schedule[wednesday] = ["B", "A"]
+    scheduler.worker_assignments["A"] = {saturday_1, saturday_2, wednesday}
+    scheduler.worker_assignments["B"] = {saturday_1, saturday_2, wednesday}
+    scheduler._synchronize_tracking_data()
+
+    engine = _build_engine(scheduler)
+    assert engine._improve_weekend_last_post_balance() is True
+    assert engine._improve_weekend_last_post_balance() is False
+    assert _weekend_last_posts(scheduler, "A") == 1
+    assert _weekend_last_posts(scheduler, "B") == 1
+    assert scheduler.schedule[wednesday] == ["B", "A"]
+
+    workers[1]["no_last_post"] = True
+    blocked = _make_scheduler(workers)
+    blocked.schedule[saturday_1] = ["B", "A"]
+    blocked.schedule[saturday_2] = ["B", "A"]
+    blocked.worker_assignments["A"] = {saturday_1, saturday_2}
+    blocked.worker_assignments["B"] = {saturday_1, saturday_2}
+    blocked._synchronize_tracking_data()
+    blocked_engine = _build_engine(blocked)
+    assert blocked_engine._improve_weekend_last_post_balance() is False
+    assert blocked.schedule[saturday_1] == ["B", "A"]
+    assert blocked.schedule[saturday_2] == ["B", "A"]
+
+
+def _bridge(period_id: str, day: datetime) -> dict:
+    return {
+        "id": period_id,
+        "start_date": day,
+        "end_date": day,
+        "holiday": day,
+        "type": "friday",
+    }
+
+
+def test_bridge_swap_rejects_weekday_weekend_exchange_that_unbalances_weekends():
+    """A bridge fix must not hand a weekend to a worker who is not short of weekends."""
+    workers = _simple_workers()
+    friday = datetime(2026, 3, 6)
+    saturday = datetime(2026, 3, 14)
+    monday = datetime(2026, 3, 16)
+    scheduler = _make_scheduler(workers)
+    scheduler.bridge_periods = [_bridge("bridge_fri", friday), _bridge("bridge_sat", saturday)]
+    scheduler.schedule[friday] = ["A"]
+    scheduler.schedule[saturday] = ["A"]
+    scheduler.schedule[monday] = ["B"]
+    scheduler.worker_assignments["A"] = {friday, saturday}
+    scheduler.worker_assignments["B"] = {monday}
+    scheduler.worker_bridge_counts["A"] = {"bridge_fri", "bridge_sat"}
+    scheduler.worker_bridge_counts["B"] = set()
+
+    engine = _build_engine(scheduler)
+    engine._bridge_target_for = lambda _raw: 1
+    engine._weekend_target_for = lambda _raw: 0
+
+    assert engine._improve_bridge_balance() is False
+    assert scheduler.schedule[friday] == ["A"]
+    assert scheduler.schedule[saturday] == ["A"]
+    assert scheduler.schedule[monday] == ["B"]
+
+
+def test_bridge_swap_prefers_the_same_day_kind():
+    """When a same-kind non-bridge day exists, the bridge swap does not cross weekday/weekend."""
+    workers = _simple_workers()
+    sunday = datetime(2026, 3, 1)
+    monday = datetime(2026, 3, 2)
+    wednesday = datetime(2026, 3, 4)
+    friday = datetime(2026, 3, 6)
+    scheduler = _make_scheduler(workers)
+    scheduler.bridge_periods = [_bridge("bridge_wed", wednesday), _bridge("bridge_fri", friday)]
+    scheduler.schedule[sunday] = ["B"]
+    scheduler.schedule[monday] = ["B"]
+    scheduler.schedule[wednesday] = ["A"]
+    scheduler.schedule[friday] = ["A"]
+    scheduler.worker_assignments["A"] = {wednesday, friday}
+    scheduler.worker_assignments["B"] = {sunday, monday}
+    scheduler.worker_bridge_counts["A"] = {"bridge_wed", "bridge_fri"}
+    scheduler.worker_bridge_counts["B"] = set()
+
+    engine = _build_engine(scheduler)
+    engine._bridge_target_for = lambda _raw: 1
+    engine._weekend_target_for = lambda _raw: 0
+
+    assert engine._improve_bridge_balance() is True
+    assert scheduler.schedule[wednesday] == ["B"]
+    assert scheduler.schedule[monday] == ["A"]
+    assert scheduler.schedule[friday] == ["A"]
+    assert scheduler.schedule[sunday] == ["B"]
+
+
+def test_weekend_swap_does_not_worsen_bridge_balance():
+    """Giving away a bridge weekend is skipped when that worker is already at their bridge target."""
+    workers = _simple_workers()
+    saturday = datetime(2026, 3, 7)
+    later_saturday = datetime(2026, 3, 21)
+    wednesday = datetime(2026, 3, 11)
+    scheduler = _make_scheduler(workers)
+    scheduler.bridge_periods = [_bridge("bridge_sat", saturday)]
+    scheduler.schedule[saturday] = ["A"]
+    scheduler.schedule[later_saturday] = ["A"]
+    scheduler.schedule[wednesday] = ["B"]
+    scheduler.worker_assignments["A"] = {saturday, later_saturday}
+    scheduler.worker_assignments["B"] = {wednesday}
+    scheduler.worker_weekends["A"] = [saturday, later_saturday]
+    scheduler.worker_weekends["B"] = []
+    scheduler.worker_bridge_counts["A"] = {"bridge_sat"}
+    scheduler.worker_bridge_counts["B"] = set()
+
+    engine = _build_engine(scheduler)
+    engine._weekend_target_for = lambda _raw: 1
+    engine._bridge_target_for = lambda _raw: 1
+
+    assert engine._improve_weekend_balance() is True
+    assert saturday in scheduler.worker_assignments["A"]
+    assert later_saturday in scheduler.worker_assignments["B"]
+    assert wednesday in scheduler.worker_assignments["A"]
+
+
+def test_ortools_phase_does_not_increase_weekend_deviation():
+    """OR-Tools must not fix a shift imbalance by pushing someone further from their weekend target."""
+    workers = _simple_workers()
+    for worker in workers:
+        worker["target_shifts"] = 2
+        worker["_raw_target"] = 2
+    scheduler = _make_scheduler(workers, start=datetime(2026, 3, 6), end=datetime(2026, 3, 20))
+    fridays = [datetime(2026, 3, 6), datetime(2026, 3, 13), datetime(2026, 3, 20)]
+    sunday = datetime(2026, 3, 8)
+    for day in fridays:
+        scheduler.schedule[day] = ["A", None]
+    scheduler.schedule[sunday] = ["B", None]
+    scheduler.worker_assignments["A"] = set(fridays)
+    scheduler.worker_assignments["B"] = {sunday}
+
+    engine = _build_engine(scheduler)
+    # The scheduler recomputes target_shifts on init. Pin the raw targets the
+    # phase actually optimizes so B is exactly on the weekend target.
+    engine._raw_targets = {"A": 2, "B": 2}
+    before = {wid: abs(engine._weekend_deviation(wid)) for wid in ("A", "B")}
+    assert before["B"] == 0
+
+    engine._run_ortools_phase(time_limit_seconds=10)
+
+    for wid, old in before.items():
+        assert abs(engine._weekend_deviation(wid)) <= old

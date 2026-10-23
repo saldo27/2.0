@@ -208,3 +208,57 @@ def test_optimize_balance_does_not_give_up_when_no_matching_donor(monkeypatch):
         "optimize_balance must invoke the monthly-target reconciliation fallback "
         "when a manual worker remains off-target with no direct swap partner"
     )
+
+
+def test_shift_balance_does_not_trade_a_weekend_when_both_are_on_target():
+    """With weekend protection on, an extra shift moves as a weekday, not as a weekend."""
+
+    class _AllowAll:
+        def is_locked_mandatory(self, _wid, _date):
+            return False
+
+        def _can_modify_assignment(self, _wid, _date, _op):
+            return True
+
+        def _calculate_worker_score(self, _worker, _date, _post, relaxation_level=0):
+            return 0
+
+    workers = _workers(manual_target=4, auto_target=4)
+    scheduler = _make_scheduler(workers)
+    # Init replaces target_shifts with the period-wide figure. Restore the
+    # targets this scenario balances against.
+    for worker in scheduler.workers_data:
+        worker["auto_calculate_shifts"] = True
+        worker["target_shifts"] = 4
+        worker["_raw_target"] = 4
+    weekend_a = datetime(2026, 3, 7)  # Saturday
+    weekend_b = datetime(2026, 3, 8)  # Sunday
+    weekdays_a = [
+        datetime(2026, 3, 11),
+        datetime(2026, 3, 12),
+        datetime(2026, 3, 18),
+        datetime(2026, 3, 25),
+        datetime(2026, 3, 31),
+    ]
+    weekday_b = datetime(2026, 3, 16)
+    scheduler.schedule = {}
+    for day in [weekend_a, *weekdays_a]:
+        scheduler.schedule[day] = ["A"]
+    scheduler.schedule[weekend_b] = ["B"]
+    scheduler.schedule[weekday_b] = ["B"]
+    scheduler.worker_assignments["A"] = {weekend_a, *weekdays_a}
+    scheduler.worker_assignments["B"] = {weekend_b, weekday_b}
+
+    def _weekend_deviation(worker_id: str) -> int:
+        count = sum(1 for day in scheduler.worker_assignments[worker_id] if day.weekday() >= 4)
+        return count - 1
+
+    sbo = StrictBalanceOptimizer(scheduler, _AllowAll())
+    sbo.protect_weekend_balance = True
+    sbo.weekend_deviation = _weekend_deviation
+    sbo.optimize_balance(max_iterations=20, target_tolerance=1)
+
+    assert weekend_a in scheduler.worker_assignments["A"]
+    assert weekend_b in scheduler.worker_assignments["B"]
+    assert len(scheduler.worker_assignments["A"]) == 5
+    assert len(scheduler.worker_assignments["B"]) == 3

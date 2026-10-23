@@ -137,6 +137,13 @@ def test_get_bridge_period_for_date(dtu):
     assert result is not None
 
 
+def test_bridge_periods_include_holidays_after_the_start_year(dtu):
+    # 19-03-2027 is a Friday holiday, so that Friday itself belongs to the bridge.
+    holidays = [datetime(2026, 12, 25), datetime(2027, 3, 19)]
+    bridges = dtu.identify_bridge_periods_for_span(holidays, datetime(2026, 12, 23), datetime(2027, 6, 30))
+    assert dtu.is_bridge_day(datetime(2027, 3, 19), bridges) is True
+
+
 def test_no_bridge_period_for_random_date(dtu):
     holidays = [datetime(2026, 5, 14)]
     bridges = dtu.identify_bridge_periods(holidays, 2026)

@@ -79,6 +79,102 @@ def test_validate_and_fix_final_schedule_uses_canonical_weekly_pattern_violation
     assert scheduler.worker_assignments["DOC001"] == {first_date}
 
 
+def test_bridge_shift_in_the_second_year_is_counted(sample_workers_data):
+    """A Friday holiday in the year after the schedule starts is a bridge day.
+    A shift on that Friday counts as an assigned bridge shift."""
+    workers = [dict(sample_workers_data[0])]
+    workers[0]["id"] = "LUIS H"
+    workers[0]["name"] = "LUIS H"
+    workers[0]["work_periods"] = ""
+    friday_holiday = datetime(2027, 3, 19)
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 12, 23),
+            "end_date": datetime(2027, 6, 30),
+            "num_shifts": 4,
+            "workers_data": workers,
+            "holidays": [friday_holiday],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    scheduler.schedule[friday_holiday] = ["LUIS H", None, None, None]
+
+    assert friday_holiday.weekday() == 4
+    assert scheduler.date_utils.is_bridge_day(friday_holiday, scheduler.bridge_periods) is True
+    assert scheduler.count_bridges_for_worker("LUIS H") == 1
+
+
+def test_bridge_objective_uses_cadence_shift_count_not_the_zero_budget():
+    """A cadence worker's target_shifts stays 0. The bridge objective must follow
+    _raw_target (the cadence length), which can be higher than a 100% worker."""
+    workers = [
+        {
+            "id": "CAD",
+            "name": "CAD",
+            "target_shifts": 0,
+            "work_percentage": 100,
+            "work_periods": "",
+            "mandatory_days": "",
+            "days_off": "",
+            "incompatible_with": [],
+            "auto_calculate_shifts": False,
+            "has_cadence": False,
+        },
+        {
+            "id": "FULL",
+            "name": "FULL",
+            "target_shifts": 20,
+            "work_percentage": 100,
+            "work_periods": "",
+            "mandatory_days": "",
+            "days_off": "",
+            "incompatible_with": [],
+            "auto_calculate_shifts": True,
+            "has_cadence": False,
+        },
+    ]
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 8),
+            "num_shifts": 1,
+            "workers_data": workers,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    for worker in scheduler.workers_data:
+        if worker["id"] == "CAD":
+            worker["target_shifts"] = 0
+            worker["_raw_target"] = 30
+        else:
+            worker["target_shifts"] = 20
+            worker["_raw_target"] = 20
+
+    scheduler.bridge_periods = [
+        {
+            "id": "bridge_test",
+            "start_date": datetime(2026, 3, 6),
+            "end_date": datetime(2026, 3, 8),
+            "holiday": datetime(2026, 3, 6),
+            "type": "friday",
+        }
+    ]
+    for day in (6, 7, 8):
+        scheduler.schedule[datetime(2026, 3, day)] = ["FULL"]
+
+    cadence_objective = scheduler.get_bridge_objective_for_worker("CAD")
+    full_objective = scheduler.get_bridge_objective_for_worker("FULL")
+
+    assert cadence_objective == 3 * 30 / 50
+    assert full_objective == 3 * 20 / 50
+    assert cadence_objective > full_objective
+
+
 def test_mandatory_assignment_places_only_last_post_worker_in_last_post(sample_workers_data):
     """A worker with only_last_post=True and a mandatory_days assignment must be
     placed directly in the LAST post slot, never in an earlier post, even
@@ -141,6 +237,194 @@ def test_mandatory_assignment_never_places_no_last_post_worker_in_last_post(samp
 
     assert "DOC001" in scheduler.schedule[mandatory_date][:3]
     assert scheduler.schedule[mandatory_date][3] is None
+
+
+def test_mandatory_assignment_reserves_non_last_posts_for_restricted_workers(sample_workers_data):
+    """Unrestricted mandatory workers must not consume every non-last post
+    before a no_last_post worker is placed. With 4 posts and 4 mandatory
+    workers (2 of them no_last_post), everyone fits and the last post goes
+    to someone who is allowed to take it."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    def _worker(worker_id, *, no_last_post=False, mandatory="01-03-2026"):
+        base = dict(sample_workers_data[0])
+        base.update(
+            {
+                "id": worker_id,
+                "name": worker_id,
+                "mandatory_days": mandatory,
+                "no_last_post": no_last_post,
+                "only_last_post": False,
+                "days_off": "",
+                "work_periods": "",
+            }
+        )
+        return base
+
+    # Same shape as 25-12-2026: two unrestricted workers listed before two
+    # no_last_post workers, plus a fifth worker who is free that day.
+    workers = [
+        _worker("JULIA"),
+        _worker("KIKO", no_last_post=True),
+        _worker("BEA"),
+        _worker("VALLE", no_last_post=True),
+        _worker("JOSE", mandatory="10-03-2026"),
+    ]
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 10),
+            "num_shifts": 4,
+            "workers_data": workers,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+    scheduler.schedule_builder._assign_mandatory_guards()
+
+    day = datetime(2026, 3, 1)
+    assigned = scheduler.schedule[day]
+    assert set(assigned) == {"JULIA", "KIKO", "BEA", "VALLE"}
+    assert assigned[3] not in {"KIKO", "VALLE"}
+    assert "JOSE" not in assigned
+
+
+def test_cadence_worker_rotates_through_last_post(sample_workers_data):
+    """A cadence worker with no_last_post=False must not stay in slot 0.
+    Successive cadence dates rotate across every post, including the last one."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    base = dict(sample_workers_data[0])
+    base.update(
+        {
+            "id": "MARINA",
+            "name": "MARINA",
+            "has_cadence": True,
+            "no_last_post": False,
+            "only_last_post": False,
+            "mandatory_days": "01-03-2026;07-03-2026;13-03-2026;19-03-2026",
+            "days_off": "",
+            "work_periods": "",
+            "auto_calculate_shifts": False,
+        }
+    )
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 20),
+            "num_shifts": 4,
+            "workers_data": [base],
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+    scheduler.schedule_builder._assign_mandatory_guards()
+
+    posts = [scheduler.schedule[datetime(2026, 3, day)].index("MARINA") for day in (1, 7, 13, 19)]
+    assert posts == [0, 1, 2, 3]
+
+
+def test_mandatory_worker_rotates_posts_and_respects_last_post_flags(sample_workers_data):
+    """Mandatory dates lock the day, not the slot. Successive mandatory days
+    rotate through the posts the worker is allowed to take."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    def _posts_for(**flags):
+        base = dict(sample_workers_data[0])
+        base.update(
+            {
+                "id": "DOCX",
+                "name": "DOCX",
+                "has_cadence": False,
+                "no_last_post": False,
+                "only_last_post": False,
+                "mandatory_days": "01-03-2026;07-03-2026;13-03-2026;19-03-2026",
+                "days_off": "",
+                "work_periods": "",
+                "auto_calculate_shifts": True,
+            }
+        )
+        base.update(flags)
+        scheduler = Scheduler(
+            {
+                "start_date": datetime(2026, 3, 1),
+                "end_date": datetime(2026, 3, 20),
+                "num_shifts": 4,
+                "workers_data": [base],
+                "holidays": [],
+                "variable_shifts": [],
+                "gap_between_shifts": 4,
+                "max_consecutive_weekends": 3,
+            }
+        )
+        scheduler.schedule_builder = ScheduleBuilder(scheduler)
+        scheduler.schedule_builder._assign_mandatory_guards()
+        return [scheduler.schedule[datetime(2026, 3, day)].index("DOCX") for day in (1, 7, 13, 19)]
+
+    assert _posts_for() == [0, 1, 2, 3]
+    assert _posts_for(no_last_post=True) == [0, 1, 2, 0]
+    assert _posts_for(only_last_post=True) == [3, 3, 3, 3]
+
+
+def test_cadence_worker_can_swap_last_post_on_the_same_day(sample_workers_data):
+    """Mandatory dates stay fixed. A same-day last-post swap is allowed for
+    every mandatory worker. Removing the date is not."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    cadence = dict(sample_workers_data[0])
+    cadence.update(
+        {
+            "id": "MARINA",
+            "name": "MARINA",
+            "has_cadence": True,
+            "no_last_post": False,
+            "only_last_post": False,
+            "mandatory_days": "01-03-2026",
+            "days_off": "",
+            "work_periods": "",
+            "auto_calculate_shifts": False,
+        }
+    )
+    mandatory = dict(sample_workers_data[1])
+    mandatory.update(
+        {
+            "mandatory_days": "02-03-2026",
+            "has_cadence": False,
+            "days_off": "",
+            "work_periods": "",
+        }
+    )
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 10),
+            "num_shifts": 4,
+            "workers_data": [cadence, mandatory],
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    builder = ScheduleBuilder(scheduler)
+    scheduler.schedule_builder = builder
+    cadence_day = datetime(2026, 3, 1)
+    other_day = datetime(2026, 3, 2)
+    builder._locked_mandatory.add(("MARINA", cadence_day))
+    builder._locked_mandatory.add(("DOC002", other_day))
+
+    assert builder._can_modify_assignment("MARINA", cadence_day, "adjust_last_post") is True
+    assert builder._can_modify_assignment("MARINA", cadence_day, "strict_last_post_B") is True
+    assert builder._can_modify_assignment("MARINA", cadence_day, "fix_consecutive_last_post") is False
+    assert builder._can_modify_assignment("MARINA", cadence_day, "balance_workloads") is False
+    assert builder._can_modify_assignment("DOC002", other_day, "adjust_last_post") is True
+    assert builder._can_modify_assignment("DOC002", other_day, "balance_workloads") is False
 
 
 def test_fix_constraint_violations_always_fixes_non_mandatory_weekly_pattern(sample_workers_data):

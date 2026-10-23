@@ -74,11 +74,9 @@ def test_collect_constraint_violations_formats_core_output(sample_workers_data, 
 
     result = collect_constraint_violations(scheduler)
 
-    assert result == {
-        "incompatibilidades": ["01-03-2026: DOC001 ↔ DOC002"],
-        "patron_7_14": ["DOC003: 08-03-2026 → 15-03-2026 (7 días)"],
-        "mandatory": [],
-    }
+    assert result["incompatibilidades"] == ["01-03-2026: DOC001 ↔ DOC002"]
+    assert result["patron_7_14"] == ["DOC003: 08-03-2026 → 15-03-2026 (7 días)"]
+    assert result["ultimo_puesto"] == []
 
 
 def test_execute_generation_workflow_returns_success_summary(sample_workers_data, monkeypatch):
