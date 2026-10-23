@@ -233,7 +233,7 @@ class OptimizationMetrics:
 
         Compara cada trabajador con su objetivo de puentes
         (``Scheduler.get_bridge_objective_for_worker``, proporcional a su
-        ``target_shifts``). A diferencia del balance de weekends (zona muerta
+        objetivo de turnos, cadencia incluida). A diferencia del balance de weekends (zona muerta
         relativa del ±15%), los puentes son mucho menos frecuentes — sus
         objetivos suelen ser fracciones pequeñas (p.ej. 1-3 turnos) — por lo
         que una tolerancia relativa sería inestable (un objetivo de 1 turno
@@ -252,7 +252,7 @@ class OptimizationMetrics:
             deviations = []
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
-                if worker.get("target_shifts", 0) <= 0:
+                if self.scheduler._shift_objective(worker) <= 0:
                     continue
                 target_bridges = self.scheduler.get_bridge_objective_for_worker(worker_id)
                 if target_bridges <= 0:

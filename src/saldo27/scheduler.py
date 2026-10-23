@@ -382,11 +382,13 @@ class Scheduler:
         Calculate the objective (target) number of bridge shifts for a worker
         proportional to their share of total target shifts.
 
-        Manual workers have a fixed number of shifts/month (not locked slots), so
-        using work_percentage as FTE is incorrect for them.  Using target_shifts
-        as the weight gives the right proportion for both manual and auto workers.
+        The weight is the worker's full shift objective (``_raw_target``), which
+        includes mandatory and cadence shifts. ``target_shifts`` alone is the
+        non-mandatory budget and is 0 for a cadence worker, so it would give
+        them no bridge target even though they work more shifts than a 100%
+        colleague.
 
-        Formula: total_bridge_shifts * (worker_target_shifts / sum_all_target_shifts)
+        Formula: total_bridge_shifts * (worker_shift_objective / sum_all_objectives)
 
         Args:
             worker_id: ID of the worker
@@ -399,10 +401,10 @@ class Scheduler:
         if not worker:
             return 0.0
 
-        worker_target = worker.get("target_shifts", 0)
+        worker_target = self._shift_objective(worker)
 
         # Total target shifts across all workers
-        total_target = sum(w.get("target_shifts", 0) for w in self.workers_data)
+        total_target = sum(self._shift_objective(w) for w in self.workers_data)
 
         if total_target == 0:
             return 0.0
@@ -422,6 +424,24 @@ class Scheduler:
 
         # Objective = proportional to worker's share of total target shifts
         return total_bridge_shifts * worker_target / total_target
+
+    @staticmethod
+    def _shift_objective(worker: dict) -> int:
+        """Full shift count this worker should work, including mandatory and cadence.
+
+        ``target_shifts`` excludes those fixed shifts. A cadence worker keeps
+        ``target_shifts`` at 0 and stores the cadence length in ``_raw_target``.
+        """
+        raw = worker.get("_raw_target")
+        if raw is not None:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                pass
+        try:
+            return int(worker.get("target_shifts", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
 
     def _get_dates_in_bridge(self, bridge_period: dict) -> list[datetime]:
         """
