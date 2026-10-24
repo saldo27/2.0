@@ -790,6 +790,13 @@ def test_weekend_last_post_balance_swaps_workers_on_the_same_day():
     assert _weekend_last_posts(scheduler, "A") == 1
     assert _weekend_last_posts(scheduler, "B") == 1
     assert scheduler.schedule[wednesday] == ["B", "A"]
+    # The same-day swap must not drop the date from tracking or double-count it.
+    assert scheduler.worker_assignments["A"] == {saturday_1, saturday_2, wednesday}
+    assert scheduler.worker_assignments["B"] == {saturday_1, saturday_2, wednesday}
+    assert scheduler.worker_shift_counts["A"] == 3
+    assert scheduler.worker_shift_counts["B"] == 3
+    assert scheduler.worker_weekend_counts["A"] == 2
+    assert scheduler.worker_weekend_counts["B"] == 2
 
     workers[1]["no_last_post"] = True
     blocked = _make_scheduler(workers)
