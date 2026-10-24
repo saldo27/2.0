@@ -551,16 +551,36 @@ class FinalAdjustmentEngine(EngineStateMixin):
         return restored
 
     def _swap_posts_same_day(self, date: datetime, post_a: int, post_b: int) -> None:
-        """Exchange the workers in two posts of the same day. Dates do not change."""
+        """Exchange the workers in two posts of the same day.
+
+        Both workers stay on the date. Removing and re-adding the assignment
+        would drop the date from tracking while the worker is still on the
+        schedule, which the consistency check reports as a missing shift and
+        then repairs by rewriting the counters mid-swap.
+        """
         shifts = self.schedule[date]
         worker_a = shifts[post_a]
         worker_b = shifts[post_b]
         shifts[post_a] = worker_b
         shifts[post_b] = worker_a
-        self.scheduler._update_tracking_data(worker_a, date, post_a, removing=True)
-        self.scheduler._update_tracking_data(worker_b, date, post_b, removing=True)
-        self.scheduler._update_tracking_data(worker_b, date, post_a, removing=False)
-        self.scheduler._update_tracking_data(worker_a, date, post_b, removing=False)
+        self._record_post_move(worker_a, post_a, post_b)
+        self._record_post_move(worker_b, post_b, post_a)
+
+    def _record_post_move(self, worker_id: str | None, old_post: int, new_post: int) -> None:
+        """Point ``worker_posts`` at the post the worker holds after a same-day swap."""
+        if not worker_id:
+            return
+        posts = self.scheduler.worker_posts.get(worker_id)
+        if not isinstance(posts, set):
+            posts = set()
+            self.scheduler.worker_posts[worker_id] = posts
+        posts.add(new_post)
+        if old_post == new_post or old_post not in posts:
+            return
+        for check_date in self.worker_assignments.get(worker_id, ()):
+            if self.scheduler._get_worker_assigned_to_post(check_date, old_post) == worker_id:
+                return
+        posts.discard(old_post)
 
     def _weekend_last_post_snapshot(self) -> dict[str, Any]:
         """Counts and proportional targets for last-post shifts on weekend days.
