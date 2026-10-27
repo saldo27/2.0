@@ -44,6 +44,7 @@ packaging/                # PyInstaller hooks, .spec file, Windows installer
 | `prior_schedule_handler.py` | Parses exported JSON to extract cross-period constraints |
 | `schedule_analyzer.py` | PDF/Excel/CSV schedule reader; generates analysis reports |
 | `final_adjustment_engine.py` | Post-generation balancing of remaining deviations |
+| `hole_fill_engine.py` | Optional CP-SAT coverage pass: includes empty slots, maximises fill, same hard rules as FAE OR-Tools (gap/7-14/Fri-Mon, consecutive weekends/Rosell, incompat, post, monthly_cap, relaxed ±13%); pins mandatory/cadence/manual dates; skipped without OR-Tools or `enable_hole_fill=False` |
 | `adaptive_iterations.py` | Dynamically adjusts optimiser iteration counts |
 | `demand_forecaster.py` | Demand-forecasting model for predictive analytics |
 | `predictive_analytics.py` | Insights, recommendations, and demand trend analysis |
@@ -59,6 +60,7 @@ packaging/                # PyInstaller hooks, .spec file, Windows installer
 | `scheduler_tracking.py` | Records per-run tracking data |
 | `scheduler_validation.py` | Pre-run validation of configuration and worker data |
 | `scheduler_config.py` | `SchedulerConfig` dataclass and logging setup |
+| `tolerance_policy.py` | Single shift-count tolerance contract: hard limit (10 %/13 %, part-time scaled), ±1 balance band, monthly ceiling (`monthly_cap`: month target + 1 for auto, exact for manual, non-mandatory only), manual pacing; manual workers exact |
 | `shift_tolerance_validator.py` | Validates per-worker shift-count tolerances |
 | `target_calculator.py` | Computes per-worker target shift counts |
 | `exceptions.py` | Custom exception hierarchy |
@@ -179,6 +181,7 @@ uv run pytest tests/ -m "not e2e" -q
 - **OR-Tools is optional.** `infrastructure/optional_engines.py` wraps the import; code must degrade gracefully when `ortools` is unavailable (e.g., in constrained environments). Never import `ortools` directly at module top-level outside `optional_engines.py`.
 - **Prior-schedule cross-period constraints.** When loading a previous schedule JSON via `prior_schedule_handler.py`, the extracted `prior_last_date` affects gap constraints at the period boundary. Always pass the prior handler output into `SchedulerConfig`; do not re-derive it elsewhere.
 - **Bridge shifts vs. weekend shifts are separate counters.** `bridge_manager.py` maintains its own balance independently of the weekend balance in `balance_validator.py`. Modifying one does not affect the other.
+- **Fixed-cadence workers (`has_cadence`) are unmodifiable.** `SchedulerInitializer._apply_cadence_assignments` writes their cadence dates (minus `days_off` / outside `work_periods`, without restarting the rhythm) into `mandatory_days`. Those dates are their whole schedule: no adds, removals or day moves on any path (automatic or real-time, even with `force`), and they are exempt from gap, weekend, Rosell and monthly limits. Only their post within the same day may change. Their weekend/bridge/last-post objectives equal what the cadence gives them (`utilities.is_fixed_cadence`).
 - **Monthly target proration considers BOTH `work_periods` and `days_off`.** `TargetCalculator._worker_month_availability()` computes per-month available days from both fields (vacations subtracted) for ALL workers — manual (`guardias_mes`) and `auto_calculate_shifts` alike — so a worker on vacation for part of a month gets that month's target prorated down. It uses O(ranges) interval-subtraction arithmetic (`_merge_date_ranges`/`_subtract_date_ranges`), not a day-by-day scan, and a `mandatory_days` date that falls inside `days_off` or outside `work_periods` triggers a `_check_mandatory_days_availability()` warning (configuration conflict, not a hard error).
 
 ## Commit conventions
