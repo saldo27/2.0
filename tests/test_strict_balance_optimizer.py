@@ -223,6 +223,9 @@ def test_shift_balance_does_not_trade_a_weekend_when_both_are_on_target():
         def _calculate_worker_score(self, _worker, _date, _post, relaxation_level=0):
             return 0
 
+        def _exceeds_monthly_cap(self, _worker, _date, assignments=None):
+            return False
+
     workers = _workers(manual_target=4, auto_target=4)
     scheduler = _make_scheduler(workers)
     # Init replaces target_shifts with the period-wide figure. Restore the
@@ -260,5 +263,6 @@ def test_shift_balance_does_not_trade_a_weekend_when_both_are_on_target():
 
     assert weekend_a in scheduler.worker_assignments["A"]
     assert weekend_b in scheduler.worker_assignments["B"]
-    assert len(scheduler.worker_assignments["A"]) == 5
-    assert len(scheduler.worker_assignments["B"]) == 3
+    # A target of 4 leaves no room for ±1 under the hard limit, so both end exact
+    assert len(scheduler.worker_assignments["A"]) == 4
+    assert len(scheduler.worker_assignments["B"]) == 4

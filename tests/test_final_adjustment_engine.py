@@ -399,6 +399,9 @@ def test_ortools_phase_skipped_without_ortools(monkeypatch):
     """
     import builtins
 
+    from saldo27.infrastructure import optional_engines
+
+    monkeypatch.setattr(optional_engines, "_ortools_available", None)
     original_import = builtins.__import__
 
     def _no_ortools(name, *args, **kwargs):
@@ -665,10 +668,8 @@ def test_calculate_statistics_counts_weekend_and_posts_correctly():
 
 def test_last_post_target_for_respects_post_restrictions():
     """
-    _last_post_target_for must give a proportional share for regular workers,
-    but 0 for no_last_post workers and their full raw target for
-    only_last_post workers (mirrors optimization_metrics._calculate_post_rotation_score
-    exemptions).
+    _last_post_target_for uses the shared Scheduler.get_last_post_objective:
+    0 for no_last_post workers, their full raw target for only_last_post workers.
     """
     workers = _simple_workers()
     scheduler = _make_scheduler(workers)
@@ -678,11 +679,7 @@ def test_last_post_target_for_respects_post_restrictions():
     no_last_post_worker = {"id": "B", "_raw_target": 8, "no_last_post": True}
     only_last_post_worker = {"id": "C", "_raw_target": 8, "only_last_post": True}
 
-    # num_shifts=2 in _make_scheduler, so a regular worker's fair share of the
-    # single last-post slot per date is roughly raw_target / num_shifts.
-    assert engine._last_post_target_for(regular_worker) == round(
-        8 * (engine._total_last_post_slots / engine._total_all_slots)
-    )
+    assert engine._last_post_target_for(regular_worker) == round(scheduler.get_last_post_objective(regular_worker))
     assert engine._last_post_target_for(no_last_post_worker) == 0
     assert engine._last_post_target_for(only_last_post_worker) == 8
 
@@ -838,8 +835,8 @@ def test_bridge_swap_rejects_weekday_weekend_exchange_that_unbalances_weekends()
     scheduler.worker_bridge_counts["B"] = set()
 
     engine = _build_engine(scheduler)
-    engine._bridge_target_for = lambda _raw: 1
-    engine._weekend_target_for = lambda _raw: 0
+    engine._bridge_target_for = lambda _raw, _worker_id=None: 1
+    engine._weekend_target_for = lambda _raw, _worker_id=None: 0
 
     assert engine._improve_bridge_balance() is False
     assert scheduler.schedule[friday] == ["A"]
@@ -866,8 +863,8 @@ def test_bridge_swap_prefers_the_same_day_kind():
     scheduler.worker_bridge_counts["B"] = set()
 
     engine = _build_engine(scheduler)
-    engine._bridge_target_for = lambda _raw: 1
-    engine._weekend_target_for = lambda _raw: 0
+    engine._bridge_target_for = lambda _raw, _worker_id=None: 1
+    engine._weekend_target_for = lambda _raw, _worker_id=None: 0
 
     assert engine._improve_bridge_balance() is True
     assert scheduler.schedule[wednesday] == ["B"]
@@ -895,13 +892,55 @@ def test_weekend_swap_does_not_worsen_bridge_balance():
     scheduler.worker_bridge_counts["B"] = set()
 
     engine = _build_engine(scheduler)
-    engine._weekend_target_for = lambda _raw: 1
-    engine._bridge_target_for = lambda _raw: 1
+    engine._weekend_target_for = lambda _raw, _worker_id=None: 1
+    engine._bridge_target_for = lambda _raw, _worker_id=None: 1
 
     assert engine._improve_weekend_balance() is True
     assert saturday in scheduler.worker_assignments["A"]
     assert later_saturday in scheduler.worker_assignments["B"]
     assert wednesday in scheduler.worker_assignments["A"]
+
+
+def _weekend_after_prior_scheduler(prior_assignments):
+    """Both aim for 2 shifts and 1 weekend. B holds both weekends (6 and 8 March, same
+    week), A none, so balancing gives A a weekend in the week of 2 March."""
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+    scheduler.gap_between_shifts = 2
+    scheduler.max_consecutive_weekends = 2
+    scheduler.prior_assignments = prior_assignments
+    b_dates = [datetime(2026, 3, 6), datetime(2026, 3, 8)]
+    a_date = datetime(2026, 3, 18)
+    for day in b_dates:
+        scheduler.schedule[day] = ["B", None]
+    scheduler.schedule[a_date] = ["A", None]
+    scheduler.worker_assignments["A"] = {a_date}
+    scheduler.worker_assignments["B"] = set(b_dates)
+    engine = _build_engine(scheduler)
+    engine._raw_targets = {"A": 2, "B": 2}
+    return scheduler, engine
+
+
+def _weekends_of(scheduler, worker_id):
+    return {d for d in scheduler.worker_assignments[worker_id] if scheduler.date_utils.is_weekend_day(d, set())}
+
+
+def test_ortools_phase_moves_a_weekend_without_prior_period():
+    scheduler, engine = _weekend_after_prior_scheduler({})
+
+    engine._run_ortools_phase(time_limit_seconds=10)
+
+    assert len(_weekends_of(scheduler, "A")) == 1
+
+
+def test_ortools_phase_counts_prior_weekends_as_consecutive():
+    """A worked the two prior weekends; with a limit of 2, 6-8 March would be a third in a row."""
+    prior = {"A": {datetime(2026, 2, 21), datetime(2026, 2, 28)}}
+    scheduler, engine = _weekend_after_prior_scheduler(prior)
+
+    engine._run_ortools_phase(time_limit_seconds=10)
+
+    assert _weekends_of(scheduler, "A") == set()
 
 
 def test_ortools_phase_does_not_increase_weekend_deviation():

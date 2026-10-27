@@ -3,6 +3,8 @@ from datetime import datetime
 from math import isclose
 from typing import Any, cast
 
+import pytest
+
 from saldo27.schedule_builder import ScheduleBuilder
 from saldo27.scheduler import Scheduler
 
@@ -173,6 +175,101 @@ def test_bridge_objective_uses_cadence_shift_count_not_the_zero_budget():
     assert cadence_objective == 3 * 30 / 50
     assert full_objective == 3 * 20 / 50
     assert cadence_objective > full_objective
+
+
+def _variable_shifts_scheduler(workers):
+    """4 posts per day, except 10-12 March with 3 posts."""
+    return Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 15),
+            "num_shifts": 4,
+            "workers_data": workers,
+            "holidays": [],
+            "variable_shifts": [
+                {"start_date": datetime(2026, 3, 10), "end_date": datetime(2026, 3, 12), "shifts": 3},
+            ],
+            "gap_between_shifts": 2,
+            "max_consecutive_weekends": 3,
+        }
+    )
+
+
+def test_weekend_objective_is_proportional_to_weekend_slots(sample_workers_data):
+    """1-15 March, 4 posts, 3 posts on 13-15 March (Fri-Sun): 25 of 57 slots are weekend."""
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 15),
+            "num_shifts": 4,
+            "workers_data": [dict(w) for w in sample_workers_data],
+            "holidays": [],
+            "variable_shifts": [
+                {"start_date": datetime(2026, 3, 13), "end_date": datetime(2026, 3, 15), "shifts": 3},
+            ],
+            "gap_between_shifts": 2,
+            "max_consecutive_weekends": 3,
+        }
+    )
+
+    assert scheduler._weekend_slot_ratio() == pytest.approx(25 / 57)
+    assert scheduler.get_weekend_objective({"_raw_target": 57}) == pytest.approx(25)
+
+
+def test_last_post_is_the_last_slot_of_each_day(sample_workers_data):
+    scheduler = _variable_shifts_scheduler([dict(w) for w in sample_workers_data])
+
+    assert scheduler.is_last_post(datetime(2026, 3, 9), 3)
+    assert scheduler.last_post_index(datetime(2026, 3, 10)) == 2
+    assert scheduler.is_last_post(datetime(2026, 3, 10), 2)
+    assert not scheduler.is_last_post(datetime(2026, 3, 9), 2)
+
+
+def test_last_post_objective_shares_rosell_days_left_after_only_last_post(sample_workers_data):
+    """10 Rosell days; C (only_last_post) covers 4, so A and B share the other 6 by objective."""
+    workers = [dict(w) for w in sample_workers_data]
+    scheduler = Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 10),
+            "num_shifts": 2,
+            "workers_data": workers,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 2,
+            "max_consecutive_weekends": 3,
+        }
+    )
+    a, b, c, d = scheduler.workers_data
+    for worker, objective in ((a, 8), (b, 4), (c, 4), (d, 4)):
+        worker["_raw_target"] = objective
+    c["only_last_post"] = True
+    d["no_last_post"] = True
+
+    assert scheduler.get_last_post_objective(a) == 4.0
+    assert scheduler.get_last_post_objective(b) == 2.0
+    assert scheduler.get_last_post_objective(c) == 4.0
+    assert scheduler.get_last_post_objective(d) == 0.0
+
+
+def test_post_restrictions_follow_the_last_slot_on_short_days(sample_workers_data):
+    """On a 3-post day the last post is index 2, for both no_last_post and only_last_post."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    workers = [dict(w) for w in sample_workers_data]
+    workers[0]["only_last_post"] = True
+    workers[1]["no_last_post"] = True
+    for w in workers[:2]:
+        w["work_periods"] = ""
+    scheduler = _variable_shifts_scheduler(workers)
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+    builder = scheduler.schedule_builder
+    short_day = datetime(2026, 3, 11)
+
+    assert builder._check_hard_constraints("DOC001", short_day, 2) is True
+    assert builder._check_hard_constraints("DOC001", short_day, 1) is False
+    assert builder._check_hard_constraints("DOC002", short_day, 2) is False
+    assert builder._check_hard_constraints("DOC002", short_day, 1) is True
 
 
 def test_mandatory_assignment_places_only_last_post_worker_in_last_post(sample_workers_data):
@@ -544,6 +641,7 @@ def test_finalization_phase_runs_final_validation_and_fix(sample_workers_data):
             "variable_shifts": [],
             "gap_between_shifts": 4,
             "max_consecutive_weekends": 3,
+            "enable_hole_fill": False,
         }
     )
     first_date = datetime(2026, 3, 2)
@@ -608,6 +706,7 @@ def test_finalization_phase_restores_manual_monthly_target_after_violation_fix(s
             "variable_shifts": [],
             "gap_between_shifts": 4,
             "max_consecutive_weekends": 3,
+            "enable_hole_fill": False,
         }
     )
     first_date = datetime(2026, 3, 2)

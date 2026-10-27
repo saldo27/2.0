@@ -4,7 +4,8 @@ from datetime import datetime
 
 import pytest
 
-from saldo27.utilities import DateTimeUtils, numeric_sort_key
+from saldo27.constraint_checker import candidate_spacing_rejection
+from saldo27.utilities import DateTimeUtils, get_effective_min_gap, numeric_sort_key
 
 # ── DateTimeUtils construction ──────────────────────────────────────
 
@@ -184,3 +185,23 @@ def test_numeric_sort_key_mixed():
     # Numbers should come before strings
     assert result[0] == "1"
     assert result[1] == "3"
+
+
+# ── Effective gap ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("work_percentage", "auto", "expected"),
+    [(100, True, 4), (60, True, 4), (59, True, 5), (50, False, 5), (100, False, 4)],
+)
+def test_effective_gap_adds_one_below_sixty_percent(work_percentage, auto, expected):
+    worker = {"work_percentage": work_percentage, "auto_calculate_shifts": auto}
+    assert get_effective_min_gap(worker, 4) == expected
+
+
+def test_gap_four_allows_monday_friday_but_not_monday_thursday():
+    monday = datetime(2026, 3, 2)
+    kwargs = {"min_gap": 4, "date_is_mandatory": False, "block_gap2_weekend_pairs": False}
+    assert candidate_spacing_rejection(datetime(2026, 3, 6), [monday], **kwargs) is None
+    rejection = candidate_spacing_rejection(datetime(2026, 3, 5), [monday], **kwargs)
+    assert rejection is not None and rejection.reason == "gap"

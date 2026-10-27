@@ -77,12 +77,12 @@ def test_workload_balance_score_penalizes_beyond_10_percent():
     assert metrics._calculate_workload_balance_score() < 100.0
 
 
-def test_weekend_balance_score_no_penalty_within_15_percent():
-    """Deviations of <= 15% from the proportional weekend target must not penalize."""
+def test_workload_balance_score_excludes_mandatory_shifts():
+    """target_shifts excludes mandatory shifts: 4 free + 2 mandatory with target 4 is on target."""
     workers = [
         {
             "id": "A",
-            "target_shifts": 10,
+            "target_shifts": 4,
             "work_percentage": 100,
             "work_periods": "",
             "mandatory_days": "",
@@ -90,45 +90,60 @@ def test_weekend_balance_score_no_penalty_within_15_percent():
         },
     ]
     scheduler = _build_scheduler(workers)
+    scheduler.workers_data[0]["target_shifts"] = 4
+    scheduler.workers_data[0]["mandatory_days"] = "05-03-2026;10-03-2026"
     metrics = OptimizationMetrics(scheduler)
 
-    weekend_dates = [d for d in scheduler.schedule if scheduler.date_utils.is_weekend_day(d, set())]
-    assert len(weekend_dates) >= 13
+    free_dates = {datetime(2026, 3, d) for d in (1, 15, 20, 25)}
+    scheduler.worker_assignments["A"] = free_dates | {datetime(2026, 3, 5), datetime(2026, 3, 10)}
 
-    # Worker A is assigned ONLY weekend days, so the overall weekend_ratio
-    # computed from the schedule is exactly 1.0 (ratio == actual/total for a
-    # single worker). Setting target_shifts to actual/1.15 makes the expected
-    # weekend count exactly actual/1.15, i.e. a deviation of exactly 15%
-    # (the deadzone boundary), which must still score 100.
-    actual_weekend_count = 13
-    scheduler.worker_assignments["A"] = set(weekend_dates[:actual_weekend_count])
-    scheduler.workers_data[0]["target_shifts"] = actual_weekend_count / 1.15
+    assert metrics._calculate_workload_balance_score() == 100.0
 
-    assert metrics._calculate_weekend_balance_score() == 100.0
+
+def _weekend_worker_scheduler():
+    """March 2026 has 13 weekend days of 31 (fixed posts), so an objective of 31 shifts
+    means 13 weekend shifts."""
+    scheduler = _build_scheduler(
+        [
+            {
+                "id": "A",
+                "target_shifts": 10,
+                "work_percentage": 100,
+                "work_periods": "",
+                "mandatory_days": "",
+                "days_off": "",
+            },
+        ]
+    )
+    scheduler.workers_data[0]["_raw_target"] = 31
+    weekend_dates = sorted(d for d in scheduler.schedule if scheduler.date_utils.is_weekend_day(d, set()))
+    assert len(weekend_dates) == 13
+    return scheduler, weekend_dates
+
+
+def test_weekend_balance_score_counts_mandatory_weekends_as_assigned():
+    """Mandatory weekends count in the actual weekend total like any other weekend."""
+    scheduler, weekend_dates = _weekend_worker_scheduler()
+    scheduler.worker_assignments["A"] = set(weekend_dates)
+    scheduler.workers_data[0]["mandatory_days"] = ";".join(d.strftime("%d-%m-%Y") for d in weekend_dates[:3])
+
+    assert OptimizationMetrics(scheduler)._calculate_weekend_balance_score() == 100.0
+
+
+def test_weekend_balance_score_no_penalty_within_15_percent():
+    """12 weekends against an objective of 13 (7.7%) must not penalize."""
+    scheduler, weekend_dates = _weekend_worker_scheduler()
+    scheduler.worker_assignments["A"] = set(weekend_dates[:12])
+
+    assert OptimizationMetrics(scheduler)._calculate_weekend_balance_score() == 100.0
 
 
 def test_weekend_balance_score_penalizes_beyond_15_percent():
-    """Weekend deviations exceeding the 15% deadzone must still reduce the score."""
-    workers = [
-        {
-            "id": "A",
-            "target_shifts": 10,
-            "work_percentage": 100,
-            "work_periods": "",
-            "mandatory_days": "",
-            "days_off": "",
-        },
-    ]
-    scheduler = _build_scheduler(workers)
-    metrics = OptimizationMetrics(scheduler)
+    """9 weekends against an objective of 13 (31%) is beyond the deadzone."""
+    scheduler, weekend_dates = _weekend_worker_scheduler()
+    scheduler.worker_assignments["A"] = set(weekend_dates[:9])
 
-    weekend_dates = [d for d in scheduler.schedule if scheduler.date_utils.is_weekend_day(d, set())]
-    actual_weekend_count = 13
-    scheduler.worker_assignments["A"] = set(weekend_dates[:actual_weekend_count])
-    # 30% deviation (well beyond the 15% deadzone).
-    scheduler.workers_data[0]["target_shifts"] = actual_weekend_count / 1.30
-
-    assert metrics._calculate_weekend_balance_score() < 100.0
+    assert OptimizationMetrics(scheduler)._calculate_weekend_balance_score() < 100.0
 
 
 def test_post_rotation_score_no_last_post_worker_treated_as_no_deviation():

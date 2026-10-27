@@ -7,7 +7,7 @@ from saldo27.balance_validator import BalanceValidator
 
 @pytest.fixture
 def validator():
-    return BalanceValidator(tolerance_percentage=10.0)
+    return BalanceValidator()
 
 
 # ── Balanced schedules ─────────────────────────────────────────────
@@ -55,10 +55,43 @@ def test_heavily_imbalanced_schedule(validator, sample_workers_data):
 # ── Tolerance phases ───────────────────────────────────────────────
 
 
-def test_tolerance_percentage_respected():
-    strict = BalanceValidator(tolerance_percentage=5.0)
-    lenient = BalanceValidator(tolerance_percentage=20.0)
-    assert strict.tolerance_percentage < lenient.tolerance_percentage
+def _single_worker_schedule(worker_id: str, count: int) -> dict:
+    return {f"2026-03-{day:02d}": [worker_id] for day in range(1, count + 1)}
+
+
+def _classification(validator, worker: dict, count: int) -> str:
+    result = validator.validate_schedule_balance(_single_worker_schedule(worker["id"], count), [worker])
+    return next(level for level, infos in result["violations"].items() if infos)
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [(20, "within_tolerance"), (22, "within_tolerance"), (18, "within_tolerance"), (17, "critical")],
+)
+def test_classification_uses_strict_and_absolute_limits(validator, count, expected):
+    worker = {"id": "W1", "target_shifts": 20, "work_percentage": 100}
+    assert _classification(validator, worker, count) == expected
+
+
+def test_classification_emergency_band_between_strict_and_absolute(validator):
+    worker = {"id": "W1", "target_shifts": 25, "work_percentage": 100}
+    # strict max int(27.5)=27, absolute max int(28.25)=28
+    assert _classification(validator, worker, 27) == "within_tolerance"
+    assert _classification(validator, worker, 28) == "within_emergency"
+    assert _classification(validator, worker, 29) == "critical"
+
+
+def test_classification_manual_worker_is_exact(validator):
+    worker = {"id": "W1", "target_shifts": 20, "work_percentage": 100, "auto_calculate_shifts": False}
+    assert _classification(validator, worker, 20) == "within_tolerance"
+    assert _classification(validator, worker, 21) == "critical"
+
+
+def test_classification_part_time_limit_is_scaled(validator):
+    worker = {"id": "W1", "target_shifts": 20, "work_percentage": 50}
+    # 50 % → strict 5 %, absolute 6.5 %: max 21 either way
+    assert _classification(validator, worker, 21) == "within_tolerance"
+    assert _classification(validator, worker, 22) == "critical"
 
 
 # ── Rebalancing recommendations ────────────────────────────────────
