@@ -2,6 +2,7 @@
 
 import socket
 import subprocess
+import sys
 import time
 
 import pytest
@@ -44,17 +45,27 @@ def streamlit_app(app_port):
             "--browser.gatherUsageStats=false",
             "--global.developmentMode=false",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        # Unread pipes fill up and block the server once it logs enough.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
     if not _wait_for_server(app_port):
-        proc.terminate()
+        _stop_process_tree(proc)
         pytest.fail(f"Streamlit app did not start on port {app_port}")
 
     yield f"http://localhost:{app_port}"
 
-    proc.terminate()
+    _stop_process_tree(proc)
+
+
+def _stop_process_tree(proc):
+    """Stop ``uv run`` and the Streamlit server it spawned; terminating ``uv`` alone
+    leaves the server running on Windows (holding the log file and the port)."""
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, check=False)
+    else:
+        proc.terminate()
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:

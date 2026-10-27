@@ -1,6 +1,7 @@
 """E2E tests: schedule generation flow."""
 
 import pytest
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import expect
 
 pytestmark = pytest.mark.e2e
@@ -33,8 +34,13 @@ def test_generate_schedule_with_workers(app_page):
     gen_button = sidebar.locator("button:has-text('Generar')")
     if gen_button.count() > 0:
         gen_button.first.click()
-        # Schedule generation can take a while
-        app_page.wait_for_timeout(15000)
+        # Generation blocks the server for 20-70 s; later tests need it finished.
+        spinner = app_page.locator("text=Generando calendario").first
+        try:
+            spinner.wait_for(state="visible", timeout=5000)
+        except PlaywrightTimeoutError:
+            pass
+        spinner.wait_for(state="hidden", timeout=180000)
 
     # Switch to the calendar tab
     cal_tab = app_page.locator("button[role='tab']:has-text('Calendario Generado')")
