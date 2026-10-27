@@ -46,8 +46,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
 
+from saldo27 import tolerance_policy
 from saldo27.domain.engine_state_mixin import EngineStateMixin
 from saldo27.infrastructure.optional_engines import ortools_available
+from saldo27.utilities import is_fixed_cadence
 
 
 def _normalize_schedule_date(value: datetime | Any) -> datetime:
@@ -76,13 +78,20 @@ class FinalAdjustmentEngine(EngineStateMixin):
 
         # Pre-compute period-wide totals needed for targets
         self._total_all_slots: int = 0
-        self._total_weekend_slots: int = 0
         self._total_bridge_slots: int = 0
-        self._total_last_post_slots: int = 0
         self._precompute_slot_totals()
 
         # Cache raw targets to avoid repeated O(n) scans inside hot loops
         self._raw_targets: dict[str, int] = {w["id"]: self._get_worker_raw_target(w) for w in self.workers_data}
+        # Fixed-cadence workers are never balanced: their targets are their cadence counts
+        self._cadence_targets: dict[str, dict[str, int]] = {
+            w["id"]: {
+                "weekend": round(scheduler.get_weekend_objective(w)),
+                "bridge": round(scheduler.get_bridge_objective_for_worker(w["id"])),
+            }
+            for w in self.workers_data
+            if is_fixed_cadence(w)
+        }
 
         # Counters for reporting
         self.stats: dict[str, int] = {
@@ -91,6 +100,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
             "bridge_swaps": 0,
             "weekend_last_post_swaps": 0,
             "ortools_reassignments": 0,
+            "holes_filled": 0,
         }
 
     # ------------------------------------------------------------------
@@ -118,6 +128,15 @@ class FinalAdjustmentEngine(EngineStateMixin):
         # ``mandatory_days`` / cadence for the whole FA run.
         self._ensure_mandatory_locks()
         mandatory_snapshot = self._snapshot_mandatory_assignments()
+
+        logging.info("Phase FA-0: Hole fill CP-SAT")
+        try:
+            from saldo27.hole_fill_engine import HoleFillEngine
+
+            self.stats["holes_filled"] = HoleFillEngine(self.scheduler).fill()
+        except Exception as exc:
+            logging.warning(f"FinalAdjustmentEngine hole fill skipped: {exc}")
+            self.stats["holes_filled"] = 0
 
         before = self.compute_metrics()
 
@@ -198,6 +217,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         logging.info(f"  Weekend swaps:        {self.stats['weekend_swaps']}")
         logging.info(f"  Bridge swaps:         {self.stats['bridge_swaps']}")
         logging.info(f"  Weekend last-post:    {self.stats['weekend_last_post_swaps']}")
+        logging.info(f"  Holes filled:         {self.stats.get('holes_filled', 0)}")
         logging.info(f"  OR-Tools changes:     {self.stats['ortools_reassignments']}")
         logging.info(f"  Weekend errors >±15%: {self.stats['weekend_errors']}")
         logging.info("=" * 70)
@@ -241,10 +261,10 @@ class FinalAdjustmentEngine(EngineStateMixin):
         bridge_by_worker: dict[str, int] = {}
         last_post_by_worker: dict[str, int] = {}
 
-        num_shifts = self.scheduler.num_shifts
         for date, shifts in self.schedule.items():
             is_weekend = self.scheduler.date_utils.is_weekend_day(date, self.holidays_set)
             is_bridge = self.scheduler.date_utils.is_bridge_day(date, self.scheduler.bridge_periods)
+            last_post = len(shifts) - 1
             for post, worker_id in enumerate(shifts):
                 if worker_id is None:
                     continue
@@ -253,7 +273,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
                     weekend_by_worker[worker_id] = weekend_by_worker.get(worker_id, 0) + 1
                 if is_bridge:
                     bridge_by_worker[worker_id] = bridge_by_worker.get(worker_id, 0) + 1
-                if post == num_shifts - 1:
+                if post == last_post:
                     last_post_by_worker[worker_id] = last_post_by_worker.get(worker_id, 0) + 1
 
         metrics: dict[str, dict[str, Any]] = {}
@@ -266,8 +286,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
             bridge_assigned = bridge_by_worker.get(wid, 0)
             last_post_assigned = last_post_by_worker.get(wid, 0)
 
-            weekend_target = self._weekend_target_for(raw_target)
-            bridge_target = self._bridge_target_for(raw_target)
+            weekend_target = self._weekend_target_for(raw_target, wid)
+            bridge_target = self._bridge_target_for(raw_target, wid)
             last_post_target = self._last_post_target_for(worker)
 
             metrics[wid] = {
@@ -299,46 +319,28 @@ class FinalAdjustmentEngine(EngineStateMixin):
         while current <= self.scheduler.end_date:
             n = self.scheduler._get_shifts_for_date(current)
             self._total_all_slots += n
-            if self.scheduler.date_utils.is_weekend_day(current, self.holidays_set):
-                self._total_weekend_slots += n
             if self.scheduler.date_utils.is_bridge_day(current, self.scheduler.bridge_periods):
                 self._total_bridge_slots += n
-            if n > 0:
-                self._total_last_post_slots += 1
             current += timedelta(days=1)
 
-    def _weekend_target_for(self, raw_target: int) -> int:
-        """Target proporcional de fines de semana para un trabajador."""
-        if self._total_all_slots == 0:
-            return 0
-        ratio = self._total_weekend_slots / self._total_all_slots
-        return round(raw_target * ratio)
+    def _weekend_target_for(self, raw_target: int, worker_id: str | None = None) -> int:
+        """Target proporcional de fines de semana; misma proporción por slots que ``Scheduler.get_weekend_objective``."""
+        if worker_id in self._cadence_targets:
+            return self._cadence_targets[worker_id]["weekend"]
+        return round(raw_target * self.scheduler._weekend_slot_ratio())
 
-    def _bridge_target_for(self, raw_target: int) -> int:
+    def _bridge_target_for(self, raw_target: int, worker_id: str | None = None) -> int:
         """Target proporcional de puentes para un trabajador."""
+        if worker_id in self._cadence_targets:
+            return self._cadence_targets[worker_id]["bridge"]
         if self._total_all_slots == 0 or self._total_bridge_slots == 0:
             return 0
         ratio = self._total_bridge_slots / self._total_all_slots
         return round(raw_target * ratio)
 
     def _last_post_target_for(self, worker: dict) -> int:
-        """Target proporcional de turnos en el último puesto (post rotation).
-
-        Alineado con ``optimization_metrics._calculate_post_rotation_score``:
-        los trabajadores ``no_last_post``/``only_last_post`` tienen su
-        rotación de puestos condicionada por configuración, así que se les
-        asigna el target "correcto" para su restricción (0 o su target total)
-        en lugar del reparto proporcional general.
-        """
-        raw_target = self._get_worker_raw_target(worker)
-        if worker.get("no_last_post", False):
-            return 0
-        if worker.get("only_last_post", False):
-            return raw_target
-        if self._total_all_slots == 0 or self._total_last_post_slots == 0:
-            return 0
-        ratio = self._total_last_post_slots / self._total_all_slots
-        return round(raw_target * ratio)
+        """Target de turnos en el último puesto (Rosell); ver ``Scheduler.get_last_post_objective``."""
+        return round(self.scheduler.get_last_post_objective(worker))
 
     @staticmethod
     def _get_worker_raw_target(worker: dict) -> int:
@@ -369,13 +371,17 @@ class FinalAdjustmentEngine(EngineStateMixin):
         if count is None:
             count = self._kind_count(worker_id, kind)
         raw_target = self._raw_targets.get(worker_id, 0)
-        target = self._weekend_target_for(raw_target) if kind == "weekend" else self._bridge_target_for(raw_target)
+        target = (
+            self._weekend_target_for(raw_target, worker_id)
+            if kind == "weekend"
+            else self._bridge_target_for(raw_target, worker_id)
+        )
         return abs(count - target)
 
     def _weekend_deviation(self, worker_id: str) -> int:
         """Signed weekend deviation (assigned − target) from the live schedule."""
         raw_target = self._raw_targets.get(worker_id, 0)
-        return self._kind_count(worker_id, "weekend") - self._weekend_target_for(raw_target)
+        return self._kind_count(worker_id, "weekend") - self._weekend_target_for(raw_target, worker_id)
 
     def _exchange_abs_after(self, worker_id: str, lose: datetime, gain: datetime, kind: str) -> tuple[int, int]:
         """Absolute deviation of ``kind`` before and after losing ``lose`` and gaining ``gain``."""
@@ -726,7 +732,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
           3. Incompatibilidades con otros trabajadores asignados ese mismo día.
           4. Gap mínimo / patrón 7-14 / viernes-lunes / puente gap-2 (asignaciones
              simuladas: sin date_lose; date_gain aún no incluida).
-          5. Límites de fin de semana (consecutivos, 1 por semana ISO, tope proporcional),
+          5. Límites de fin de semana (consecutivos y tope proporcional),
              usando el mismo checker que StrictBalanceOptimizer.
         """
         sb = self.schedule_builder
@@ -751,26 +757,19 @@ class FinalAdjustmentEngine(EngineStateMixin):
             return False
 
         # 2. Post constraints
+        is_last_post = self.scheduler.is_last_post(date_gain, post_gain)
         worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
         if worker_config:
-            num_shifts = getattr(sb, "num_shifts", None)
-            if num_shifts is not None:
-                is_last_post = post_gain == num_shifts - 1
-                if is_last_post and worker_config.get("no_last_post", False):
-                    return False
-                if not is_last_post and worker_config.get("only_last_post", False):
-                    return False
+            if is_last_post and worker_config.get("no_last_post", False):
+                return False
+            if not is_last_post and worker_config.get("only_last_post", False):
+                return False
 
         # 2b. CRITICAL: worker cannot end up with 2 or more consecutive last-post shifts
         #     (in their own chronological sequence), unless only_last_post. The date
         #     being ceded (date_lose) is excluded so the check reflects the post-swap state.
-        num_shifts = getattr(sb, "num_shifts", None)
-        if (
-            num_shifts is not None
-            and self.constraint_checker is not None
-            and self.constraint_checker._would_exceed_consecutive_last_post(
-                worker_id, date_gain, post_gain == num_shifts - 1, exclude_date=date_lose
-            )
+        if self.constraint_checker is not None and self.constraint_checker._would_exceed_consecutive_last_post(
+            worker_id, date_gain, is_last_post, exclude_date=date_lose
         ):
             return False
 
@@ -794,7 +793,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         if not sb._check_gap_constraint_simulated(worker_id, date_gain, simulated):
             return False
 
-        # 5. Weekend hard limits (consecutive weeks, ≤1 weekend/week, proportional cap).
+        # 5. Weekend hard limits (consecutive weeks, proportional cap).
         #    Same checker StrictBalanceOptimizer uses; without it, weekend/bridge paired
         #    swaps in Ajuste Final could create consecutive-weekend violations.
         if hasattr(sb, "_would_exceed_weekend_limit_simulated") and sb._would_exceed_weekend_limit_simulated(
@@ -822,7 +821,10 @@ class FinalAdjustmentEngine(EngineStateMixin):
             # weekend target.
             sbo.protect_weekend_balance = True
             sbo.weekend_deviation = self._weekend_deviation
-            sbo.optimize_balance(max_iterations=max_iters, target_tolerance=1)
+            band = (getattr(self.scheduler, "config", None) or {}).get(
+                "balance_tolerance", tolerance_policy.BALANCE_BAND
+            )
+            sbo.optimize_balance(max_iterations=max_iters, target_tolerance=band)
             self.stats["shift_swaps"] = sbo.stats["swaps_performed"]
         except Exception as exc:
             logging.error(f"FinalAdjustmentEngine shift balance error: {exc}", exc_info=True)
@@ -844,7 +846,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
             raw_target = self._raw_targets.get(wid, 0)
             if raw_target == 0:
                 continue
-            wknd_target = self._weekend_target_for(raw_target)
+            wknd_target = self._weekend_target_for(raw_target, wid)
             wknd_assigned = sum(
                 1
                 for d in self.worker_assignments.get(wid, set())
@@ -965,9 +967,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
         for worker in self.workers_data:
             wid = worker["id"]
             raw_target = self._raw_targets.get(wid, 0)
-            if raw_target == 0 or self._bridge_target_for(raw_target) == 0:
+            if raw_target == 0 or self._bridge_target_for(raw_target, wid) == 0:
                 continue
-            bridge_target = self._bridge_target_for(raw_target)
+            bridge_target = self._bridge_target_for(raw_target, wid)
             bridge_assigned = len(self.scheduler.worker_bridge_counts.get(wid, set()))
             dev = bridge_assigned - bridge_target
             if dev > 0:
@@ -1073,8 +1075,12 @@ class FinalAdjustmentEngine(EngineStateMixin):
                         # Evaluate: did bridge deviations improve?
                         new_over_bridge = len(self.scheduler.worker_bridge_counts.get(over_id, set()))
                         new_under_bridge = len(self.scheduler.worker_bridge_counts.get(under_id, set()))
-                        new_over_dev = new_over_bridge - self._bridge_target_for(self._raw_targets.get(over_id, 0))
-                        new_under_dev = new_under_bridge - self._bridge_target_for(self._raw_targets.get(under_id, 0))
+                        new_over_dev = new_over_bridge - self._bridge_target_for(
+                            self._raw_targets.get(over_id, 0), over_id
+                        )
+                        new_under_dev = new_under_bridge - self._bridge_target_for(
+                            self._raw_targets.get(under_id, 0), under_id
+                        )
 
                         improved = abs(new_over_dev) < abs(over_dev) and abs(new_under_dev) < abs(under_dev)
                         if not improved:
@@ -1331,6 +1337,7 @@ class ORToolsPhase:
         from ortools.sat.python import cp_model
 
         from saldo27.constraint_checker import MAX_CONSECUTIVE_LAST_POSTS, candidate_spacing_rejection
+        from saldo27.prior_schedule_handler import get_effective_assignments
         from saldo27.utilities import get_effective_min_gap
 
         def _build_model(
@@ -1402,11 +1409,10 @@ class ORToolsPhase:
                             model.add(x[wi, si] == 0)
 
             # 3e. Post constraints (no_last_post / only_last_post)
-            num_shifts = self.scheduler.num_shifts
             for wi, wid in enumerate(worker_ids):
                 wd = worker_data_by_id[wid]
                 for si, (date, post, _) in enumerate(slots):
-                    is_last = post == num_shifts - 1
+                    is_last = self.scheduler.is_last_post(date, post)
                     if is_last and wd.get("no_last_post", False):
                         model.add(x[wi, si] == 0)
                     if not is_last and wd.get("only_last_post", False):
@@ -1531,8 +1537,8 @@ class ORToolsPhase:
             # consecutive last-post assignments, resetting on any
             # non-last-post assignment and passing through unchanged when
             # the worker isn't assigned that slot at all.
-            slot_is_last_post = [slots[si][1] == len(self.schedule.get(slots[si][0], [])) - 1 for si in range(n_slots)]
-            if num_shifts > 1 and n_slots > 0:
+            slot_is_last_post = [self.scheduler.is_last_post(slots[si][0], slots[si][1]) for si in range(n_slots)]
+            if self.scheduler.num_shifts > 1 and n_slots > 0:
                 max_consecutive_last_post = MAX_CONSECUTIVE_LAST_POSTS
                 for wi, wid in enumerate(worker_ids):
                     wd = worker_data_by_id[wid]
@@ -1562,11 +1568,11 @@ class ORToolsPhase:
                 for si in range(n_slots)
             ]
 
-            # 3j. Weekend hard limits (must run after slot_is_weekend is known):
-            #     - at most 1 weekend/holiday shift per ISO calendar week
-            #     - at most max_consecutive_weekends consecutive weekend-weeks
-            #     Mirrors ScheduleBuilder._would_exceed_weekend_limit_simulated
-            #     checks 1 and 2 (proportional cap stays soft via the objective).
+            # 3j. Weekend hard limit (must run after slot_is_weekend is known):
+            #     at most max_consecutive_weekends consecutive weekend-weeks,
+            #     prior-period weekends included.
+            #     Mirrors ConstraintChecker._would_exceed_weekend_limit
+            #     (proportional cap stays soft via the objective).
             max_consecutive_weekends = int(getattr(self.scheduler, "max_consecutive_weekends", 3) or 3)
             weekend_slots_by_week: dict = {}
             for si in range(n_slots):
@@ -1575,15 +1581,36 @@ class ORToolsPhase:
                 week_start = slots[si][0] - timedelta(days=slots[si][0].weekday())
                 weekend_slots_by_week.setdefault(week_start, []).append(si)
 
-            sorted_weekend_weeks = sorted(weekend_slots_by_week.keys())
+            prior_assignments = getattr(self.scheduler, "prior_assignments", {}) or {}
+            prior_weekend_weeks: dict[str, set] = {}
+            if prior_assignments and self.scheduler.start_date is not None:
+                for wid in worker_ids:
+                    prior_dates = get_effective_assignments(wid, {}, prior_assignments, self.scheduler.start_date)
+                    prior_weekend_weeks[wid] = {
+                        d - timedelta(days=d.weekday())
+                        for d in prior_dates
+                        if d < self.scheduler.start_date
+                        and self.scheduler.date_utils.is_weekend_day(d, self.holidays_set)
+                    }
+
+            sorted_weekend_weeks = sorted(
+                set(weekend_slots_by_week).union(*prior_weekend_weeks.values())
+                if prior_weekend_weeks
+                else weekend_slots_by_week
+            )
             if sorted_weekend_weeks:
                 for wi in range(n_workers):
-                    week_flags = []
+                    worker_prior_weeks = prior_weekend_weeks.get(worker_ids[wi], set())
+                    week_flags: list = []
                     for week_start in sorted_weekend_weeks:
-                        week_slot_indices = weekend_slots_by_week[week_start]
+                        if week_start in worker_prior_weeks:
+                            week_flags.append(1)
+                            continue
+                        week_slot_indices = weekend_slots_by_week.get(week_start)
+                        if not week_slot_indices:
+                            week_flags.append(0)
+                            continue
                         week_sum = sum(x[wi, si] for si in week_slot_indices)
-                        # ≤1 weekend shift per calendar week
-                        model.add(week_sum <= 1)
                         # flag ↔ (week_sum >= 1). Avoid ``week_sum == flag`` which
                         # can trip native CP-SAT heuristics on some OR-Tools builds.
                         flag = model.new_bool_var(f"wkndw_{wi}_{week_start.strftime('%Y%m%d')}")
@@ -1604,11 +1631,10 @@ class ORToolsPhase:
                                 if delta_days != 7:
                                     consecutive = False
                                     break
-                            if consecutive:
-                                model.add(
-                                    sum(week_flags[start_idx + offset] for offset in range(window))
-                                    <= max_consecutive_weekends
-                                )
+                            window_flags = [week_flags[start_idx + offset] for offset in range(window)]
+                            # Windows made only of prior-period constants cannot be changed here
+                            if consecutive and any(not isinstance(f, int) for f in window_flags):
+                                model.add(sum(window_flags) <= max_consecutive_weekends)
 
             obj_terms = []
             for wi, wid in enumerate(worker_ids):
@@ -1627,11 +1653,14 @@ class ORToolsPhase:
                 else:
                     # Shift deviation (con zona muerta ±DEADZONE_SHIFT, alineada con
                     # optimization_metrics._calculate_workload_balance_score).
-                    dplus_s = model.new_int_var(0, n_slots, f"dps_{wi}")
-                    dminus_s = model.new_int_var(0, n_slots, f"dms_{wi}")
+                    # Deviation domains are n_slots + target: n_slots counts only occupied
+                    # slots, so a target above it would otherwise make the model infeasible.
+                    shift_ub = n_slots + abs(raw_tgt)
+                    dplus_s = model.new_int_var(0, shift_ub, f"dps_{wi}")
+                    dminus_s = model.new_int_var(0, shift_ub, f"dms_{wi}")
                     model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
                     shift_threshold = int(self.DEADZONE_SHIFT * raw_tgt)
-                    eff_s = model.new_int_var(0, n_slots, f"effs_{wi}")
+                    eff_s = model.new_int_var(0, 2 * shift_ub, f"effs_{wi}")
                     model.add(eff_s >= dplus_s + dminus_s - shift_threshold)
                     obj_terms.append(self.W_SHIFT * eff_s)
                     # Tiebreak: penaliza levemente la desviación bruta también
@@ -1641,10 +1670,11 @@ class ORToolsPhase:
 
                 # Weekend deviation. Within ±15% only the tie-break applies.
                 # Above ±15% the whole absolute deviation is an error.
-                wknd_tgt = self.engine._weekend_target_for(raw_tgt)
+                wknd_tgt = self.engine._weekend_target_for(raw_tgt, wid)
                 actual_wknd = sum(x[wi, si] for si in range(n_slots) if slot_is_weekend[si])
-                dplus_w = model.new_int_var(0, n_slots, f"dpw_{wi}")
-                dminus_w = model.new_int_var(0, n_slots, f"dmw_{wi}")
+                weekend_ub = n_slots + abs(wknd_tgt)
+                dplus_w = model.new_int_var(0, weekend_ub, f"dpw_{wi}")
+                dminus_w = model.new_int_var(0, weekend_ub, f"dmw_{wi}")
                 model.add(actual_wknd - wknd_tgt == dplus_w - dminus_w)
                 weekend_abs = dplus_w + dminus_w
                 # Do not move a worker further from their weekend target in order to
@@ -1656,7 +1686,7 @@ class ORToolsPhase:
                 weekend_is_error = model.new_bool_var(f"werr_{wi}")
                 model.add(weekend_abs >= max_ok + 1).only_enforce_if(weekend_is_error)
                 model.add(weekend_abs <= max_ok).only_enforce_if(weekend_is_error.Not())
-                weekend_error = model.new_int_var(0, n_slots, f"werrn_{wi}")
+                weekend_error = model.new_int_var(0, 2 * weekend_ub, f"werrn_{wi}")
                 model.add(weekend_error == weekend_abs).only_enforce_if(weekend_is_error)
                 model.add(weekend_error == 0).only_enforce_if(weekend_is_error.Not())
                 obj_terms.append(self.W_WEEKEND_ERROR * weekend_error)
@@ -1664,10 +1694,11 @@ class ORToolsPhase:
 
                 # Bridge deviation (sin zona muerta: no existe un umbral
                 # equivalente documentado en el score de calidad para puentes).
-                bridge_tgt = self.engine._bridge_target_for(raw_tgt)
+                bridge_tgt = self.engine._bridge_target_for(raw_tgt, wid)
                 actual_bridge = sum(x[wi, si] for si in range(n_slots) if slot_is_bridge[si])
-                dplus_b = model.new_int_var(0, n_slots, f"dpb_{wi}")
-                dminus_b = model.new_int_var(0, n_slots, f"dmb_{wi}")
+                bridge_ub = n_slots + abs(bridge_tgt)
+                dplus_b = model.new_int_var(0, bridge_ub, f"dpb_{wi}")
+                dminus_b = model.new_int_var(0, bridge_ub, f"dmb_{wi}")
                 model.add(actual_bridge - bridge_tgt == dplus_b - dminus_b)
                 obj_terms.append(self.W_BRIDGE * (dplus_b + dminus_b))
 
@@ -1681,11 +1712,12 @@ class ORToolsPhase:
                 # only_last_post (0 o raw_tgt respectivamente).
                 last_post_tgt = self.engine._last_post_target_for(worker_data_by_id[wid])
                 actual_last_post = sum(x[wi, si] for si in range(n_slots) if slot_is_last_post[si])
-                dplus_lp = model.new_int_var(0, n_slots, f"dplp_{wi}")
-                dminus_lp = model.new_int_var(0, n_slots, f"dmlp_{wi}")
+                last_post_ub = n_slots + abs(last_post_tgt)
+                dplus_lp = model.new_int_var(0, last_post_ub, f"dplp_{wi}")
+                dminus_lp = model.new_int_var(0, last_post_ub, f"dmlp_{wi}")
                 model.add(actual_last_post - last_post_tgt == dplus_lp - dminus_lp)
                 last_post_threshold = int(self.DEADZONE_LAST_POST * last_post_tgt)
-                eff_lp = model.new_int_var(0, n_slots, f"efflp_{wi}")
+                eff_lp = model.new_int_var(0, 2 * last_post_ub, f"efflp_{wi}")
                 model.add(eff_lp >= dplus_lp + dminus_lp - last_post_threshold)
                 obj_terms.append(self.W_LAST_POST * eff_lp)
                 obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_lp + dminus_lp))

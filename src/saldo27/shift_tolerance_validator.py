@@ -1,20 +1,20 @@
 """
 Validador de tolerancia de shifts
-Valida que los shifts asignados estén dentro del rango de tolerancia +/-10% del target_shift
+Valida que los shifts asignados estén dentro del límite estricto de ``tolerance_policy``
 """
 
 import logging
-import math
 from datetime import timedelta
 from typing import Any
+
+from saldo27 import tolerance_policy
 
 
 class ShiftToleranceValidator:
     """Validador para asegurar que los shifts asignados respeten la tolerancia por fases
 
-    Sistema de tolerancia por fases:
-    - Fase 1 (Initial): ±10% (objetivo estricto)
-    - Fase 2 (Emergency): ±13% (límite absoluto, solo si cobertura < 95%)
+    Los límites (±10% estricto, escalado para tiempo parcial, exacto para
+    manuales) vienen de ``tolerance_policy``.
 
     IMPORTANTE: Este validador verifica contra los límites configurados.
     El enforcement activo está en schedule_builder._would_violate_tolerance()
@@ -30,10 +30,6 @@ class ShiftToleranceValidator:
         self.scheduler = scheduler
         self.workers_data = scheduler.workers_data
         self.schedule = scheduler.schedule
-        # Phase 1 tolerance: ±10% (strict target objective)
-        self.tolerance_percentage = 10.0
-        # Phase 2 tolerance: ±13% (absolute maximum - NEVER exceed)
-        self.emergency_tolerance_percentage = 13.0
 
     def calculate_tolerance_bounds(
         self, target_shifts: int, is_weekend: bool = False, worker_id: str | None = None
@@ -51,27 +47,19 @@ class ShiftToleranceValidator:
         if target_shifts <= 0:
             return (0, 0)
 
-        # ZERO TOLERANCE for manual workers (guardias/mes defined by user)
-        if worker_id is not None:
-            worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
-            if worker and not worker.get("auto_calculate_shifts", True):
-                # Manual workers: exact target, no tolerance band
-                return (int(target_shifts), int(target_shifts))
+        worker = next((w for w in self.workers_data if w["id"] == worker_id), None) if worker_id is not None else None
 
         if is_weekend:
+            # Manual workers keep an exact weekend count too
+            if worker and tolerance_policy.is_manual(worker):
+                return (int(target_shifts), int(target_shifts))
             # For weekends: use weekend_tolerance from config (in shifts, e.g., ±1, ±2)
             weekend_tolerance_shifts = getattr(self.scheduler, "weekend_tolerance", 1)
             min_shifts = max(0, int(target_shifts) - weekend_tolerance_shifts)
             max_shifts = int(target_shifts) + weekend_tolerance_shifts
-        else:
-            # For general shifts: use percentage-based tolerance
-            tolerance_amount = target_shifts * (self.tolerance_percentage / 100.0)
-            # Use ceil for min_shifts: e.g. target=12, tol=10% → 10.8 → ceil → 11
-            # int() would give 10, incorrectly allowing workers at 10/12 (-16.7%) to pass
-            min_shifts = max(0, math.ceil(target_shifts - tolerance_amount))
-            max_shifts = int(target_shifts + tolerance_amount)  # floor (int truncation), consistent with enforcement
+            return (min_shifts, max_shifts)
 
-        return (min_shifts, max_shifts)
+        return tolerance_policy.shift_bounds(worker or {}, target_shifts, relaxed=False)
 
     def validate_worker_shift_count(self, worker_id: str, is_weekend_only: bool = False) -> dict[str, Any]:
         """
@@ -301,28 +289,8 @@ class ShiftToleranceValidator:
         """
         if total_target <= 0:
             return 0
-
-        # Contar total de días en el período
-        total_days = (self.scheduler.end_date - self.scheduler.start_date).days + 1
-
-        # Contar días de weekend en el período
-        weekend_days = 0
-        current_date = self.scheduler.start_date
-        holidays_set = set(self.scheduler.holidays)
-
-        while current_date <= self.scheduler.end_date:
-            if self.scheduler.date_utils.is_weekend_day(current_date, holidays_set):
-                weekend_days += 1
-            current_date += timedelta(days=1)
-
-        if weekend_days == 0 or total_days == 0:
-            return 0
-
-        # Calcular proporción de weekend
-        weekend_proportion = weekend_days / total_days
-        weekend_target = int(total_target * weekend_proportion + 0.5)  # Round to nearest
-
-        return weekend_target
+        # Misma proporción por slots y redondeo que el límite de generación
+        return round(total_target * self.scheduler._weekend_slot_ratio())
 
     def log_tolerance_report(self) -> None:
         """

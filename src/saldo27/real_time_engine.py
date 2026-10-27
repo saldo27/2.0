@@ -14,6 +14,7 @@ from saldo27.event_bus import EventType, get_event_bus
 from saldo27.incremental_updater import IncrementalUpdater
 from saldo27.infrastructure.optional_engines import EngineCapabilities
 from saldo27.live_validator import ConflictInfo, LiveValidator, ValidationResult
+from saldo27.utilities import is_fixed_cadence
 
 
 @dataclass
@@ -86,6 +87,43 @@ class RealTimeEngine:
         self.event_bus.subscribe(EventType.CONSTRAINT_VIOLATION, self._on_constraint_violation)
         self.event_bus.subscribe(EventType.VALIDATION_RESULT, self._on_validation_result)
 
+    def _cadence_dates(self, worker_id: str) -> set[datetime] | None:
+        """Cadence dates of a fixed-cadence worker, or None for any other worker."""
+        worker = next((w for w in self.scheduler.workers_data if w.get("id") == worker_id), None)
+        if not is_fixed_cadence(worker):
+            return None
+        try:
+            return set(self.scheduler.date_utils.parse_dates(worker.get("mandatory_days", "")))
+        except (TypeError, ValueError):
+            return set()
+
+    def _cadence_lock_reason(self, moves: list[tuple[str | None, datetime | None, datetime | None]]) -> str | None:
+        """Why ``moves`` (worker, from_date, to_date) would alter a fixed cadence, or None.
+
+        Cadence shifts are unmodifiable even with ``force``: they can only change post
+        within the same day.
+        """
+        for worker_id, from_date, to_date in moves:
+            if not worker_id or from_date == to_date:
+                continue
+            cadence = self._cadence_dates(worker_id)
+            if cadence is None:
+                continue
+            if from_date is not None and from_date in cadence:
+                return (
+                    f"{worker_id} tiene cadencia fija: su guardia del {from_date.strftime('%d-%m-%Y')} "
+                    "no se puede quitar ni mover de día (solo cambiar de puesto ese mismo día)."
+                )
+            if to_date is not None and to_date not in cadence:
+                return (
+                    f"{worker_id} tiene cadencia fija: el {to_date.strftime('%d-%m-%Y')} no es un día de su cadencia."
+                )
+        return None
+
+    def _occupant(self, shift_date: datetime, post_index: int) -> str | None:
+        posts = self.scheduler.schedule.get(shift_date) or []
+        return posts[post_index] if 0 <= post_index < len(posts) else None
+
     def assign_worker_real_time(
         self,
         worker_id: str,
@@ -119,11 +157,22 @@ class RealTimeEngine:
                     "user_id": user_id,
                 }
 
-            # Pre-validation if requested
             validation_results = []
             conflicts = []
             suggestions = []
 
+            occupant = self._occupant(shift_date, post_index)
+            already_that_day = worker_id in (self.scheduler.schedule.get(shift_date) or [])
+            lock_reason = self._cadence_lock_reason(
+                [
+                    (occupant if occupant != worker_id else None, shift_date, None),
+                    (worker_id, None, shift_date) if not already_that_day else (None, None, None),
+                ]
+            )
+            if lock_reason:
+                return RealTimeOperationResult(success=False, message=lock_reason, operation_id=operation_id)
+
+            # Pre-validation if requested
             if validate and not force:
                 validation_result = self.live_validator.validate_assignment(worker_id, shift_date, post_index)
                 validation_results.append(validation_result)
@@ -213,6 +262,10 @@ class RealTimeEngine:
                     "user_id": user_id,
                 }
 
+            lock_reason = self._cadence_lock_reason([(self._occupant(shift_date, post_index), shift_date, None)])
+            if lock_reason:
+                return RealTimeOperationResult(success=False, message=lock_reason, operation_id=operation_id)
+
             # Perform the unassignment
             update_result = self.incremental_updater.unassign_worker_from_shift(shift_date, post_index, user_id)
 
@@ -276,6 +329,15 @@ class RealTimeEngine:
 
             validation_results = []
             conflicts = []
+
+            lock_reason = self._cadence_lock_reason(
+                [
+                    (self._occupant(shift_date1, post_index1), shift_date1, shift_date2),
+                    (self._occupant(shift_date2, post_index2), shift_date2, shift_date1),
+                ]
+            )
+            if lock_reason:
+                return RealTimeOperationResult(success=False, message=lock_reason, operation_id=operation_id)
 
             # Pre-validation if requested
             if validate and not force:

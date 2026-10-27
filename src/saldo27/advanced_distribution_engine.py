@@ -17,6 +17,7 @@ import logging
 import random
 from datetime import datetime, timedelta
 
+from saldo27 import tolerance_policy
 from saldo27.balance_validator import BalanceValidator
 from saldo27.domain.engine_state_mixin import EngineStateMixin
 from saldo27.utilities import get_effective_min_gap
@@ -416,8 +417,8 @@ class AdvancedDistributionEngine(EngineStateMixin):
         """Bonus basado en el balance global del trabajador vs otros.
 
         Retorna ``float("-inf")`` cuando el trabajador ya supera
-        ``target + balance_tolerance``, impidiendo que se le asigne
-        un turno más y preservando el balance que el StrictBalanceOptimizer
+        ``target`` + ``tolerance_policy.balance_band`` (0 para manuales),
+        impidiendo que se le asigne un turno más y preservando el balance que el StrictBalanceOptimizer
         dejó en Phase 3.6.
         """
         all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
@@ -435,10 +436,11 @@ class AdvancedDistributionEngine(EngineStateMixin):
 
         deficit = target - non_mandatory_assigned
 
-        # Read shared tolerance from config (default: 1 shift)
-        tolerance: int = self.config.get("balance_tolerance", 1)
+        tolerance = tolerance_policy.balance_band(
+            worker_data, target, band=self.config.get("balance_tolerance", tolerance_policy.BALANCE_BAND)
+        )
 
-        # Hard block: worker already exceeds target by more than the shared tolerance.
+        # Hard block: worker already exceeds target by more than the balance band.
         # This prevents AdvancedDistributionEngine from undoing work done by
         # StrictBalanceOptimizer in Phase 3.6.
         if deficit < -tolerance:
@@ -689,38 +691,23 @@ class AdvancedDistributionEngine(EngineStateMixin):
             if self.scheduler.schedule[date][post] is not None:
                 return False
 
+            is_last_post = self.scheduler.is_last_post(date, post)
+            w_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
             # CRITICAL: no_last_post workers cannot be assigned to the last post
-            if post == self.scheduler.num_shifts - 1:
-                w_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
-                if w_data and w_data.get("no_last_post", False):
-                    return False
-
-            # CRITICAL: worker cannot end up with 2 or more consecutive last-post shifts
-            if self.builder.constraint_checker._would_exceed_consecutive_last_post(
-                worker_id, date, post == self.scheduler.num_shifts - 1
-            ):
+            if is_last_post and w_data and w_data.get("no_last_post", False):
+                return False
+            # CRITICAL: only_last_post workers can ONLY be assigned to the last post
+            if not is_last_post and w_data and w_data.get("only_last_post", False):
                 return False
 
-            # NEW: Validate monthly balance before assigning
+            # CRITICAL: worker cannot end up with 2 or more consecutive last-post shifts
+            if self.builder.constraint_checker._would_exceed_consecutive_last_post(worker_id, date, is_last_post):
+                return False
+
             worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
-            if worker_data and hasattr(self.builder, "_get_expected_monthly_target"):
-                expected_monthly = self.builder._get_expected_monthly_target(worker_data, date.year, date.month)
-                shifts_this_month = sum(
-                    1
-                    for d in self.scheduler.worker_assignments.get(worker_id, set())
-                    if d.year == date.year and d.month == date.month
-                )
-
-                # Check if would exceed monthly limit
-                work_pct = worker_data.get("work_percentage", 100)
-                monthly_tolerance = 1 if work_pct >= 100 else 0
-                max_monthly = expected_monthly + monthly_tolerance
-
-                if shifts_this_month + 1 > max_monthly:
-                    logging.debug(
-                        f"Advanced engine: {worker_id} blocked by monthly limit ({shifts_this_month + 1} > {max_monthly})"
-                    )
-                    return False
+            if worker_data and self.builder._exceeds_monthly_cap(worker_data, date):
+                logging.debug(f"Advanced engine: {worker_id} blocked by monthly limit in {date.strftime('%Y-%m')}")
+                return False
 
             # NEW: Validate consecutive weekends
             if self.builder._is_weekend_day(date):

@@ -11,7 +11,7 @@ from saldo27.scheduler_initializer import SchedulerInitializer
 from saldo27.scheduler_reporting import SchedulerReportingService
 from saldo27.scheduler_tracking import SchedulerTrackingState
 from saldo27.scheduler_validation import SchedulerValidationService
-from saldo27.utilities import DateTimeUtils
+from saldo27.utilities import DateTimeUtils, is_fixed_cadence
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -45,6 +45,7 @@ class Scheduler:
     _cache: dict[str, Any]
     _cache_enabled: bool
     _scheduler_core: SchedulerCore | None
+    _weekend_slot_ratio_cache: float | None
 
     # Configuration (set by SchedulerInitializer.apply_config)
     config: dict[str, Any]
@@ -350,6 +351,15 @@ class Scheduler:
         # Fallback to default
         return self.num_shifts
 
+    def last_post_index(self, date) -> int:
+        """Index of the last post (Rosell) on ``date``: the last slot of that day."""
+        day_slots = self.schedule.get(date)
+        return (len(day_slots) if day_slots else self._get_shifts_for_date(date)) - 1
+
+    def is_last_post(self, date, post: int) -> bool:
+        """True when ``post`` is the last slot of ``date`` (variable_shifts aware)."""
+        return post == self.last_post_index(date)
+
     def count_bridges_for_worker(self, worker_id: str) -> int:
         """
         Count the number of bridge SHIFTS assigned to a worker.
@@ -383,12 +393,10 @@ class Scheduler:
         proportional to their share of total target shifts.
 
         The weight is the worker's full shift objective (``_raw_target``), which
-        includes mandatory and cadence shifts. ``target_shifts`` alone is the
-        non-mandatory budget and is 0 for a cadence worker, so it would give
-        them no bridge target even though they work more shifts than a 100%
-        colleague.
+        includes mandatory shifts. A fixed-cadence worker's objective is the
+        bridge days of their cadence; the other workers share what is left.
 
-        Formula: total_bridge_shifts * (worker_shift_objective / sum_all_objectives)
+        Formula: remaining_bridge_shifts * (worker_shift_objective / sum_non_cadence_objectives)
 
         Args:
             worker_id: ID of the worker
@@ -401,29 +409,109 @@ class Scheduler:
         if not worker:
             return 0.0
 
-        worker_target = self._shift_objective(worker)
-
-        # Total target shifts across all workers
-        total_target = sum(self._shift_objective(w) for w in self.workers_data)
-
-        if total_target == 0:
-            return 0.0
-
-        # Calculate total bridge shifts (number of filled shifts on bridge days)
-        total_bridge_shifts = 0
         bridge_dates = set()
         for bridge_period in self.bridge_periods:
             for date in self._get_dates_in_bridge(bridge_period):
                 if date in self.schedule:
                     bridge_dates.add(date)
 
-        for date in bridge_dates:
-            if date in self.schedule:
-                # Count only filled (non-None) slots to avoid inflating targets
-                total_bridge_shifts += sum(1 for w in self.schedule[date] if w is not None)
+        # Fixed-cadence workers keep exactly their cadence bridge days; the rest
+        # share the remaining bridge shifts.
+        if is_fixed_cadence(worker):
+            return float(sum(1 for d in self._fixed_cadence_dates(worker) if d in bridge_dates))
 
-        # Objective = proportional to worker's share of total target shifts
-        return total_bridge_shifts * worker_target / total_target
+        balanced = [w for w in self.workers_data if not is_fixed_cadence(w)]
+        total_target = sum(self._shift_objective(w) for w in balanced)
+        if total_target == 0:
+            return 0.0
+
+        # Count only filled (non-None) slots to avoid inflating targets
+        total_bridge_shifts = sum(sum(1 for w in self.schedule[d] if w is not None) for d in bridge_dates)
+        total_bridge_shifts -= sum(
+            sum(1 for d in self._fixed_cadence_dates(w) if d in bridge_dates)
+            for w in self.workers_data
+            if is_fixed_cadence(w)
+        )
+
+        return max(0, total_bridge_shifts) * self._shift_objective(worker) / total_target
+
+    def get_weekend_objective(self, worker: dict) -> float:
+        """Objective weekend shifts for ``worker``: their shift objective times the share
+        of slots that fall on weekend days (Fri-Sun, holidays and pre-holidays).
+
+        A fixed-cadence worker's objective is the weekend days of their cadence, so
+        weekend balancing never sees them as over or under target."""
+        if is_fixed_cadence(worker):
+            return float(
+                sum(1 for d in self._fixed_cadence_dates(worker) if self.date_utils.is_weekend_day(d, self.holidays))
+            )
+        return self._shift_objective(worker) * self._weekend_slot_ratio()
+
+    def _fixed_cadence_dates(self, worker: dict) -> list[datetime]:
+        try:
+            dates = self.date_utils.parse_dates(worker.get("mandatory_days", ""))
+        except (TypeError, ValueError):
+            return []
+        return [d for d in dates if self.start_date <= d <= self.end_date]
+
+    def _weekend_slot_ratio(self) -> float:
+        ratio = getattr(self, "_weekend_slot_ratio_cache", None)  # period and holidays are fixed after init
+        if ratio is None:
+            ratio = self.weekend_slot_ratio_for(self._get_date_range(self.start_date, self.end_date))
+            self._weekend_slot_ratio_cache = ratio
+        return ratio
+
+    def weekend_slot_ratio_for(self, dates) -> float:
+        """Share of the slots on ``dates`` that fall on weekend/holiday days."""
+        total_slots = weekend_slots = 0
+        for d in dates:
+            n = self._get_shifts_for_date(d)
+            total_slots += n
+            if self.date_utils.is_weekend_day(d, self.holidays):
+                weekend_slots += n
+        return weekend_slots / total_slots if total_slots else 0.0
+
+    def get_last_post_objective(self, worker: dict) -> float:
+        """Objective number of last-post (Rosell) shifts for ``worker``.
+
+        ``no_last_post`` workers get 0 and ``only_last_post`` workers get their
+        whole shift objective. Every other worker shares the Rosell days left
+        after the ``only_last_post`` workers, proportional to their objective.
+        A fixed-cadence worker is outside Rosell balancing: their objective is
+        the Rosell shifts they currently hold.
+        """
+        if worker.get("no_last_post", False):
+            return 0.0
+        if is_fixed_cadence(worker) and not worker.get("only_last_post", False):
+            return float(self._current_last_post_count(worker["id"]))
+        objective = self._shift_objective(worker)
+        if worker.get("only_last_post", False):
+            return float(objective)
+
+        eligible_total = sum(
+            self._shift_objective(w)
+            for w in self.workers_data
+            if not w.get("no_last_post", False) and not w.get("only_last_post", False) and not is_fixed_cadence(w)
+        )
+        if eligible_total <= 0:
+            return 0.0
+        rosell_days = sum(
+            1 for d in self._get_date_range(self.start_date, self.end_date) if self._get_shifts_for_date(d) > 0
+        )
+        reserved = sum(
+            self._shift_objective(w)
+            for w in self.workers_data
+            if w.get("only_last_post", False) and not w.get("no_last_post", False)
+        )
+        reserved += sum(
+            self._current_last_post_count(w["id"])
+            for w in self.workers_data
+            if is_fixed_cadence(w) and not w.get("no_last_post", False) and not w.get("only_last_post", False)
+        )
+        return max(0, rosell_days - reserved) * objective / eligible_total
+
+    def _current_last_post_count(self, worker_id: str) -> int:
+        return sum(1 for posts in self.schedule.values() if posts and posts[-1] == worker_id)
 
     @staticmethod
     def _shift_objective(worker: dict) -> int:

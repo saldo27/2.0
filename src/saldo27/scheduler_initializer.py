@@ -165,6 +165,8 @@ class SchedulerInitializer:
             cadence_dates = scheduler.date_utils.compute_cadence_dates(
                 cadence_start, cadence_days, scheduler.start_date, scheduler.end_date
             )
+            # Days off / outside work periods drop that date; the rhythm itself continues.
+            cadence_dates = [d for d in cadence_dates if self._is_available(worker, d)]
 
             # Cadence assignment is mandatory and exclusive: it overrides any
             # manually-entered mandatory dates for this worker.
@@ -175,6 +177,21 @@ class SchedulerInitializer:
                 f"Worker {worker.get('id')}: cadencia every {cadence_days} days from "
                 f"{cadence_start_str} → {len(cadence_dates)} mandatory shift(s) in period."
             )
+
+    def _is_available(self, worker: dict, date: datetime) -> bool:
+        """Same availability rule as ``ScheduleBuilder._is_worker_unavailable`` (work_periods, days_off)."""
+        date_utils = self.scheduler.date_utils
+        try:
+            work_periods = (worker.get("work_periods") or "").strip()
+            if work_periods and not any(s <= date <= e for s, e in date_utils.parse_date_ranges(work_periods)):
+                return False
+            days_off = (worker.get("days_off") or "").strip()
+            if days_off and any(s <= date <= e for s, e in date_utils.parse_date_ranges(days_off)):
+                return False
+        except (TypeError, ValueError) as exc:
+            logging.error(f"Worker {worker.get('id')}: invalid work_periods/days_off for cadence: {exc}")
+            return False
+        return True
 
     def initialize_incompatibilities(self) -> None:
         scheduler = self.scheduler

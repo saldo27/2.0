@@ -21,7 +21,7 @@ from typing import Any
 class TargetCalculator:
     """
     Computes ``target_shifts``, ``_raw_target``, ``_mandatory_count``,
-    ``monthly_targets`` and ``monthly_targets_ceil`` for every worker in
+    and ``monthly_targets`` for every worker in
     ``scheduler.workers_data``.
 
     All data is written back to the worker dicts in-place, exactly as the
@@ -492,7 +492,6 @@ class TargetCalculator:
             overall_target = worker.get("target_shifts", 0)
 
             worker["monthly_targets"] = {}
-            worker["monthly_targets_ceil"] = {}
 
             # Always use target_shifts (non-mandatory budget) for monthly proportional
             # distribution — see Scheduler._calculate_monthly_targets docstring.
@@ -536,7 +535,6 @@ class TargetCalculator:
 
                         if avail == 0:
                             worker["monthly_targets"][month_key] = 0
-                            worker["monthly_targets_ceil"][month_key] = 0
                             continue
 
                         month_fraction = min(1.0, avail / days_in_month)
@@ -545,7 +543,6 @@ class TargetCalculator:
                         month_target = max(0, raw_month_target - mand_in_month)
                         month_target = min(month_target, remaining_target)
                         worker["monthly_targets"][month_key] = month_target
-                        worker["monthly_targets_ceil"][month_key] = math.ceil(guardias_mes * month_fraction)
                         remaining_target -= month_target
                         if month_fraction >= 0.999:
                             fully_available_months.append(month_key)
@@ -581,7 +578,6 @@ class TargetCalculator:
                 else:
                     for month_key in month_days:
                         worker["monthly_targets"][month_key] = 0
-                        worker["monthly_targets_ceil"][month_key] = 0
                     continue
 
             total_avail_days = sum(worker_month_avail.values())
@@ -592,13 +588,11 @@ class TargetCalculator:
                     avail = worker_month_avail.get(month_key, 0)
                     if avail == 0:
                         worker["monthly_targets"][month_key] = 0
-                        worker["monthly_targets_ceil"][month_key] = 0
                     else:
                         raw_fraction = overall_target * avail / total_avail_days
                         month_target = round(raw_fraction)
                         month_target = min(month_target, remaining_target)
                         worker["monthly_targets"][month_key] = month_target
-                        worker["monthly_targets_ceil"][month_key] = math.ceil(raw_fraction)
                         remaining_target -= month_target
                         logging.debug(
                             f"Worker {worker_id}: {month_key} → {month_target} shifts "
@@ -619,7 +613,6 @@ class TargetCalculator:
             else:
                 for month_key in month_days:
                     worker["monthly_targets"][month_key] = 0
-                    worker["monthly_targets_ceil"][month_key] = 0
 
         logging.info("Monthly targets calculated (work_periods-aware)")
         return True

@@ -13,6 +13,7 @@ from datetime import datetime
 from time import perf_counter
 from typing import Any
 
+from saldo27 import tolerance_policy
 from saldo27.adaptive_iterations import AdaptiveIterationManager
 from saldo27.advanced_distribution_engine import AdvancedDistributionEngine
 from saldo27.application.contracts import GenerationProgressEvent, SchedulerCoreProtocol
@@ -55,14 +56,11 @@ class SchedulerCore:
 
         # Initialize tolerance validation and iterative optimization
         self.tolerance_validator = ShiftToleranceValidator(scheduler)
-        # Iterative optimizer works with Phase 2 tolerance (±13% absolute limit)
-        # Note: Initial distribution uses Phase 1 (±10% objective), optimizer handles both phases
-        self.iterative_optimizer = IterativeOptimizer(max_iterations=80, tolerance=0.13)
+        self.iterative_optimizer = IterativeOptimizer(max_iterations=80, tolerance=tolerance_policy.RELAXED_TOLERANCE)
 
-        # Shared BalanceValidator — single source of truth for all balance engines.
-        # IterativeOptimizer, AdvancedDistributionEngine (via config["balance_tolerance"]),
-        # and StrictBalanceOptimizer (via target_tolerance from config) all use this contract.
-        self._shared_balance_validator = BalanceValidator(tolerance_percentage=10.0)
+        # Every tolerance (builder hard limit, validators, balance band of
+        # AdvancedDistributionEngine / StrictBalanceOptimizer) comes from tolerance_policy.
+        self._shared_balance_validator = BalanceValidator()
         self.iterative_optimizer.set_shared_balance_validator(self._shared_balance_validator)
 
         # Initialize adaptive iteration manager for intelligent optimization
@@ -1513,6 +1511,17 @@ class SchedulerCore:
             else:
                 logging.warning("Validation/monthly-target reconciliation reached max passes (5)")
 
+            # Coverage CP-SAT: includes empty slots (FA OR-Tools does not). Optional.
+            try:
+                from saldo27.hole_fill_engine import HoleFillEngine
+
+                filled_holes = HoleFillEngine(self.scheduler).fill()
+                if filled_holes:
+                    logging.info(f"Hole fill CP-SAT: coverage +{filled_holes}")
+                    self.scheduler.validate_and_fix_final_schedule()
+            except Exception as _hf:
+                logging.warning(f"Hole fill CP-SAT skipped: {_hf}")
+
             logging.info("Schedule finalization phase completed successfully.")
             return True
 
@@ -1687,7 +1696,7 @@ class SchedulerCore:
             logging.info("🔓 RELAXED MODE activated for iterative optimization phase")
             logging.info("   - Target tolerance: ±10% objective (Phase 1) or ±13% limit (Phase 2 if needed)")
             logging.info("   - ABSOLUTE LIMIT: ±13% NEVER exceeded; above that, another assignment is sought")
-            logging.info("   - Gap reduction: -1 ONLY (relaxation level ≥ 1 and deficit ≥ 2)")
+            logging.info("   - Gap reduction: NOT allowed")
             logging.info("   - Pattern 7/14 and Friday-Monday: blocked unless the shift is mandatory")
             logging.info("   - Mandatory/Incompatibilities/Days off: ALWAYS respected")
 
@@ -2150,16 +2159,9 @@ class SchedulerCore:
                     if w is not None:
                         worker_we_counts[w] = worker_we_counts.get(w, 0) + 1
 
-        # Weekend targets per worker (proportional)
-        total_days = len(optimized)
-        total_we_days = len(weekend_dates)
-        we_ratio = total_we_days / total_days if total_days else 0.0
-
-        worker_we_target: dict[str, float] = {}
-        for wd in workers_data:
-            wname = str(wd.get("id", wd.get("name", "")))
-            raw_target = wd.get("_raw_target", wd.get("target_shifts", 0))
-            worker_we_target[wname] = raw_target * we_ratio
+        worker_we_target: dict[str, float] = {
+            str(wd.get("id", wd.get("name", ""))): self.scheduler.get_weekend_objective(wd) for wd in workers_data
+        }
 
         # Find donors: workers NOT in violation whose weekend count > their target
         violating_ids = {str(v.get("worker_id", "")) for v in under_violations}

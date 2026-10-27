@@ -27,6 +27,7 @@ Intercambio a 3 bandas (three-way swap):
 import logging
 import random
 
+from saldo27 import tolerance_policy
 from saldo27.balance_validator import BalanceValidator
 from saldo27.domain.engine_state_mixin import EngineStateMixin
 
@@ -141,7 +142,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
         logging.info("=" * 80)
 
         # Análisis inicial
-        initial_analysis = self._analyze_balance()
+        initial_analysis = self._analyze_balance(target_tolerance)
         self.stats["max_deviation_before"] = initial_analysis["max_deviation"]
 
         logging.info("Initial state:")
@@ -218,7 +219,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
                     stalled_iterations = 0
 
         # Análisis final
-        final_analysis = self._analyze_balance()
+        final_analysis = self._analyze_balance(target_tolerance)
 
         # Final fallback: manual workers must match their monthly target
         # EXACTLY (tolerance 0). The swap strategies above require a
@@ -244,7 +245,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
                 for _ in range(10):
                     if not self.builder._enforce_manual_monthly_targets():
                         break
-                final_analysis = self._analyze_balance()
+                final_analysis = self._analyze_balance(target_tolerance)
 
         self.stats["max_deviation_after"] = final_analysis["max_deviation"]
         self.stats["workers_balanced"] = (
@@ -267,7 +268,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
         if final_analysis["workers_outside_tolerance"] > 0:
             logging.warning("⚠️ Workers still outside tolerance:")
             for worker_id, info in final_analysis["worker_details"].items():
-                if abs(info["deviation"]) > target_tolerance:
+                if abs(info["deviation"]) > info["band"]:
                     worker_name = next(
                         (w.get("name", w["id"]) for w in self.workers_data if w["id"] == worker_id), worker_id
                     )
@@ -281,7 +282,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
 
         return final_analysis["workers_outside_tolerance"] == 0
 
-    def _analyze_balance(self) -> dict:
+    def _analyze_balance(self, tolerance: int = tolerance_policy.BALANCE_BAND) -> dict:
         """Analiza el balance actual del schedule"""
         worker_details = {}
         deviations = []
@@ -299,13 +300,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
             )
 
             deviation = non_mandatory_assigned - target
-
-            # Manual monthly-target workers (auto_calculate_shifts=False) must
-            # match their configured target EXACTLY: their effective tolerance
-            # is always 0, never the general ±1 applied to auto-calculated
-            # workers.
-            is_manual = not worker.get("auto_calculate_shifts", True)
-            effective_tolerance = 0 if is_manual else 1
+            effective_tolerance = tolerance_policy.balance_band(worker, target, band=tolerance)
 
             worker_details[worker_id] = {
                 "name": worker.get("name", worker_id),
@@ -314,6 +309,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
                 "total_assigned": len(all_assignments),  # Total incluyendo mandatory
                 "mandatory": mandatory_assigned,
                 "deviation": deviation,
+                "band": effective_tolerance,
                 "work_percentage": worker.get("work_percentage", 100),
             }
 
@@ -355,13 +351,7 @@ class StrictBalanceOptimizer(EngineStateMixin):
             )
 
             deviation = non_mandatory_assigned - target
-
-            # Manual monthly-target workers must match EXACTLY (tolerance 0),
-            # regardless of the global tolerance used for auto-calculated
-            # workers — see problem statement: their assigned count "no se
-            # puede alterar en ninguna fase de ajuste".
-            is_manual = not worker.get("auto_calculate_shifts", True)
-            effective_tolerance = 0 if is_manual else tolerance
+            effective_tolerance = tolerance_policy.balance_band(worker, target, band=tolerance)
 
             if deviation > effective_tolerance:
                 # Sobrecargado: tiene más turnos de los que debería
@@ -417,24 +407,9 @@ class StrictBalanceOptimizer(EngineStateMixin):
                     if score == float("-inf"):
                         continue
 
-                    # NEW: Additional validation for monthly balance and weekends
-                    # Validate monthly balance
-                    if hasattr(self.builder, "_get_expected_monthly_target"):
-                        expected_monthly = self.builder._get_expected_monthly_target(
-                            worker_under, date.year, date.month
-                        )
-                        shifts_this_month = sum(
-                            1
-                            for d in self.worker_assignments.get(under_id, set())
-                            if d.year == date.year and d.month == date.month
-                        )
-                        work_pct = worker_under.get("work_percentage", 100)
-                        monthly_tolerance = 1 if work_pct >= 100 else 0
-                        max_monthly = expected_monthly + monthly_tolerance
-
-                        if shifts_this_month + 1 > max_monthly:
-                            logging.debug(f"Strict balance: {under_id} blocked by monthly limit")
-                            continue
+                    if self.builder._exceeds_monthly_cap(worker_under, date):
+                        logging.debug(f"Strict balance: {under_id} blocked by monthly limit")
+                        continue
 
                     if not self._weekend_deltas_ok(self._transfer_deltas([(over_id, under_id, date)])):
                         continue
@@ -547,23 +522,8 @@ class StrictBalanceOptimizer(EngineStateMixin):
                     # Validaciones adicionales para C tomando turno de A
                     skip_c_take = False
 
-                    # Validar balance mensual para C
-                    if hasattr(self.builder, "_get_expected_monthly_target"):
-                        expected_monthly = self.builder._get_expected_monthly_target(
-                            worker_c, date_a.year, date_a.month
-                        )
-                        shifts_c_month_a = sum(
-                            1
-                            for d in self.worker_assignments.get(c_id, set())
-                            if d.year == date_a.year and d.month == date_a.month
-                        )
-                        work_pct = worker_c.get("work_percentage", 100)
-                        monthly_tolerance = 1 if work_pct >= 100 else 0
-                        max_monthly = expected_monthly + monthly_tolerance
-
-                        # C va a ganar un turno pero también perderá uno, así que solo bloqueamos si está muy alto
-                        if shifts_c_month_a + 1 > max_monthly:
-                            skip_c_take = True
+                    if self.builder._exceeds_monthly_cap(worker_c, date_a):
+                        skip_c_take = True
 
                     # Validar fines de semana consecutivos para C (incluyendo holidays y pre-holidays)
                     if (
@@ -627,22 +587,8 @@ class StrictBalanceOptimizer(EngineStateMixin):
                             # Validaciones adicionales para B
                             skip_b_take = False
 
-                            # Validar balance mensual para B
-                            if hasattr(self.builder, "_get_expected_monthly_target"):
-                                expected_monthly_b = self.builder._get_expected_monthly_target(
-                                    worker_b, date_c.year, date_c.month
-                                )
-                                shifts_b_month_c = sum(
-                                    1
-                                    for d in self.worker_assignments.get(under_id, set())
-                                    if d.year == date_c.year and d.month == date_c.month
-                                )
-                                work_pct_b = worker_b.get("work_percentage", 100)
-                                monthly_tolerance_b = 1 if work_pct_b >= 100 else 0
-                                max_monthly_b = expected_monthly_b + monthly_tolerance_b
-
-                                if shifts_b_month_c + 1 > max_monthly_b:
-                                    skip_b_take = True
+                            if self.builder._exceeds_monthly_cap(worker_b, date_c):
+                                skip_b_take = True
 
                             # Validar fines de semana consecutivos para B (incluyendo holidays y pre-holidays)
                             if (
@@ -765,22 +711,8 @@ class StrictBalanceOptimizer(EngineStateMixin):
                         # NEW: Additional validation for monthly balance and weekends
                         skip_assign = False
 
-                        # Validate monthly balance
-                        if hasattr(self.builder, "_get_expected_monthly_target"):
-                            expected_monthly = self.builder._get_expected_monthly_target(
-                                worker_under, date.year, date.month
-                            )
-                            shifts_this_month = sum(
-                                1
-                                for d in self.worker_assignments.get(under_id, set())
-                                if d.year == date.year and d.month == date.month
-                            )
-                            work_pct = worker_under.get("work_percentage", 100)
-                            monthly_tolerance = 1 if work_pct >= 100 else 0
-                            max_monthly = expected_monthly + monthly_tolerance
-
-                            if shifts_this_month + 1 > max_monthly:
-                                skip_assign = True
+                        if self.builder._exceeds_monthly_cap(worker_under, date):
+                            skip_assign = True
 
                         # Validate consecutive weekends (including holidays and pre-holidays)
                         if (
@@ -1273,16 +1205,15 @@ class StrictBalanceOptimizer(EngineStateMixin):
         state = self._save_state()
 
         try:
-            # Validate no_last_post before applying any step
-            num_shifts = self.scheduler.num_shifts if hasattr(self.scheduler, "num_shifts") else 0
+            # Validate post restrictions before applying any step
             for _from_id, _date, _post, _to_id in chain:
-                if _post == num_shifts - 1 and num_shifts > 0:
-                    to_data = next((w for w in self.workers_data if w["id"] == _to_id), None)
-                    if to_data and to_data.get("no_last_post", False):
-                        return False
-                if num_shifts > 0 and self.builder.constraint_checker._would_exceed_consecutive_last_post(
-                    _to_id, _date, _post == num_shifts - 1
-                ):
+                _is_last = self.scheduler.is_last_post(_date, _post)
+                to_data = next((w for w in self.workers_data if w["id"] == _to_id), None)
+                if _is_last and to_data and to_data.get("no_last_post", False):
+                    return False
+                if not _is_last and to_data and to_data.get("only_last_post", False):
+                    return False
+                if self.builder.constraint_checker._would_exceed_consecutive_last_post(_to_id, _date, _is_last):
                     return False
 
             # Aplicar cada paso de la cadena

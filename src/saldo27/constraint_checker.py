@@ -1,11 +1,13 @@
 # Imports
+import bisect
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from saldo27.utilities import get_effective_min_gap
+from saldo27.prior_schedule_handler import get_effective_assignments
+from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
 
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
@@ -246,23 +248,15 @@ class ConstraintChecker:
             if not assigned_workers:
                 return True  # No workers assigned
 
-            # Get worker's incompatible list from cache
-            worker_cache = self._worker_lookup_cache.get(worker_id)
-            if not worker_cache:
+            if worker_id not in self._worker_lookup_cache:
                 logging.warning(f"Worker {worker_id} not found in cache during incompatibility check")
                 return False
 
-            incompatible_with = worker_cache["incompatible_with"]
-
-            # Quick check: if no incompatibilities defined, return True
-            if not incompatible_with:
-                return True
-
-            # Check if any assigned worker is in the incompatible list
+            # Incompatibility is symmetric: either worker's list may declare it.
             for assigned_id in assigned_workers:
                 if assigned_id == worker_id:
                     continue  # Skip self
-                if assigned_id in incompatible_with:
+                if self._are_workers_incompatible(worker_id, assigned_id):
                     if _debug_enabled():
                         logging.debug(
                             f"Incompatibility Violation: {worker_id} cannot work with {assigned_id} on {date}"
@@ -297,6 +291,8 @@ class ConstraintChecker:
         worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
         if not worker:
             return False  # Should not happen
+        if is_fixed_cadence(worker):
+            return True  # cadence dates are fixed; availability rejects any other date
         min_required_days_between = get_effective_min_gap(worker, self.scheduler.gap_between_shifts)
 
         assignments = (
@@ -330,203 +326,86 @@ class ConstraintChecker:
             )
         return False
 
-    def _would_exceed_weekend_limit(self, worker_id, date):
-        """
-        Enhanced check if assigning this date would exceed weekend/holiday constraints:
-        1. Max consecutive weekend/holiday constraint (adjusted for part-time)
-        2. Proportional weekend count with +/- 1 tolerance based on work percentage and time worked
+    def _consecutive_weekend_run(self, worker_id, date, assigned_dates=None) -> int:
+        """Length of the run of consecutive weekend weeks (Mon-Sun) containing ``date``,
+        as if ``date`` were assigned. Prior-period dates count."""
+        holidays = self.scheduler.holidays
+        if assigned_dates is None:
+            assigned_dates = self.scheduler.worker_assignments.get(worker_id, set())
+        current = set(assigned_dates) | {date}
+        if self.scheduler.start_date is not None:
+            current = get_effective_assignments(
+                worker_id,
+                {worker_id: current},
+                getattr(self.scheduler, "prior_assignments", {}) or {},
+                self.scheduler.start_date,
+            )
+        weekend_weeks = {
+            d - timedelta(days=d.weekday()) for d in current if self.date_utils.is_weekend_day(d, holidays)
+        }
+        date_week = date - timedelta(days=date.weekday())
+        run = 1
+        for step in (timedelta(days=-7), timedelta(days=7)):
+            week = date_week + step
+            while week in weekend_weeks:
+                run += 1
+                week += step
+        return run
+
+    def _would_exceed_weekend_limit(self, worker_id, date, assigned_dates=None):
+        """True if assigning ``date`` to ``worker_id`` would break the weekend limit.
+
+        This is the single weekend limit used by every engine:
+        1. Consecutive weekends: the run of consecutive weekend weeks (Mon-Sun) that
+           contains ``date`` may not exceed ``max_consecutive_weekends``. Prior-period
+           dates count, so runs continue across the period boundary.
+        2. Proportional cap (only when ``enable_proportional_weekends``): current-period
+           weekend shifts, mandatory included, may not exceed
+           ``round(Scheduler.get_weekend_objective) + weekend_tolerance``.
+
+        ``assigned_dates`` replaces the worker's live assignments (e.g. a simulated
+        set); ``date`` is always counted as assigned.
         """
         try:
-            # Check if the date is a weekend or holiday
-            is_weekend_or_holiday = self.date_utils.is_weekend_day(date, self.scheduler.holidays)
-            if not is_weekend_or_holiday:
-                return False  # Not a weekend/holiday, no need to check
-
-            # Get worker data
-            worker_data = next((w for w in self.workers_data if w["id"] == worker_id), None)
-            if not worker_data:
-                return True  # Worker not found
-
-            # Get work percentage
-            work_percentage = float(worker_data.get("work_percentage", 100))
-
-            # Get work periods or default to full schedule period
-            work_periods = []
-            if "work_periods" in worker_data and worker_data["work_periods"].strip():
-                work_periods = self.date_utils.parse_date_ranges(worker_data["work_periods"])
-                # Check if current date is within any work period
-                if not any(start <= date <= end for start, end in work_periods):
-                    return False  # Date is outside work periods
-            else:
-                # Default to full schedule if no work periods specified
-                work_periods = [(self.scheduler.start_date, self.scheduler.end_date)]
-
-            # PART 1: CHECK MAX CONSECUTIVE WEEKENDS/HOLIDAYS (keep existing logic)
-            base_max_consecutive = self.scheduler.max_consecutive_weekends
-
-            # NOTE: Do NOT reduce max_consecutive_weekends for part-time workers
-            # Part-time workers should have the SAME consecutive limit as full-time
-            # Their total weekend count is already proportionally reduced via target_shifts
-            adjusted_max_consecutive = base_max_consecutive
-
-            # Get all weekend/holiday assignments including the prospective date.
-            # Use _get_effective_assignments so prior-period dates near the boundary
-            # are included when checking consecutive-weekend groupings.
-            current_assignments = (
-                self.scheduler._get_effective_assignments(worker_id)
-                if hasattr(self.scheduler, "_get_effective_assignments")
-                else self.scheduler.worker_assignments.get(worker_id, set())
-            )
-            weekend_dates = []
-            for d in current_assignments:
-                if self.date_utils.is_weekend_day(d, self.scheduler.holidays):
-                    weekend_dates.append(d)
-
-            # Add the date being checked if it's not already included
-            if date not in weekend_dates:
-                weekend_dates.append(date)
-
-            weekend_dates.sort()
-
-            # Check consecutive weekend/holiday constraint
-            if weekend_dates:
-                # IMPORTANT: First, group weekend dates by CALENDAR WEEK to count weekend WEEKS, not individual days
-                # Multiple assignments in the same weekend (Fri+Sat+Sun) should count as ONE weekend
-                weekend_weeks = set()
-                for d in weekend_dates:
-                    # Get the Monday of the week (start of week)
-                    week_start = d - timedelta(days=d.weekday())
-                    weekend_weeks.add(week_start)
-
-                sorted_weekend_weeks = sorted(weekend_weeks)
-
-                # Now check for consecutive weekend weeks
-                consecutive_groups = []
-                current_group = []
-
-                for week_start in sorted_weekend_weeks:
-                    if not current_group:
-                        current_group = [week_start]
-                    else:
-                        prev_week = current_group[-1]
-                        weeks_diff = (week_start - prev_week).days // 7
-
-                        # Consecutive if exactly 1 week apart
-                        if weeks_diff == 1:
-                            current_group.append(week_start)
-                        else:
-                            if current_group:  # Save any group
-                                consecutive_groups.append(current_group)
-                            current_group = [week_start]
-
-                if current_group:  # Don't forget the last group
-                    consecutive_groups.append(current_group)
-
-                # Check if any group exceeds the limit
-                max_consecutive = max(len(group) for group in consecutive_groups) if consecutive_groups else 0
-                if max_consecutive > adjusted_max_consecutive:
-                    return True  # Would exceed consecutive limit
-
-            # Build a current-period-only weekend list for Part 2.
-            # (weekend_dates above includes prior-period dates via
-            # _get_effective_assignments and is correct for Part 1's
-            # consecutive-weekend check, but must NOT be re-used for
-            # the proportional cap which accounts for prior separately.)
-            current_only_assignments = self.scheduler.worker_assignments.get(worker_id, set())
-            current_period_weekend_dates = []
-            for d in current_only_assignments:
-                if self.date_utils.is_weekend_day(d, self.scheduler.holidays):
-                    current_period_weekend_dates.append(d)
-            # Include the prospective date if it belongs to the current period
-            if (
-                date not in current_period_weekend_dates
-                and self.scheduler.start_date <= date <= self.scheduler.end_date
-            ):
-                current_period_weekend_dates.append(date)
-
-            # PART 2: ENHANCED PROPORTIONAL WEEKEND DISTRIBUTION CHECK
-            # Calculate all weekend days in the full schedule period
-            all_schedule_days = []
-            current_date = self.scheduler.start_date
-            while current_date <= self.scheduler.end_date:
-                all_schedule_days.append(current_date)
-                current_date += timedelta(days=1)
-
-            total_schedule_days = len(all_schedule_days)
-            total_weekend_days = sum(
-                1 for d in all_schedule_days if self.date_utils.is_weekend_day(d, self.scheduler.holidays)
-            )
-
-            if total_schedule_days == 0 or total_weekend_days == 0:
-                return False  # No weekends to distribute
-
-            # CRITICAL FIX: Use _raw_target for weekend calculation
-            # target_shifts has mandatory subtracted, but weekend count includes mandatory weekends
-            # We need the TOTAL target to calculate proportional weekend share correctly
-            if "_raw_target" in worker_data:
-                total_target_for_weekend = worker_data["_raw_target"]
-            else:
-                # Fallback: add back mandatory count to target_shifts
-                target_shifts = worker_data.get("target_shifts", 0)
-                total_target_for_weekend = target_shifts
-                if worker_data.get("mandatory_days"):
-                    try:
-                        mand_dates = self.date_utils.parse_dates(worker_data["mandatory_days"])
-                        mand_in_period = sum(
-                            1 for d in mand_dates if self.scheduler.start_date <= d <= self.scheduler.end_date
-                        )
-                        total_target_for_weekend += mand_in_period
-                    except (TypeError, ValueError) as exc:
-                        logging.debug(f"Could not parse mandatory_days for weekend target fallback: {exc}")
-
-            if total_target_for_weekend <= 0:
+            holidays = self.scheduler.holidays
+            if not self.date_utils.is_weekend_day(date, holidays):
                 return False
 
-            # Calculate the actual weekend ratio for this schedule period
-            # (may differ from 3/7 due to holidays and schedule boundaries)
-            actual_weekend_ratio = total_weekend_days / total_schedule_days
+            worker_data = self._get_worker_data(worker_id)
+            if not worker_data:
+                return True  # Worker not found
+            if is_fixed_cadence(worker_data):
+                return False
 
-            # Target weekend shifts = TOTAL_target * actual_weekend_ratio
-            # This gives the proportional fair share of weekend shifts
-            raw_target = total_target_for_weekend * actual_weekend_ratio
+            if assigned_dates is None:
+                assigned_dates = self.scheduler.worker_assignments.get(worker_id, set())
+            current = set(assigned_dates) | {date}
 
-            # Use weekend_tolerance from config (in shifts, e.g., ±1, ±2)
-            # This replaces the old percentage-based tolerance
-            weekend_tolerance_shifts = getattr(self.scheduler, "weekend_tolerance", 1)
-            max_target = round(raw_target) + weekend_tolerance_shifts
-
-            # Count current-period weekend assignments (including the prospective one).
-            # prior_weekend is added ONLY to the cap so that workers who already
-            # served many weekends last period are slightly deprioritised, but
-            # current_period_weekend_dates does NOT include prior dates (those
-            # are already counted by _get_effective_assignments in Part 1).
-            prior_weekend = (
-                self.scheduler._get_prior_weekend_count(worker_id)
-                if hasattr(self.scheduler, "_get_prior_weekend_count")
-                else 0
-            )
-            current_weekend_count = len(current_period_weekend_dates) + prior_weekend
-
-            # Adjust the cap by the same prior amount so the tolerance window
-            # applies correctly across periods.
-            adjusted_max_target = max_target + prior_weekend
-
-            # Check if assignment would exceed the tolerance limit
-            if current_weekend_count > adjusted_max_target:
+            run = self._consecutive_weekend_run(worker_id, date, current)
+            if run > self.scheduler.max_consecutive_weekends:
                 if _debug_enabled():
                     logging.debug(
-                        f"Worker {worker_id}: weekend assignment would exceed proportional limit "
-                        f"(current+prior={current_weekend_count} > {adjusted_max_target}). "
-                        f"Target: {raw_target:.1f}, prior: {prior_weekend}, "
-                        f"tolerance: ±{weekend_tolerance_shifts} shifts, actual ratio: {actual_weekend_ratio:.3f}"
+                        f"Worker {worker_id}: {run} consecutive weekends on {date.date()} "
+                        f"exceeds {self.scheduler.max_consecutive_weekends}"
                     )
                 return True
 
-            if _debug_enabled():
-                logging.debug(
-                    f"Worker {worker_id}: weekend assignment within limits "
-                    f"({current_weekend_count} <= {adjusted_max_target}). Target: {raw_target:.1f}"
-                )
+            if not getattr(self.scheduler, "enable_proportional_weekends", True):
+                return False
+
+            weekend_objective = self.scheduler.get_weekend_objective(worker_data)
+            if weekend_objective <= 0:
+                return False
+            max_allowed = round(weekend_objective) + getattr(self.scheduler, "weekend_tolerance", 1)
+            start, end = self.scheduler.start_date, self.scheduler.end_date
+            weekend_count = sum(1 for d in current if start <= d <= end and self.date_utils.is_weekend_day(d, holidays))
+            if weekend_count > max_allowed:
+                if _debug_enabled():
+                    logging.debug(
+                        f"Worker {worker_id}: {weekend_count} weekend shifts would exceed {max_allowed} "
+                        f"(objective {weekend_objective:.1f})"
+                    )
+                return True
             return False
 
         except Exception as e:
@@ -607,7 +486,29 @@ class ConstraintChecker:
                 return False
 
             worker_data = self._get_worker_data(worker_id)
-            if worker_data and worker_data.get("only_last_post", False):
+            if worker_data and (worker_data.get("only_last_post", False) or is_fixed_cadence(worker_data)):
+                return False
+
+            if exclude_date is None or exclude_date == date:
+                # Only the run through ``date`` can change, and only a last post can lengthen it.
+                if not is_last_post:
+                    return False
+                sched = schedule if schedule is not None else self.scheduler.schedule
+                live = (
+                    assigned_dates
+                    if assigned_dates is not None
+                    else self.scheduler.worker_assignments.get(worker_id, set())
+                )
+                others = sorted(d for d in live if d != date)
+                pos = bisect.bisect_left(others, date)
+                run = 1
+                for neighbours in (reversed(others[:pos]), others[pos:]):
+                    for d in neighbours:
+                        if not self._occupies_last_post(sched.get(d, []), worker_id):
+                            break
+                        run += 1
+                        if run > max_consecutive:
+                            return True
                 return False
 
             sequence = self._get_worker_last_post_sequence(
@@ -885,8 +786,10 @@ class ConstraintChecker:
 
             assigned_dates = sorted(worker_assignments[worker_id])
             effective_gap = get_effective_min_gap(worker, self.scheduler.gap_between_shifts)
+            # Cadence workers are outside spacing and Rosell limits; only exclusivity applies
+            fixed_cadence = is_fixed_cadence(worker)
 
-            for i, date2 in enumerate(assigned_dates):
+            for i, date2 in enumerate(assigned_dates if not fixed_cadence else []):
                 for date1 in assigned_dates[:i]:
                     # Report the pair even when one side is mandatory. Repair keeps
                     # a pair only when both dates are mandatory.
@@ -914,7 +817,11 @@ class ConstraintChecker:
             # the worker's own sequence (ELENA on 17-03-2027 and 29-03-2027, with
             # no shift of hers in between, is a violation). only_last_post workers
             # are exempt.
-            if not worker.get("only_last_post", False) and getattr(self.scheduler, "num_shifts", 1) > 1:
+            if (
+                not fixed_cadence
+                and not worker.get("only_last_post", False)
+                and getattr(self.scheduler, "num_shifts", 1) > 1
+            ):
                 run_dates: list = []
 
                 def _flush_last_post_run() -> None:

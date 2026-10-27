@@ -1,4 +1,5 @@
 # Imports
+import calendar
 import logging
 import math
 from datetime import datetime, timedelta
@@ -7,34 +8,32 @@ from zoneinfo import ZoneInfo
 from saldo27.performance_cache import cached
 
 
+def is_fixed_cadence(worker_data: dict | None) -> bool:
+    """True for fixed-cadence workers: their cadence dates are their whole, unmodifiable schedule.
+
+    They are outside every limit and adjustment (gap, weekends, monthly targets,
+    balance). Only their post within a cadence day may change.
+    """
+    return bool(worker_data and worker_data.get("has_cadence"))
+
+
 def get_effective_min_gap(worker_data: dict | None, gap_between_shifts: int) -> int:
-    """Return the effective minimum gap (calendar days) between shifts for a worker.
+    """Return the minimum number of calendar days between two shifts of a worker.
 
-    Relaxed gap (gap - 1) when:
-    - Auto workers at 60%+ work, OR
-    - Manual workers with >3 guardias/mes
-
-    Standard gap otherwise (auto <60%, or manual ≤3 guardias/mes).
-
-    Returns at least 1 (minimum 1 calendar day between shifts).
+    Two shifts are valid when their dates differ by at least this many days:
+    with gap 4, Monday-Friday (4 days) is valid and Monday-Thursday (3) is not.
+    Workers below 60 % ``work_percentage`` need one extra day (gap + 1).
     """
     if not worker_data:
         return gap_between_shifts
 
-    work_percentage = worker_data.get("work_percentage", 100)
-    is_auto = worker_data.get("auto_calculate_shifts", True)
+    try:
+        work_percentage = float(worker_data.get("work_percentage", 100))
+    except (TypeError, ValueError):
+        work_percentage = 100.0
 
-    # Relaxed: auto workers at 60%+
-    if is_auto and work_percentage >= 60:
-        return max(1, gap_between_shifts - 1)
-
-    # Relaxed: manual workers with >3 guardias/mes
-    if not is_auto:
-        guardias_mes = worker_data.get("_original_target_shifts", worker_data.get("target_shifts", 0))
-        if guardias_mes > 3:
-            return max(1, gap_between_shifts - 1)
-
-    # Standard: auto <60%, or manual ≤3 guardias/mes
+    if work_percentage < 60:
+        return gap_between_shifts + 1
     return gap_between_shifts
 
 
@@ -153,6 +152,19 @@ class DateTimeUtils:
             except ValueError as e:
                 logging.warning(f"Invalid date range format '{date_range}' - {e!s}")
         return ranges
+
+    def last_available_day_in_month(self, work_periods: str, days_off: str, year: int, month: int) -> int:
+        """Last day of ``month`` inside ``work_periods`` (when set) and outside ``days_off``; 0 if none."""
+        work_ranges = self.parse_date_ranges(work_periods or "")
+        off_ranges = self.parse_date_ranges(days_off or "")
+        for day in range(calendar.monthrange(year, month)[1], 0, -1):
+            current = datetime(year, month, day)
+            if work_ranges and not any(s <= current <= e for s, e in work_ranges):
+                continue
+            if any(s <= current <= e for s, e in off_ranges):
+                continue
+            return day
+        return 0
 
     def compute_cadence_dates(
         self,

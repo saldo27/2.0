@@ -5,10 +5,11 @@ Balance Validator - Validación estricta de balance de turnos
 Sistema que garantiza que las desviaciones de turnos se mantengan dentro de límites
 estrictamente controlados durante todo el proceso de optimización.
 
-SISTEMA DE TOLERANCIA POR FASES:
-- Fase 1 (Initial): ±10% tolerancia objetivo estricta
-- Fase 2 (Emergency): ±13% LÍMITE ABSOLUTO (solo si cobertura < 95%)
-- Crítico: >13% NUNCA debe ocurrir; el sistema busca otra asignación
+Los límites (estricto, absoluto, tiempo parcial, manuales) vienen de
+``tolerance_policy``:
+- Dentro del límite estricto: objetivo cumplido.
+- Entre el límite estricto y el absoluto: aceptable (fase 2).
+- Fuera del límite absoluto: crítico.
 
 IMPORTANTE: Este validador clasifica violaciones. El enforcement activo
 está en schedule_builder._would_violate_tolerance()
@@ -17,6 +18,8 @@ está en schedule_builder._would_violate_tolerance()
 import logging
 from datetime import datetime
 from typing import Any
+
+from saldo27 import tolerance_policy
 
 
 class BalanceValidator:
@@ -56,21 +59,13 @@ class BalanceValidator:
         non_mandatory_assigned = total_assigned - mandatory_assigned
         return mandatory_assigned, non_mandatory_assigned
 
-    def __init__(self, tolerance_percentage: float = 10.0):
-        """
-        Initialize balance validator
-
-        Args:
-            tolerance_percentage: Tolerancia objetivo en porcentaje (default: 10% para Fase 1)
-        """
-        self.tolerance_percentage = tolerance_percentage
-        self.emergency_limit = 13.0  # Fase 2: LÍMITE ABSOLUTO ±13%
-        self.critical_threshold = 13.0  # Cualquier cosa >13% es un error del sistema
-
-        logging.info("BalanceValidator initialized with phase system:")
-        logging.info(f"  Phase 1 target: ±{tolerance_percentage}%")
-        logging.info(f"  Phase 2 ABSOLUTE LIMIT: ±{self.emergency_limit}%")
-        logging.info(f"  Critical threshold: >{self.critical_threshold}% (SHOULD NEVER OCCUR)")
+    def __init__(self):
+        """Initialize balance validator; limits come from ``tolerance_policy``."""
+        logging.info(
+            "BalanceValidator initialized: strict ±%.0f%%, absolute ±%.0f%% (part-time scaled, manual exact)",
+            tolerance_policy.STRICT_TOLERANCE * 100,
+            tolerance_policy.RELAXED_TOLERANCE * 100,
+        )
 
     def validate_schedule_balance(self, schedule: dict, workers_data: list[dict]) -> dict:
         """
@@ -124,12 +119,12 @@ class BalanceValidator:
                 "abs_deviation": abs_deviation,
             }
 
-            # Clasificar por severidad según sistema de fases
-            if abs_deviation <= self.tolerance_percentage:
-                # Fase 1: Within target
+            # Clasificar por severidad según los límites de tolerance_policy
+            strict_low, strict_high = tolerance_policy.shift_bounds(worker, target_shifts, relaxed=False)
+            low, high = tolerance_policy.shift_bounds(worker, target_shifts, relaxed=True)
+            if strict_low <= assigned_shifts <= strict_high:
                 violations["within_tolerance"].append(worker_info)
-            elif abs_deviation <= self.emergency_limit:
-                # Fase 2: Within absolute limit (should only occur if Phase 2 activated)
+            elif low <= assigned_shifts <= high:
                 violations["within_emergency"].append(worker_info)
             else:
                 # >13% = CRITICAL ERROR - system should have blocked this
@@ -145,29 +140,15 @@ class BalanceValidator:
 
         # Log resumen con sistema de fases
         logging.info("📊 Balance Validation Summary (Phase System):")
-        logging.info(
-            f"   Phase 1 target (≤{self.tolerance_percentage}%): {len(violations['within_tolerance'])} workers"
-        )
-        logging.info(
-            f"   Phase 2 range ({self.tolerance_percentage}%-{self.emergency_limit}%): {len(violations['within_emergency'])} workers"
-        )
-        logging.info(
-            f"   CRITICAL - Beyond absolute limit (>{self.emergency_limit}%): {len(violations['critical'])} workers"
-        )
+        logging.info(f"   Within strict limit: {len(violations['within_tolerance'])} workers")
+        logging.info(f"   Between strict and absolute limit: {len(violations['within_emergency'])} workers")
+        logging.info(f"   CRITICAL - Beyond absolute limit: {len(violations['critical'])} workers")
         logging.info(f"   Max deviation: {stats['max_deviation']:.1f}%")
         logging.info(f"   Avg deviation: {stats['avg_deviation']:.1f}%")
 
         # Warnings para problemas críticos
         if violations["critical"]:
-            logging.error(f"🚨 SYSTEM ERROR: {len(violations['critical'])} workers EXCEED ±13% ABSOLUTE LIMIT:")
-            for worker_info in violations["critical"]:
-                logging.error(
-                    f"      {worker_info['worker_id']}: {worker_info['deviation_percentage']:+.1f}% "
-                    f"({worker_info['display_assigned']}/{worker_info['display_target']} shifts)"
-                )
-
-        if violations["critical"]:
-            logging.warning(f"⚠️  {len(violations['critical'])} workers with CRITICAL deviations:")
+            logging.warning(f"⚠️  {len(violations['critical'])} workers beyond the absolute tolerance limit:")
             for worker_info in violations["critical"]:
                 logging.warning(
                     f"      {worker_info['worker_id']}: {worker_info['deviation_percentage']:+.1f}% "
@@ -341,14 +322,19 @@ class BalanceValidator:
         from_improves = from_deviation_after < from_deviation
         to_improves = to_deviation_after < to_deviation
 
+        to_low, to_high = tolerance_policy.shift_bounds(to_worker, to_target, relaxed=True)
+        from_low, from_high = tolerance_policy.shift_bounds(from_worker, from_target, relaxed=True)
+        to_within_after = to_low <= to_assigned + 1 <= to_high
+        from_within_after = from_low <= from_assigned - 1 <= from_high
+
         # La transferencia es válida si:
         # 1. Ambos mejoran, o
-        # 2. Uno mejora significativamente y el otro no empeora mucho
+        # 2. Uno mejora y el otro queda dentro del límite absoluto
         if from_improves and to_improves:
             return True, "Both workers improve"
-        elif from_improves and to_deviation_after <= self.emergency_limit:
+        elif from_improves and to_within_after:
             return True, "Source improves, destination stays within emergency limit"
-        elif to_improves and from_deviation_after <= self.emergency_limit:
+        elif to_improves and from_within_after:
             return True, "Destination improves, source stays within emergency limit"
         else:
             return (

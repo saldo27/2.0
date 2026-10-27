@@ -628,48 +628,8 @@ def get_worker_statistics():
     scheduler = st.session_state.scheduler
     core_stats = scheduler.stats.calculate_statistics()
 
-    # Calcular el ratio de SLOTS de weekend (no de días) sobre total de slots
-    # para que el target proporcional por worker sea correcto.
-    from datetime import timedelta
-
-    total_days = (scheduler.end_date - scheduler.start_date).days + 1  # Inclusive
-    holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
-
-    total_weekend_slots = 0
-    total_all_slots = 0
-    current_date = scheduler.start_date
-    while current_date <= scheduler.end_date:  # Inclusive end_date
-        shifts_for_date = scheduler._get_shifts_for_date(current_date)
-        total_all_slots += shifts_for_date
-        is_weekend = scheduler.date_utils.is_weekend_day(current_date, holidays_set)
-        if is_weekend:
-            total_weekend_slots += shifts_for_date
-        current_date += timedelta(days=1)
-
-    weekend_ratio = total_weekend_slots / total_all_slots if total_all_slots > 0 else 0
-
-    # Rosell = último puesto de cada día (un slot por día con al menos 1 turno).
-    # Se cuenta igual que el resto de slots: solo si ese puesto está cubierto
-    # (worker is not None). Con variable_shifts el índice del último puesto
-    # es len(shifts)-1 de ese día, no un índice fijo num_shifts-1.
-    total_last_post_slots = sum(
-        1
-        for date in scheduler._get_date_range(scheduler.start_date, scheduler.end_date)
-        if scheduler._get_shifts_for_date(date) > 0
-    )
-
-    # Proportional Rosell target: each eligible worker should cover
-    # (their_target / total_eligible_target) * total_last_post_slots.
-    # Workers with no_last_post or only_last_post are excluded from the shared pool.
-    no_last_post_ids = {w["id"] for w in scheduler.workers_data if w.get("no_last_post", False)}
-    only_last_post_ids = {w["id"] for w in scheduler.workers_data if w.get("only_last_post", False)}
-    excluded_from_pool = no_last_post_ids | only_last_post_ids
-    total_eligible_target = sum(
-        (w.get("_raw_target") or w.get("target_shifts", 0))
-        for w in scheduler.workers_data
-        if w["id"] not in excluded_from_pool
-    )
-
+    # Rosell = último puesto de cada día. Con variable_shifts el índice del
+    # último puesto es len(shifts)-1 de ese día, no un índice fijo num_shifts-1.
     # Pre-count covered Rosell assignments per worker from the schedule
     rosell_by_worker: dict[str, int] = {}
     for _date, shifts in scheduler.schedule.items():
@@ -699,7 +659,7 @@ def get_worker_statistics():
         # Weekend statistics (includes Fri/Sat/Sun + holidays + pre-holidays)
         weekend_shifts = data.get("weekend_shifts", 0)
         # Target de weekend proporcional: total_target * ratio_weekend
-        weekend_target = round(target * weekend_ratio)
+        weekend_target = round(scheduler.get_weekend_objective(worker_data or {"_raw_target": target}))
         weekend_deviation = weekend_shifts - weekend_target
         weekend_deviation_pct = (weekend_deviation / weekend_target * 100) if weekend_target > 0 else 0
 
@@ -716,10 +676,7 @@ def get_worker_statistics():
             rosell_deviation = 0
             rosell_deviation_pct = 0.0
         else:
-            # Proportional target: worker's share of eligible shifts × total last post slots
-            rosell_target = (
-                round((target / total_eligible_target) * total_last_post_slots) if total_eligible_target > 0 else 0
-            )
+            rosell_target = round(scheduler.get_last_post_objective(worker_data)) if worker_data else 0
             rosell_deviation = rosell_count - rosell_target
             if rosell_target > 0:
                 rosell_deviation_pct = rosell_deviation / rosell_target * 100
@@ -1515,7 +1472,11 @@ with st.sidebar:
             min_value=0,
             max_value=7,
             value=st.session_state.config.get("gap_between_shifts", 3),
-            help="Número mínimo de días entre guardias",
+            help=(
+                "Diferencia mínima en días entre dos guardias del mismo médico. "
+                "Con 4, lunes→viernes es válido y lunes→jueves no. "
+                "Los médicos con menos del 60 % de jornada usan este valor + 1."
+            ),
         )
         st.session_state.config["gap_between_shifts"] = gap_between_shifts
 

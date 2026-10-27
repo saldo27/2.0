@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
+from saldo27.balance_validator import BalanceValidator
 from saldo27.utilities import get_effective_min_gap
 
 
@@ -143,11 +144,14 @@ class OptimizationMetrics:
             if not self.scheduler.workers_data:
                 return 100.0
 
+            date_utils = getattr(self.scheduler, "date_utils", None)
             deviations = []
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
                 target = worker.get("target_shifts", 0)
-                count = len(self.scheduler.worker_assignments.get(worker_id, set()))
+                assignments = self.scheduler.worker_assignments.get(worker_id, set())
+                # target_shifts excludes mandatory shifts, so compare against non-mandatory only.
+                _, count = BalanceValidator.compute_non_mandatory_assigned(worker, assignments, date_utils)
                 if target > 0:
                     deviations.append(abs(count - target) / target)
 
@@ -171,9 +175,9 @@ class OptimizationMetrics:
 
         Counts Friday + Saturday + Sunday + Holidays + Pre-holidays to match
         the definition used by the scheduling operations.
-        Compares each worker's actual weekend count against their proportional
-        expected weekend count (target_shifts × overall_weekend_ratio), so workers
-        with intentionally different targets (manual config) are scored fairly.
+        Compares each worker's actual weekend count against
+        ``Scheduler.get_weekend_objective`` (shift objective × weekend slot ratio),
+        so workers with intentionally different targets (manual config) are scored fairly.
 
         Desviaciones por debajo del ±15% se consideran tolerancia normal y no
         penalizan el score (zona muerta); solo el exceso por encima del umbral
@@ -185,31 +189,16 @@ class OptimizationMetrics:
 
             holidays = getattr(self.scheduler, "holidays", set())
 
-            # Compute per-worker weekend counts and total shift counts first
-            worker_weekend_raw = {}
-            worker_total_raw = {}
+            deviations = []
             for worker in self.scheduler.workers_data:
-                worker_id = worker["id"]
-                assignments = self.scheduler.worker_assignments.get(worker_id, set())
-                worker_total_raw[worker_id] = len(assignments)
-                worker_weekend_raw[worker_id] = sum(
+                assignments = self.scheduler.worker_assignments.get(worker["id"], set())
+                # Mandatory weekends count in both the actual count and the objective.
+                actual_wknd = sum(
                     1
                     for date in assignments
                     if hasattr(date, "weekday") and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
-
-            total_all = sum(worker_total_raw.values())
-            total_wknd = sum(worker_weekend_raw.values())
-            if total_all == 0:
-                return 100.0
-            weekend_ratio = total_wknd / total_all
-
-            deviations = []
-            for worker in self.scheduler.workers_data:
-                worker_id = worker["id"]
-                target = worker.get("target_shifts", 0)
-                expected_wknd = target * weekend_ratio
-                actual_wknd = worker_weekend_raw[worker_id]
+                expected_wknd = self.scheduler.get_weekend_objective(worker)
                 if expected_wknd > 0:
                     deviations.append(abs(actual_wknd - expected_wknd) / expected_wknd)
 

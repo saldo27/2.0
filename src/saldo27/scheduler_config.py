@@ -130,6 +130,7 @@ class SchedulerConfig:
             "max_improvement_loops": cls.DEFAULT_OPTIMIZATION_LOOPS,
             "last_post_adjustment_max_iterations": cls.DEFAULT_LAST_POST_ADJUSTMENT_ITERATIONS,
             "balance_tolerance": cls.DEFAULT_BALANCE_TOLERANCE,
+            "enable_hole_fill": True,
             "cache_enabled": cls.CACHE_ENABLED,
             "lazy_evaluation": cls.LAZY_EVALUATION,
             "batch_size": cls.BATCH_SIZE,
