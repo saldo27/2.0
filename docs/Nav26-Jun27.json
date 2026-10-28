@@ -230,7 +230,7 @@
     "is_incompatible": false,
     "incompatible_with": [],
     "mandatory_days": "01-01-2027",
-    "days_off": "",
+    "days_off": "30-04-2027; 01-05-2027; 02-05-2027",
     "work_periods": "01-01-2027 - 30-06-2027",
     "auto_calculate_shifts": true,
     "no_last_post": false,
