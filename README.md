@@ -17,7 +17,7 @@ Saldo27 permite:
 ### Generación de horarios
 
 - Generación automática de calendarios mensuales
-- Configuración de turnos por día y gap mínimo entre guardias
+- Configuración de turnos por día y gap mínimo entre guardias, con intervalos de fechas que usan otro mínimo
 - Soporte para calendario previo para restricciones entre períodos
 - Optimización con validación de restricciones y métricas de calidad
 
@@ -32,7 +32,7 @@ Saldo27 permite:
 ### Validación y balance
 
 - Verificación de incompatibilidades
-- Control de descansos mínimos
+- Control de descansos mínimos, global o por intervalo de fechas (si las dos guardias piden mínimos distintos, se exige el mayor)
 - Restricciones de patrón semanal 7/14 días
 - Balance de fines de semana
 - Balance de turnos en días puente
