@@ -34,7 +34,7 @@ uv run streamlit run src/saldo27/app_streamlit.py --server.port 8501
 
 ### 2. **Generación de Horarios** 📅
 - ✅ Seleccionar mes y año
-- ✅ Configurar parámetros (tolerancia, turnos por día, días entre turnos)
+- ✅ Configurar parámetros (tolerancia, turnos por día, días entre turnos y mínimos por intervalo de fechas)
 - ✅ Carga de horario previo para restricciones entre períodos
 - ✅ Generación con indicador de progreso en tiempo real
 - ✅ Visualización del calendario en tabla interactiva
@@ -99,7 +99,7 @@ uv run streamlit run src/saldo27/app_streamlit.py --server.port 8501
 
 - Carga un JSON exportado del mes anterior para respetar restricciones de frontera
 - Extrae: últimas fechas trabajadas, conteos de fines de semana/puentes y totales
-- Garantiza que el gap mínimo entre turnos se respete al cruzar el cambio de mes
+- Garantiza que el gap mínimo entre turnos se respete al cruzar el cambio de mes (el de cada fecha, o el mayor de los dos si difieren)
 
 ## 🎯 Ventajas sobre Kivy
 
@@ -149,7 +149,14 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 1. **Mes/Año**: Selecciona el período a generar
 2. **Tolerancia**: Porcentaje permitido de desviación (5-20%)
 3. **Turnos por día**: Número de puestos a cubrir (1-10)
-4. **Días mínimos entre turnos**: Gap de descanso (0-7 días)
+4. **Días mínimos entre turnos**: Gap de descanso (0-7 días). Es el mínimo global.
+   - **Períodos con días mínimos distintos**: intervalos que usan otro valor, un intervalo por línea con el formato `DD-MM-YYYY / DD-MM-YYYY: días` (también vale un solo día, `DD-MM-YYYY: días`).
+   - Fuera de esos intervalos se usa el mínimo global.
+   - Entre dos guardias se exige el mínimo más alto de las dos fechas.
+   - Si dos intervalos se solapan, vale el de la línea de más abajo.
+   - Con menos del 60 % de jornada se suma un día a ese mínimo.
+   - El puente de fin de semana (jueves–sábado, viernes–domingo, sábado–lunes, domingo–martes) se bloquea cuando el mínimo efectivo de ese par es exactamente 2.
+   - El respaldo JSON guarda estos intervalos y los restaura al cargar la sesión.
 5. **Modo Dual-Scheduler**: Activa optimización en dos fases
 6. **Edición en tiempo real**: Activa edición manual con undo/redo
 7. **Predictive Analytics**: Activa análisis predictivo
@@ -185,7 +192,7 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 - ✅ **Turnos Obligatorios**: Protegidos durante toda la generación
 - ✅ **Incompatibilidades**: Trabajadores incompatibles no en mismo día
 - ✅ **Patrón 7/14 Días**: Mismo día de semana a 7 o 14 días — nunca se relaja
-- ✅ **Gap entre Turnos**: Días mínimos de descanso (relajable solo si ≥3 turnos pendientes)
+- ✅ **Gap entre Turnos**: Días mínimos de descanso, global o del intervalo de cada fecha; si las dos fechas piden mínimos distintos, se exige el mayor (relajable solo si ≥3 turnos pendientes)
 - ✅ **Balance de Fines de Semana**: Distribución proporcional
 - ✅ **Balance de Puentes**: Distribución equitativa de turnos en días puente (tolerancia ±0.5)
 - ✅ **Tolerancia**: Desviación máxima respecto al objetivo (+10% max, nunca se incrementa el target)
@@ -202,6 +209,7 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 ## 🆕 Historial de Versiones
 
 ### v3.5 (Septiembre 2026)
+- **Días mínimos entre guardias por intervalo**: además del mínimo global se pueden definir períodos (`DD-MM-YYYY / DD-MM-YYYY: días`). Cada fecha usa el mínimo de su intervalo y, entre dos guardias, se aplica el más alto de los dos. Una línea posterior pisa a una anterior si se solapan. Quien tiene menos del 60 % de jornada suma un día. El respaldo JSON conserva estos períodos.
 - **Objetivo mensual fijo garantizado**: los trabajadores con número fijo de guardias/mes (`auto_calculate_shifts=False`) mantienen su cuota exacta/prorrateada incluso cuando la corrección final de restricciones (patrón 7/14, incompatibilidades) retira una asignación; un bucle de reconciliación en la fase de finalización rellena el déficit tras cada corrección
 - **Score de calidad recalibrado**: se introducen zonas sin penalización (deadzones) en balance de carga (±10%), balance de fines de semana (±15%) y rotación de puestos (±20%); los trabajadores con `no_last_post`/`only_last_post` quedan exentos de la penalización de rotación de puestos por no tener una desviación real
 - **Score Final actualizado tras Ajuste Final**: el resumen de generación en el sidebar ya no muestra el score obsoleto de antes del ajuste; se recalcula con el calendario ya corregido
