@@ -403,7 +403,14 @@ class AdvancedDistributionEngine(EngineStateMixin):
 
         # Bonus exponencial por gaps grandes
         worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
-        min_gap = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
+        closest_date = min(assignments, key=lambda assigned: abs((date - assigned).days))
+        min_gap = get_effective_min_gap(
+            worker_data,
+            self.scheduler.gap_between_shifts,
+            date=date,
+            other_date=closest_date,
+            gap_periods=getattr(self.scheduler, "gap_periods", None) or [],
+        )
 
         if closest_gap > min_gap:
             extra_days = closest_gap - min_gap

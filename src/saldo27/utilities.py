@@ -2,7 +2,8 @@
 import calendar
 import logging
 import math
-from datetime import datetime, timedelta
+from collections.abc import Callable
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from saldo27.performance_cache import cached
@@ -17,15 +18,125 @@ def is_fixed_cadence(worker_data: dict | None) -> bool:
     return bool(worker_data and worker_data.get("has_cadence"))
 
 
-def get_effective_min_gap(worker_data: dict | None, gap_between_shifts: int) -> int:
+def coerce_datetime(value: object) -> datetime | None:
+    """Return a datetime for a datetime, a date, or an ISO / DD-MM-YYYY string."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            pass
+        for fmt in ("%d-%m-%Y", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def normalize_gap_periods(raw: list | None) -> list[dict]:
+    """Return inclusive ``{start_date, end_date, gap}`` periods with midnight datetimes.
+
+    Entries that are not objects, lack dates, or have a negative gap are dropped.
+    An inverted range is swapped so the earlier day is the start. Order is kept:
+    a later period overrides an earlier one where they overlap.
+    """
+    periods: list[dict] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        start = coerce_datetime(item.get("start_date"))
+        end = coerce_datetime(item.get("end_date"))
+        raw_gap = item.get("gap")
+        if isinstance(raw_gap, bool) or not isinstance(raw_gap, int | str):
+            continue
+        try:
+            gap = int(raw_gap)
+        except ValueError:
+            continue
+        if start is None or end is None or gap < 0:
+            continue
+        if end.date() < start.date():
+            start, end = end, start
+        periods.append(
+            {
+                "start_date": datetime(start.year, start.month, start.day),
+                "end_date": datetime(end.year, end.month, end.day),
+                "gap": gap,
+            }
+        )
+    return periods
+
+
+def base_gap_for_date(when: datetime, default_gap: int, gap_periods: list | None) -> int:
+    """Configured gap for one date. The last matching period wins; otherwise the default."""
+    resolved = int(default_gap)
+    if not gap_periods:
+        return resolved
+    check = when.date() if isinstance(when, datetime) else when
+    for period in gap_periods:
+        if not isinstance(period, dict):
+            continue
+        start = period.get("start_date")
+        end = period.get("end_date")
+        start_dt = start if isinstance(start, datetime) else coerce_datetime(start)
+        end_dt = end if isinstance(end, datetime) else coerce_datetime(end)
+        if start_dt is None or end_dt is None:
+            continue
+        if start_dt.date() <= check <= end_dt.date():
+            try:
+                resolved = int(period["gap"])
+            except (KeyError, TypeError, ValueError):
+                continue
+    return resolved
+
+
+def widest_base_gap(default_gap: int, gap_periods: list | None) -> int:
+    """Largest configured base gap, ignoring the part-time extra day."""
+    widest = int(default_gap)
+    for period in gap_periods or []:
+        if not isinstance(period, dict):
+            continue
+        try:
+            widest = max(widest, int(period.get("gap", widest)))
+        except (TypeError, ValueError):
+            continue
+    return widest
+
+
+def get_effective_min_gap(
+    worker_data: dict | None,
+    gap_between_shifts: int,
+    *,
+    date: datetime | None = None,
+    other_date: datetime | None = None,
+    gap_periods: list | None = None,
+) -> int:
     """Return the minimum number of calendar days between two shifts of a worker.
 
     Two shifts are valid when their dates differ by at least this many days:
     with gap 4, Monday-Friday (4 days) is valid and Monday-Thursday (3) is not.
     Workers below 60 % ``work_percentage`` need one extra day (gap + 1).
+
+    ``gap_periods`` are inclusive date intervals that replace the global gap.
+    When ``date`` and ``other_date`` are both given, the pair uses the stricter
+    of the two dates (the higher gap). A date outside every interval keeps the
+    global value. Without dates, the global gap is used, as before.
     """
+    base = int(gap_between_shifts)
+    if date is not None:
+        base = base_gap_for_date(date, base, gap_periods)
+        if other_date is not None:
+            base = max(base, base_gap_for_date(other_date, int(gap_between_shifts), gap_periods))
+
     if not worker_data:
-        return gap_between_shifts
+        return base
 
     try:
         work_percentage = float(worker_data.get("work_percentage", 100))
@@ -33,8 +144,87 @@ def get_effective_min_gap(worker_data: dict | None, gap_between_shifts: int) -> 
         work_percentage = 100.0
 
     if work_percentage < 60:
-        return gap_between_shifts + 1
-    return gap_between_shifts
+        return base + 1
+    return base
+
+
+def gap_lookup_for_date(
+    worker_data: dict | None,
+    when: datetime,
+    default_gap: int,
+    gap_periods: list | None,
+) -> Callable[[datetime], int]:
+    """Return the effective gap between ``when`` and each neighbouring shift."""
+    periods = gap_periods or []
+
+    def lookup(other_date: datetime) -> int:
+        return get_effective_min_gap(
+            worker_data,
+            default_gap,
+            date=when,
+            other_date=other_date,
+            gap_periods=periods,
+        )
+
+    return lookup
+
+
+def parse_gap_periods_text(text: str) -> tuple[list[dict], list[str]]:
+    """Parse ``DD-MM-YYYY / DD-MM-YYYY: días`` lines into gap periods.
+
+    A line without ``/`` is a single day. The gap must be an integer from 0 to 7,
+    the same range as the global control. Invalid lines are skipped and reported.
+    """
+    periods: list[dict] = []
+    warnings: list[str] = []
+    if not text or not text.strip():
+        return periods, warnings
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            warnings.append(f"⚠️ Línea inválida (falta ':'): {line}")
+            continue
+        dates_part, gap_str = line.rsplit(":", 1)
+        try:
+            gap = int(gap_str.strip())
+        except ValueError:
+            warnings.append(f"⚠️ Línea inválida: {line}")
+            continue
+        if gap < 0 or gap > 7:
+            warnings.append(f"⚠️ El mínimo debe estar entre 0 y 7: {line}")
+            continue
+        try:
+            if "/" in dates_part:
+                start_str, end_str = dates_part.split("/", 1)
+                start = datetime.strptime(start_str.strip(), "%d-%m-%Y")
+                end = datetime.strptime(end_str.strip(), "%d-%m-%Y")
+            else:
+                start = datetime.strptime(dates_part.strip(), "%d-%m-%Y")
+                end = start
+        except ValueError:
+            warnings.append(f"⚠️ Línea inválida: {line}")
+            continue
+        if end < start:
+            start, end = end, start
+        periods.append({"start_date": start, "end_date": end, "gap": gap})
+    return periods, warnings
+
+
+def format_gap_periods_text(periods: list | None) -> str:
+    """Render gap periods in the sidebar text format."""
+    lines: list[str] = []
+    for period in normalize_gap_periods(periods):
+        start = period["start_date"].strftime("%d-%m-%Y")
+        end = period["end_date"].strftime("%d-%m-%Y")
+        gap = period["gap"]
+        if start == end:
+            lines.append(f"{start}: {gap}")
+        else:
+            lines.append(f"{start} / {end}: {gap}")
+    return "\n".join(lines)
 
 
 def is_date_in_ranges(date: datetime, ranges_str: str) -> bool:

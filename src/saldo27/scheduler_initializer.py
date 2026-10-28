@@ -10,6 +10,7 @@ from saldo27.exceptions import ConfigurationError
 from saldo27.infrastructure.optional_engines import load_optional_engines
 from saldo27.scheduler_config import SchedulerConfig
 from saldo27.statistics_calculator import StatisticsCalculator
+from saldo27.utilities import normalize_gap_periods
 
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
@@ -113,6 +114,7 @@ class SchedulerInitializer:
 
         default_config = SchedulerConfig.get_default_config()
         scheduler.gap_between_shifts = config.get("gap_between_shifts", default_config["gap_between_shifts"])
+        scheduler.gap_periods = normalize_gap_periods(config.get("gap_periods", []))
         scheduler.max_consecutive_weekends = config.get(
             "max_consecutive_weekends", default_config["max_consecutive_weekends"]
         )
@@ -265,6 +267,12 @@ class SchedulerInitializer:
         logging.info(f"Number of workers: {len(scheduler.workers_data)}")
         logging.info(f"Holidays: {[holiday.strftime('%d-%m-%Y') for holiday in scheduler.holidays]}")
         logging.info(f"Gap between shifts: {scheduler.gap_between_shifts}")
+        if scheduler.gap_periods:
+            rendered = "; ".join(
+                f"{period['start_date'].strftime('%d-%m-%Y')}–{period['end_date'].strftime('%d-%m-%Y')}={period['gap']}"
+                for period in scheduler.gap_periods
+            )
+            logging.info(f"Gap periods: {rendered}")
         logging.info(f"Max consecutive weekend/holiday shifts: {scheduler.max_consecutive_weekends}")
         logging.info(f"Current datetime (Spain): {scheduler.current_datetime}")
         logging.info(f"Current user: {scheduler.current_user}")

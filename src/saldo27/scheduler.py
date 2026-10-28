@@ -61,6 +61,7 @@ class Scheduler:
     bridge_periods: list[dict[str, Any]]
     worker_bridge_counts: dict[str, set[datetime]]
     gap_between_shifts: int
+    gap_periods: list[dict[str, Any]]
     max_consecutive_weekends: int
     current_datetime: datetime
     current_user: str

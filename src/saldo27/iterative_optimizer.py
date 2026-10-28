@@ -23,7 +23,13 @@ if TYPE_CHECKING:
 from saldo27 import tolerance_policy
 from saldo27.constraint_checker import candidate_spacing_rejection
 from saldo27.performance_cache import time_function
-from saldo27.utilities import DateTimeUtils, get_effective_min_gap, is_date_in_ranges
+from saldo27.utilities import (
+    DateTimeUtils,
+    gap_lookup_for_date,
+    get_effective_min_gap,
+    is_date_in_ranges,
+    widest_base_gap,
+)
 
 
 @dataclass
@@ -1302,9 +1308,10 @@ class IterativeOptimizer:
             # Gap, Friday-Monday, and 7/14. Prior-period dates count at the boundary.
             shift_is_mandatory = self._is_mandatory_shift(worker_name, shift_date, workers_data)
             gap_between_shifts = getattr(self, "gap_between_shifts", 3)
+            scheduler = getattr(self, "scheduler", None)
+            gap_periods = getattr(scheduler, "gap_periods", None) or [] if scheduler is not None else []
             min_days_between = get_effective_min_gap(worker_data, gap_between_shifts)
             spacing_dates = set(worker_assignments)
-            scheduler = getattr(self, "scheduler", None)
             if scheduler is not None and getattr(scheduler, "start_date", None) is not None:
                 cutoff = scheduler.start_date - timedelta(days=90)
                 spacing_dates |= {
@@ -1316,12 +1323,13 @@ class IterativeOptimizer:
                 min_gap=min_days_between,
                 date_is_mandatory=shift_is_mandatory,
                 block_gap2_weekend_pairs=(min_days_between == 2),
+                gap_for_other=gap_lookup_for_date(worker_data, shift_date, gap_between_shifts, gap_periods),
             )
             if rejection is not None:
                 logging.debug(
                     f"❌ {worker_name} blocked: {rejection.reason} - "
                     f"{shift_date.strftime('%Y-%m-%d')} vs {rejection.other_date.strftime('%Y-%m-%d')} "
-                    f"({rejection.days_between} days, min {min_days_between})"
+                    f"({rejection.days_between} days, min {rejection.min_gap})"
                 )
                 return False
 
@@ -2771,6 +2779,8 @@ class IterativeOptimizer:
                 continue
 
         gap = int(schedule_config.get("gap_between_shifts", getattr(self.scheduler, "gap_between_shifts", 3)))
+        gap_periods = getattr(self.scheduler, "gap_periods", None) or [] if getattr(self, "scheduler", None) else []
+        search_gap = widest_base_gap(gap, gap_periods) + 1
 
         # Build worker name list for replacement candidates
         all_worker_names = [
@@ -2838,7 +2848,7 @@ class IterativeOptimizer:
                     # Find dates near we_date where under_worker has shifts (potential gap conflicts)
                     we_date_obj = we_date if isinstance(we_date, datetime) else datetime.strptime(we_date, "%Y-%m-%d")
                     conflict_dates = []
-                    for delta_days in range(-gap, gap + 1):
+                    for delta_days in range(-search_gap, search_gap + 1):
                         if delta_days == 0:
                             continue
                         cd = we_date_obj + timedelta(days=delta_days)
@@ -3298,6 +3308,9 @@ class IterativeOptimizer:
         optimized_schedule = copy.deepcopy(schedule)
         filled_count = 0
         gap_between_shifts = getattr(self, "gap_between_shifts", 3)
+        chain_periods = (
+            getattr(self.scheduler, "gap_periods", None) or [] if getattr(self, "scheduler", None) is not None else []
+        )
 
         try:
             # Collect empty slots (list-format only — this system uses list format)
@@ -3350,7 +3363,9 @@ class IterativeOptimizer:
                         # Skip manual workers — their exact monthly target must not be disturbed
                         if not w_data.get("auto_calculate_shifts", True):
                             continue
-                        min_gap = get_effective_min_gap(w_data, gap_between_shifts)
+                        min_gap = get_effective_min_gap(
+                            w_data, gap_between_shifts, date=d_e, other_date=d_w, gap_periods=chain_periods
+                        )
                         # W is gap-blocked (diff < min_gap) OR 7/14-blocked (exactly 7 or 14 days away).
                         # The 7/14 rule blocks a worker from any slot exactly 7 or 14 days from their
                         # existing shifts.  Chain displacement can resolve this deadlock by moving W's
@@ -3468,9 +3483,27 @@ class IterativeOptimizer:
                         ]
                         if not w2_dists_to_dw:
                             continue  # W2 has no assignments — handled by 2-chain
-                        diff_w2_dw = min(w2_dists_to_dw)
-                        min_gap_w2 = get_effective_min_gap(w2_data, gap_between_shifts)
-                        if diff_w2_dw >= min_gap_w2:
+                        gap_blocked = False
+                        for d_candidates, a_candidates in sim2.items():
+                            if not isinstance(a_candidates, list) or w2_name not in a_candidates:
+                                continue
+                            try:
+                                diff_candidate = abs((d_w - d_candidates).days)
+                            except (AttributeError, TypeError):
+                                continue
+                            if diff_candidate == 0:
+                                continue
+                            pair_gap = get_effective_min_gap(
+                                w2_data,
+                                gap_between_shifts,
+                                date=d_w,
+                                other_date=d_candidates,
+                                gap_periods=chain_periods,
+                            )
+                            if diff_candidate < pair_gap:
+                                gap_blocked = True
+                                break
+                        if not gap_blocked:
                             # W2 can directly cover d_w: fall back to 2-chain logic
                             if self._can_worker_take_shift(w2_name, d_w, f"Post_{post_w}", sim2, workers_data):
                                 w2_current = sum(1 for a in sim2.values() if isinstance(a, list) and w2_name in a)
@@ -3488,7 +3521,14 @@ class IterativeOptimizer:
                             except (AttributeError, TypeError) as e:
                                 logging.debug(f"Skipping 3-chain conflict check with incompatible date types: {e}")
                                 continue
-                            if diff_check == 0 or diff_check >= min_gap_w2:
+                            pair_gap_w2 = get_effective_min_gap(
+                                w2_data,
+                                gap_between_shifts,
+                                date=d_w,
+                                other_date=d_w2,
+                                gap_periods=chain_periods,
+                            )
+                            if diff_check == 0 or diff_check >= pair_gap_w2:
                                 continue
                             post_w2 = assigns_w2.index(w2_name)
                             shift_type_w2 = f"Post_{post_w2}"

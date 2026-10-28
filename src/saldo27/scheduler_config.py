@@ -125,6 +125,7 @@ class SchedulerConfig:
         """
         return {
             "gap_between_shifts": cls.DEFAULT_GAP_BETWEEN_SHIFTS,
+            "gap_periods": [],
             "max_consecutive_weekends": cls.DEFAULT_MAX_CONSECUTIVE_WEEKENDS,
             "num_shifts": cls.DEFAULT_NUM_SHIFTS,
             "max_improvement_loops": cls.DEFAULT_OPTIMIZATION_LOOPS,
@@ -159,6 +160,18 @@ class SchedulerConfig:
 
         if config.get("gap_between_shifts", 0) < 0:
             return False, "gap_between_shifts must be non-negative"
+
+        gap_periods = config.get("gap_periods") or []
+        if not isinstance(gap_periods, list):
+            return False, "gap_periods must be a list"
+        for period in gap_periods:
+            if not isinstance(period, dict):
+                return False, "each gap period must be an object"
+            try:
+                if int(period.get("gap", -1)) < 0:
+                    return False, "gap period gap must be non-negative"
+            except (TypeError, ValueError):
+                return False, "gap period gap must be an integer"
 
         if config.get("max_consecutive_weekends", 0) <= 0:
             return False, "max_consecutive_weekends must be positive"

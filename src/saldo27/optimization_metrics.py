@@ -358,9 +358,15 @@ class OptimizationMetrics:
                 assignments = sorted(scheduler.worker_assignments.get(worker_id, set()))
                 if len(assignments) < 2:
                     continue
-                min_days = get_effective_min_gap(worker, scheduler.gap_between_shifts)
-
+                gap_periods = getattr(scheduler, "gap_periods", None) or []
                 for i in range(1, len(assignments)):
+                    min_days = get_effective_min_gap(
+                        worker,
+                        scheduler.gap_between_shifts,
+                        date=assignments[i],
+                        other_date=assignments[i - 1],
+                        gap_periods=gap_periods,
+                    )
                     diff = (assignments[i] - assignments[i - 1]).days
                     if diff < min_days or (
                         diff in (7, 14) and assignments[i].weekday() == assignments[i - 1].weekday()

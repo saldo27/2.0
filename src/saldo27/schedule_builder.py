@@ -19,7 +19,7 @@ from saldo27.adaptive_iterations import AdaptiveIterationManager
 from saldo27.balance_validator import BalanceValidator
 from saldo27.constraint_checker import candidate_spacing_rejection
 from saldo27.prior_schedule_handler import get_effective_assignments
-from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
+from saldo27.utilities import gap_lookup_for_date, get_effective_min_gap, is_fixed_cadence
 
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
@@ -665,11 +665,23 @@ class ScheduleBuilder:
         ``assignments`` replaces the current-period dates (simulated or post-swap).
         Prior-period dates inside the 90-day window are always included.
         ``min_gap`` defaults to the worker's gap from ``get_effective_min_gap``.
+        A larger ``min_gap`` is a preferred floor and never undercuts the hard gap
+        of each pair, including a date-interval override.
         """
         worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
         if is_fixed_cadence(worker):
             return None  # cadence dates are fixed; availability rejects any other date
         configured_gap = self.gap_between_shifts
+        gap_periods = getattr(self.scheduler, "gap_periods", None) or []
+        preferred = min_gap
+        hard_lookup = gap_lookup_for_date(worker, date, configured_gap, gap_periods)
+
+        def gap_for_other(other_date: datetime) -> int:
+            hard = hard_lookup(other_date)
+            if preferred is None:
+                return hard
+            return max(preferred, hard)
+
         hard_floor = get_effective_min_gap(worker, configured_gap)
         if min_gap is None:
             min_gap = hard_floor
@@ -695,6 +707,7 @@ class ScheduleBuilder:
             min_gap=min_gap,
             date_is_mandatory=self._is_mandatory(worker_id, date),
             block_gap2_weekend_pairs=(hard_floor == 2),
+            gap_for_other=gap_for_other,
         )
 
     def _violates_7_14_pattern(self, worker_id, date, assignments=None):
@@ -1789,6 +1802,9 @@ class ScheduleBuilder:
             min_gap = get_effective_min_gap(
                 next((w for w in self.workers_data if w["id"] == worker_id), None),
                 self.gap_between_shifts,
+                date=date,
+                other_date=most_recent,
+                gap_periods=getattr(self.scheduler, "gap_periods", None) or [],
             )
 
             # Minimal LINEAR bonus: 10 points per day of gap

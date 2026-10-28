@@ -1,13 +1,13 @@
 # Imports
 import bisect
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from saldo27.prior_schedule_handler import get_effective_assignments
-from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
+from saldo27.utilities import gap_lookup_for_date, get_effective_min_gap, is_fixed_cadence
 
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
@@ -73,6 +73,7 @@ def candidate_spacing_rejection(
     min_gap: int,
     date_is_mandatory: bool,
     block_gap2_weekend_pairs: bool,
+    gap_for_other: Callable[[datetime], int] | None = None,
 ) -> SpacingRejection | None:
     """Accept or reject placing ``date`` beside ``existing_dates``.
 
@@ -82,30 +83,39 @@ def candidate_spacing_rejection(
 
     ``min_gap`` is the caller's threshold. Assignment uses the hard floor from
     ``get_effective_min_gap``. Scoring may pass a larger preferred gap.
-    Friday–Monday and 7/14 are blocked unless ``date_is_mandatory``. A gap-2
-    weekend pair is blocked only when ``block_gap2_weekend_pairs`` is set,
-    which callers set from the worker's hard floor (effective gap == 2).
+    ``gap_for_other``, when set, replaces that constant for each neighbour so a
+    date interval can demand a different gap. The gap-2 weekend bridge then
+    follows that pair's own floor (blocked only when it is exactly 2).
+    Friday–Monday and 7/14 are blocked unless ``date_is_mandatory``. Without
+    ``gap_for_other``, a gap-2 weekend pair is blocked only when
+    ``block_gap2_weekend_pairs`` is set.
     """
     for prev_date in existing_dates:
         if prev_date == date:
             continue
         days_between = abs((date - prev_date).days)
+        if gap_for_other is not None:
+            pair_gap = gap_for_other(prev_date)
+            block_bridge = pair_gap == 2
+        else:
+            pair_gap = min_gap
+            block_bridge = block_gap2_weekend_pairs
 
-        if days_between < min_gap:
-            return SpacingRejection("gap", prev_date, days_between, min_gap)
+        if days_between < pair_gap:
+            return SpacingRejection("gap", prev_date, days_between, pair_gap)
 
         if not date_is_mandatory and days_between == 3 and _is_friday_monday(prev_date, date):
-            return SpacingRejection("friday_monday", prev_date, days_between, min_gap)
+            return SpacingRejection("friday_monday", prev_date, days_between, pair_gap)
 
         if (
-            block_gap2_weekend_pairs
+            block_bridge
             and days_between == 2
             and (prev_date.weekday(), date.weekday()) in _GAP2_WEEKEND_PROHIBITED_PAIRS
         ):
-            return SpacingRejection("gap2_weekend", prev_date, days_between, min_gap)
+            return SpacingRejection("gap2_weekend", prev_date, days_between, pair_gap)
 
         if not date_is_mandatory and days_between in (7, 14) and date.weekday() == prev_date.weekday():
-            return SpacingRejection("pattern_714", prev_date, days_between, min_gap)
+            return SpacingRejection("pattern_714", prev_date, days_between, pair_gap)
 
     return None
 
@@ -293,7 +303,9 @@ class ConstraintChecker:
             return False  # Should not happen
         if is_fixed_cadence(worker):
             return True  # cadence dates are fixed; availability rejects any other date
-        min_required_days_between = get_effective_min_gap(worker, self.scheduler.gap_between_shifts)
+        default_gap = self.scheduler.gap_between_shifts
+        gap_periods = getattr(self.scheduler, "gap_periods", None) or []
+        min_required_days_between = get_effective_min_gap(worker, default_gap)
 
         assignments = (
             self.scheduler._get_effective_assignments(worker_id)
@@ -315,6 +327,7 @@ class ConstraintChecker:
             min_gap=min_required_days_between,
             date_is_mandatory=date_is_mandatory,
             block_gap2_weekend_pairs=(min_required_days_between == 2),
+            gap_for_other=gap_lookup_for_date(worker, date, default_gap, gap_periods),
         )
         if rejection is None:
             return True
@@ -785,7 +798,8 @@ class ConstraintChecker:
                 continue
 
             assigned_dates = sorted(worker_assignments[worker_id])
-            effective_gap = get_effective_min_gap(worker, self.scheduler.gap_between_shifts)
+            default_gap = self.scheduler.gap_between_shifts
+            gap_periods = getattr(self.scheduler, "gap_periods", None) or []
             # Cadence workers are outside spacing and Rosell limits; only exclusivity applies
             fixed_cadence = is_fixed_cadence(worker)
 
@@ -793,12 +807,15 @@ class ConstraintChecker:
                 for date1 in assigned_dates[:i]:
                     # Report the pair even when one side is mandatory. Repair keeps
                     # a pair only when both dates are mandatory.
+                    pair_gap = get_effective_min_gap(
+                        worker, default_gap, date=date2, other_date=date1, gap_periods=gap_periods
+                    )
                     rejection = candidate_spacing_rejection(
                         date2,
                         (date1,),
-                        min_gap=effective_gap,
+                        min_gap=pair_gap,
                         date_is_mandatory=False,
-                        block_gap2_weekend_pairs=(effective_gap == 2),
+                        block_gap2_weekend_pairs=(pair_gap == 2),
                     )
                     if rejection is None:
                         continue
@@ -809,7 +826,7 @@ class ConstraintChecker:
                             "date1": date1,
                             "date2": date2,
                             "days_between": rejection.days_between,
-                            "min_required": effective_gap,
+                            "min_required": pair_gap,
                         }
                     )
 

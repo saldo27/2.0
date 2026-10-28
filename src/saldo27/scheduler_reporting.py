@@ -235,6 +235,15 @@ class SchedulerReportingService:
                 "end_date": scheduler.end_date.strftime("%Y-%m-%d"),
                 "num_shifts": scheduler.num_shifts,
                 "gap_between_shifts": scheduler.gap_between_shifts,
+                "gap_periods": [
+                    {
+                        "start_date": period["start_date"].strftime("%Y-%m-%d"),
+                        "end_date": period["end_date"].strftime("%Y-%m-%d"),
+                        "gap": period["gap"],
+                    }
+                    for period in getattr(scheduler, "gap_periods", []) or []
+                    if isinstance(period, dict) and isinstance(period.get("start_date"), datetime)
+                ],
                 "max_consecutive_weekends": scheduler.max_consecutive_weekends,
             },
         }

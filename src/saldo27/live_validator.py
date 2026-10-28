@@ -11,7 +11,7 @@ from enum import Enum
 from saldo27.constraint_checker import candidate_spacing_rejection
 from saldo27.event_bus import EventType, get_event_bus
 from saldo27.prior_schedule_handler import get_effective_assignments
-from saldo27.utilities import get_effective_min_gap
+from saldo27.utilities import gap_lookup_for_date, get_effective_min_gap
 
 
 class ValidationSeverity(Enum):
@@ -424,7 +424,9 @@ class LiveValidator:
                 constraint_type="gap_constraint",
             )
 
-        min_required_days_between = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
+        default_gap = self.scheduler.gap_between_shifts
+        gap_periods = getattr(self.scheduler, "gap_periods", None) or []
+        min_required_days_between = get_effective_min_gap(worker_data, default_gap)
 
         shift_is_mandatory = False
         mandatory_str = worker_data.get("mandatory_days", "")
@@ -446,6 +448,7 @@ class LiveValidator:
             min_gap=min_required_days_between,
             date_is_mandatory=shift_is_mandatory,
             block_gap2_weekend_pairs=(min_required_days_between == 2),
+            gap_for_other=gap_lookup_for_date(worker_data, shift_date, default_gap, gap_periods),
         )
         if rejection is not None:
             other = rejection.other_date.strftime("%Y-%m-%d")
@@ -463,7 +466,7 @@ class LiveValidator:
             else:
                 message = (
                     f"Gap constraint violated: {rejection.days_between} days from {other} "
-                    f"(minimum: {min_required_days_between})"
+                    f"(minimum: {rejection.min_gap})"
                 )
             return ValidationResult(
                 is_valid=False,
@@ -792,7 +795,8 @@ class LiveValidator:
         for worker_id, assignments in self.scheduler.worker_assignments.items():
             assignments_list = sorted(assignments)
             worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
-            effective_gap = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
+            default_gap = self.scheduler.gap_between_shifts
+            gap_periods = getattr(self.scheduler, "gap_periods", None) or []
             existing = get_effective_assignments(
                 worker_id,
                 self.scheduler.worker_assignments,
@@ -805,12 +809,15 @@ class LiveValidator:
                 for earlier in existing:
                     if earlier >= later:
                         continue
+                    pair_gap = get_effective_min_gap(
+                        worker_data, default_gap, date=later, other_date=earlier, gap_periods=gap_periods
+                    )
                     rejection = candidate_spacing_rejection(
                         later,
                         (earlier,),
-                        min_gap=effective_gap,
+                        min_gap=pair_gap,
                         date_is_mandatory=False,
-                        block_gap2_weekend_pairs=(effective_gap == 2),
+                        block_gap2_weekend_pairs=(pair_gap == 2),
                     )
                     if rejection is None:
                         continue
@@ -820,7 +827,7 @@ class LiveValidator:
                             conflict_type="gap_violation",
                             description=(
                                 f"Worker {worker_id} fails {rejection.reason}{prior_note} "
-                                f"({rejection.days_between} days, minimum {effective_gap})"
+                                f"({rejection.days_between} days, minimum {pair_gap})"
                             ),
                             severity=ValidationSeverity.ERROR,
                             workers_involved=[worker_id],
@@ -892,7 +899,13 @@ class LiveValidator:
         if worker_assignments:
             last_assignment = max(worker_assignments)
             days_since_last = (shift_date - last_assignment).days
-            effective_priority_gap = get_effective_min_gap(worker_data, self.scheduler.gap_between_shifts)
+            effective_priority_gap = get_effective_min_gap(
+                worker_data,
+                self.scheduler.gap_between_shifts,
+                date=shift_date,
+                other_date=last_assignment,
+                gap_periods=getattr(self.scheduler, "gap_periods", None) or [],
+            )
             if days_since_last > effective_priority_gap:
                 priority += 0.3
         else:

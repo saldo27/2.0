@@ -18,7 +18,7 @@ from saldo27 import tolerance_policy
 from saldo27.constraint_checker import MAX_CONSECUTIVE_LAST_POSTS, candidate_spacing_rejection
 from saldo27.infrastructure.optional_engines import ortools_available
 from saldo27.prior_schedule_handler import get_effective_assignments
-from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
+from saldo27.utilities import get_effective_min_gap, is_fixed_cadence, widest_base_gap
 
 if TYPE_CHECKING:
     from saldo27.scheduler import Scheduler
@@ -198,8 +198,8 @@ class HoleFillEngine:
                 model.add(sum(x[a_wi, si] for si in slot_indices) + sum(x[b_wi, si] for si in slot_indices) <= 1)
 
         gap = self.scheduler.gap_between_shifts
-        worker_min_gap = {wid: get_effective_min_gap(worker_by_id[wid], gap) for wid in worker_ids}
-        max_window = max([14, *worker_min_gap.values()]) if worker_min_gap else 14
+        gap_periods = getattr(self.scheduler, "gap_periods", None) or []
+        max_window = max(14, widest_base_gap(gap, gap_periods) + 1)
         candidate_pairs: list[tuple[int, int]] = []
         for idx_a in range(n_slots):
             date_a = slots[idx_a][0]
@@ -213,7 +213,6 @@ class HoleFillEngine:
             worker = worker_by_id[wid]
             if is_fixed_cadence(worker):
                 continue
-            min_gap = worker_min_gap[wid]
             pinned = mandatory[wid]
             for idx_a, idx_b in candidate_pairs:
                 date_a, date_b = slots[idx_a][0], slots[idx_b][0]
@@ -221,13 +220,14 @@ class HoleFillEngine:
                     continue
                 if slots[idx_a][2] == wid and slots[idx_b][2] == wid:
                     continue
+                pair_gap = get_effective_min_gap(worker, gap, date=date_b, other_date=date_a, gap_periods=gap_periods)
                 if (
                     candidate_spacing_rejection(
                         date_b,
                         (date_a,),
-                        min_gap=min_gap,
+                        min_gap=pair_gap,
                         date_is_mandatory=date_b in pinned,
-                        block_gap2_weekend_pairs=(min_gap == 2),
+                        block_gap2_weekend_pairs=(pair_gap == 2),
                     )
                     is not None
                 ):
@@ -240,7 +240,6 @@ class HoleFillEngine:
         for wi, wid in enumerate(worker_ids):
             if is_fixed_cadence(worker_by_id[wid]):
                 continue
-            min_gap = worker_min_gap[wid]
             prior_dates = sorted(
                 d
                 for d in getattr(self.scheduler, "prior_assignments", {}).get(wid, set())
@@ -253,13 +252,16 @@ class HoleFillEngine:
                     date_s = slots[si][0]
                     if date_s in mandatory[wid] or slots[si][2] == wid:
                         continue
+                    pair_gap = get_effective_min_gap(
+                        worker_by_id[wid], gap, date=date_s, other_date=prior_date, gap_periods=gap_periods
+                    )
                     if (
                         candidate_spacing_rejection(
                             date_s,
                             (prior_date,),
-                            min_gap=min_gap,
+                            min_gap=pair_gap,
                             date_is_mandatory=False,
-                            block_gap2_weekend_pairs=(min_gap == 2),
+                            block_gap2_weekend_pairs=(pair_gap == 2),
                         )
                         is not None
                     ):

@@ -42,6 +42,7 @@ from saldo27.application.use_cases import (
 from saldo27.license_manager import license_manager
 from saldo27.scheduler import Scheduler
 from saldo27.scheduler_config import SchedulerConfig, setup_logging
+from saldo27.utilities import format_gap_periods_text, normalize_gap_periods, parse_gap_periods_text
 
 # Suprimir debug output de librerías externas
 logging.getLogger("pdfplumber").setLevel(logging.WARNING)
@@ -420,6 +421,16 @@ def load_schedule_from_json(uploaded_file):
 
         if "variable_shifts" in data:
             config["variable_shifts"] = data["variable_shifts"]
+
+        if "gap_between_shifts" in data:
+            try:
+                config["gap_between_shifts"] = int(data["gap_between_shifts"])
+            except (TypeError, ValueError):
+                pass
+
+        if "gap_periods" in data:
+            config["gap_periods"] = normalize_gap_periods(data["gap_periods"])
+            st.session_state.gap_periods_text = format_gap_periods_text(config["gap_periods"])
 
         # Commit validated data to session_state
         st.session_state.workers_data = new_workers_data
@@ -1475,7 +1486,8 @@ with st.sidebar:
             help=(
                 "Diferencia mínima en días entre dos guardias del mismo médico. "
                 "Con 4, lunes→viernes es válido y lunes→jueves no. "
-                "Los médicos con menos del 60 % de jornada usan este valor + 1."
+                "Los médicos con menos del 60 % de jornada usan este valor + 1. "
+                "Un intervalo de fechas puede usar otro mínimo."
             ),
         )
         st.session_state.config["gap_between_shifts"] = gap_between_shifts
@@ -1489,6 +1501,30 @@ with st.sidebar:
             help="Número máximo de fines de semana consecutivos que puede trabajar un trabajador",
         )
         st.session_state.config["max_consecutive_weekends"] = max_consecutive_weekends
+
+    with st.expander("📅 Períodos con días mínimos distintos"):
+        st.caption(
+            "Fuera de estos intervalos se usa el mínimo global. "
+            "Si las dos guardias caen en mínimos distintos, se exige el mayor. "
+            "Si dos intervalos se solapan, vale el de la línea de más abajo. "
+            "Quien tiene menos del 60 % de jornada suma un día a ese mínimo."
+        )
+        if "gap_periods_text" not in st.session_state:
+            st.session_state.gap_periods_text = format_gap_periods_text(st.session_state.config.get("gap_periods", []))
+        st.text_area(
+            "Formato: DD-MM-YYYY / DD-MM-YYYY: días",
+            height=100,
+            key="gap_periods_text",
+            help="Un intervalo por línea. También vale un solo día. Ejemplo: 01-08-2026 / 31-08-2026: 2",
+        )
+        gap_periods, gap_period_warnings = parse_gap_periods_text(st.session_state.gap_periods_text)
+        for warning in gap_period_warnings:
+            st.warning(warning)
+        if gap_periods:
+            count = len(gap_periods)
+            noun = "intervalo" if count == 1 else "intervalos"
+            st.success(f"✅ {count} {noun} con mínimo propio")
+        st.session_state.config["gap_periods"] = gap_periods
 
     # Configuración adicional de fines de semana
     with st.expander("⚙️ Configuración Avanzada de Fines de Semana"):
@@ -1563,7 +1599,7 @@ with st.sidebar:
         - ✅ Incompatibilidades entre médicos
         - ✅ Patrón 7/14 días (mismo día de semana)
         - ✅ Patrón viernes–lunes
-        - ✅ Días mínimos entre guardias configurables
+        - ✅ Días mínimos entre guardias configurables, también por intervalo de fechas
         - ✅ Puente fin de semana con gap = 2
         - ✅ Fines de semana consecutivos máximos
         - ✅ Balance proporcional de fines de semana
@@ -1576,7 +1612,7 @@ with st.sidebar:
         - 📅 Período de reparto (fecha inicial/final)
         - 🎉 Festivos
         - 🔢 Guardias por día (por defecto y variables)
-        - ⏳ Gap entre guardias
+        - ⏳ Gap entre guardias (global y por intervalo)
         - 📆 Fines de semana consecutivos
         - 📊 Tolerancia general y de fines de semana
         """)
@@ -2797,7 +2833,11 @@ with tab4:
             {
                 "key": "gap_minimo",
                 "title": "⏳ Días mínimos entre guardias",
-                "hint": "Gap mínimo configurado (y el efectivo por médico a tiempo parcial).",
+                "hint": (
+                    "Mínimo global, o el del intervalo de cada fecha. "
+                    "Si las dos fechas piden mínimos distintos, se exige el mayor. "
+                    "Por debajo del 60 % de jornada se suma un día."
+                ),
                 "recommendation": "Aumente la plantilla o reduzca el gap si las violaciones son inevitables.",
             },
             {

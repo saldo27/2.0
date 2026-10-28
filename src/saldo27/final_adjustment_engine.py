@@ -1338,7 +1338,7 @@ class ORToolsPhase:
 
         from saldo27.constraint_checker import MAX_CONSECUTIVE_LAST_POSTS, candidate_spacing_rejection
         from saldo27.prior_schedule_handler import get_effective_assignments
-        from saldo27.utilities import get_effective_min_gap
+        from saldo27.utilities import get_effective_min_gap, widest_base_gap
 
         def _build_model(
             *, include_hints: bool
@@ -1443,11 +1443,11 @@ class ORToolsPhase:
             # window are computed ONCE for all workers (O(n_slots * avg_window))
             # instead of re-scanning every (idx_a, idx_b) pair for each worker
             # (which was O(n_workers * n_slots^2) and dominated model-build time
-            # on large calendars).  Per-worker min_gap is applied when the
-            # constraint is added, using the precomputed pairs.
+            # on large calendars).  Each pair uses the stricter gap of its two
+            # dates, including date-interval overrides, when the constraint is added.
             gap = self.scheduler.gap_between_shifts
-            worker_min_gap = {wid: get_effective_min_gap(worker_data_by_id[wid], gap) for wid in worker_ids}
-            max_window = max([14, *worker_min_gap.values()]) if worker_min_gap else 14
+            gap_periods = getattr(self.scheduler, "gap_periods", None) or []
+            max_window = max(14, widest_base_gap(gap, gap_periods) + 1)
 
             candidate_pairs: list[tuple[int, int]] = []
             # slots is already sorted by date (step 1 iterates sorted(self.schedule.items()))
@@ -1461,17 +1461,20 @@ class ORToolsPhase:
                     candidate_pairs.append((idx_a, idx_b))
 
             for wi, wid in enumerate(worker_ids):
-                min_gap = worker_min_gap[wid]
+                worker = worker_data_by_id[wid]
                 for idx_a, idx_b in candidate_pairs:
                     date_a = slots[idx_a][0]
                     date_b = slots[idx_b][0]
+                    pair_gap = get_effective_min_gap(
+                        worker, gap, date=date_b, other_date=date_a, gap_periods=gap_periods
+                    )
                     if (
                         candidate_spacing_rejection(
                             date_b,
                             (date_a,),
-                            min_gap=min_gap,
+                            min_gap=pair_gap,
                             date_is_mandatory=False,
-                            block_gap2_weekend_pairs=(min_gap == 2),
+                            block_gap2_weekend_pairs=(pair_gap == 2),
                         )
                         is not None
                     ):
@@ -1494,7 +1497,7 @@ class ORToolsPhase:
             slot_dates = [s[0] for s in slots]
             cutoff = self.scheduler.start_date - timedelta(days=90)
             for wi, wid in enumerate(worker_ids):
-                min_gap = worker_min_gap[wid]
+                worker = worker_data_by_id[wid]
                 prior_dates = sorted(
                     d
                     for d in getattr(self.scheduler, "prior_assignments", {}).get(wid, set())
@@ -1505,13 +1508,16 @@ class ORToolsPhase:
                     hi = bisect.bisect_right(slot_dates, prior_date + timedelta(days=max_window))
                     for si in range(lo, hi):
                         date_s = slots[si][0]
+                        pair_gap = get_effective_min_gap(
+                            worker, gap, date=date_s, other_date=prior_date, gap_periods=gap_periods
+                        )
                         if (
                             candidate_spacing_rejection(
                                 date_s,
                                 (prior_date,),
-                                min_gap=min_gap,
+                                min_gap=pair_gap,
                                 date_is_mandatory=False,
-                                block_gap2_weekend_pairs=(min_gap == 2),
+                                block_gap2_weekend_pairs=(pair_gap == 2),
                             )
                             is not None
                         ):
