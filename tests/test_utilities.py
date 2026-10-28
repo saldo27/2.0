@@ -5,7 +5,14 @@ from datetime import datetime
 import pytest
 
 from saldo27.constraint_checker import candidate_spacing_rejection
-from saldo27.utilities import DateTimeUtils, get_effective_min_gap, numeric_sort_key
+from saldo27.utilities import (
+    DateTimeUtils,
+    format_gap_periods_text,
+    get_effective_min_gap,
+    normalize_gap_periods,
+    numeric_sort_key,
+    parse_gap_periods_text,
+)
 
 # ── DateTimeUtils construction ──────────────────────────────────────
 
@@ -205,3 +212,74 @@ def test_gap_four_allows_monday_friday_but_not_monday_thursday():
     assert candidate_spacing_rejection(datetime(2026, 3, 6), [monday], **kwargs) is None
     rejection = candidate_spacing_rejection(datetime(2026, 3, 5), [monday], **kwargs)
     assert rejection is not None and rejection.reason == "gap"
+
+
+def test_gap_periods_use_the_stricter_date_and_keep_the_part_time_extra_day():
+    periods = [
+        {"start_date": "2026-03-01", "end_date": "2026-03-10", "gap": 2},
+        {"start_date": datetime(2026, 3, 25), "end_date": datetime(2026, 3, 20), "gap": 5},
+    ]
+    normalized = normalize_gap_periods(periods)
+    assert normalized[1]["start_date"] == datetime(2026, 3, 20)
+    assert normalized[1]["end_date"] == datetime(2026, 3, 25)
+
+    full_time = {"work_percentage": 100}
+    inside = datetime(2026, 3, 2)
+    also_inside = datetime(2026, 3, 5)
+    outside = datetime(2026, 3, 16)
+    assert get_effective_min_gap(full_time, 4, date=inside, other_date=also_inside, gap_periods=normalized) == 2
+    assert (
+        get_effective_min_gap(full_time, 4, date=outside, other_date=datetime(2026, 3, 19), gap_periods=normalized) == 4
+    )
+    assert get_effective_min_gap(full_time, 4, date=inside, other_date=outside, gap_periods=normalized) == 4
+
+    part_time = {"work_percentage": 50}
+    assert get_effective_min_gap(part_time, 4, date=inside, other_date=also_inside, gap_periods=normalized) == 3
+
+    # A later overlapping period replaces the earlier one.
+    overlapping = [
+        *normalized,
+        {"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 10), "gap": 6},
+    ]
+    assert get_effective_min_gap(full_time, 4, date=inside, other_date=also_inside, gap_periods=overlapping) == 6
+
+
+def test_parse_gap_periods_text_round_trips_and_reports_bad_lines():
+    text = "01-08-2026 / 31-08-2026: 2\n15-12-2026: 1\nno-es-una-fecha: 3\n01-01-2026 / 02-01-2026: 9"
+    periods, warnings = parse_gap_periods_text(text)
+    assert len(periods) == 2
+    assert periods[0]["gap"] == 2
+    assert periods[1]["start_date"] == datetime(2026, 12, 15)
+    assert len(warnings) == 2
+    assert parse_gap_periods_text(format_gap_periods_text(periods))[0] == periods
+
+
+def test_gap_for_other_applies_each_neighbours_threshold():
+    monday = datetime(2026, 3, 2)
+    thursday = datetime(2026, 3, 5)
+
+    def lookup(other):
+        return 4 if other == monday else 2
+
+    rejection = candidate_spacing_rejection(
+        thursday,
+        [monday],
+        min_gap=2,
+        date_is_mandatory=False,
+        block_gap2_weekend_pairs=False,
+        gap_for_other=lookup,
+    )
+    assert rejection is not None
+    assert rejection.reason == "gap"
+    assert rejection.min_gap == 4
+    assert (
+        candidate_spacing_rejection(
+            thursday,
+            [monday],
+            min_gap=4,
+            date_is_mandatory=False,
+            block_gap2_weekend_pairs=False,
+            gap_for_other=lambda _other: 2,
+        )
+        is None
+    )

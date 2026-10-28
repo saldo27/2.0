@@ -55,6 +55,60 @@ def test_spacing_rejection_covers_gap_patterns_and_mandatory_exemption():
     )
 
 
+def _gap_period_scheduler(workers, periods):
+    return Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 31),
+            "num_shifts": 2,
+            "workers_data": workers,
+            "holidays": [],
+            "variable_shifts": [],
+            "gap_between_shifts": 4,
+            "gap_periods": periods,
+            "max_consecutive_weekends": 3,
+        }
+    )
+
+
+def test_gap_periods_relax_inside_the_interval_and_keep_the_stricter_side(sample_workers_data):
+    """Default gap 4. 1–10 March allows 2 days. A pair that leaves the interval still needs 4."""
+    scheduler = _gap_period_scheduler(
+        sample_workers_data,
+        [{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 10), "gap": 2}],
+    )
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+    monday = datetime(2026, 3, 2)
+    thursday = datetime(2026, 3, 5)
+    later_monday = datetime(2026, 3, 16)
+    later_thursday = datetime(2026, 3, 19)
+    bridge_saturday = datetime(2026, 3, 7)
+
+    def _place(date):
+        for day_slots in scheduler.schedule.values():
+            for index, worker_id in enumerate(day_slots):
+                if worker_id == "DOC001":
+                    day_slots[index] = None
+        scheduler.schedule[date][0] = "DOC001"
+        scheduler._synchronize_tracking_data()
+
+    _place(monday)
+    assert scheduler.constraint_checker._check_gap_constraint("DOC001", thursday) is True
+    assert scheduler.schedule_builder._spacing_rejection("DOC001", thursday) is None
+
+    # Thu–Sat is exactly 2 days and crosses the weekend, so the gap-2 bridge rule still applies.
+    _place(thursday)
+    bridge = scheduler.schedule_builder._spacing_rejection("DOC001", bridge_saturday)
+    assert bridge is not None and bridge.reason == "gap2_weekend"
+
+    _place(later_monday)
+    assert scheduler.constraint_checker._check_gap_constraint("DOC001", later_thursday) is False
+
+    # One date inside the loose interval and one outside: the outside date's gap of 4 wins.
+    _place(datetime(2026, 3, 10))
+    assert scheduler.constraint_checker._check_gap_constraint("DOC001", datetime(2026, 3, 13)) is False
+
+
 def test_builder_and_checker_share_the_friday_monday_decision(sample_workers_data):
     scheduler = Scheduler(
         {
