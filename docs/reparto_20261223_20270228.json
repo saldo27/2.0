@@ -1,0 +1,1459 @@
+{
+  "metadata": {
+    "generated_at": "2026-10-28 17:39:05",
+    "period_start": "2026-12-23",
+    "period_end": "2027-02-28",
+    "total_days": 68,
+    "num_shifts_per_day": 4,
+    "total_workers": 29
+  },
+  "schedule": {
+    "2026-12-23": [
+      "MARIA",
+      "M.JOSE",
+      "CHEMA",
+      "DAVID"
+    ],
+    "2026-12-24": [
+      "SALVA",
+      "MARINA",
+      "ANGEL",
+      "LOLA"
+    ],
+    "2026-12-25": [
+      "JULIA",
+      "VALLE",
+      "KIKO",
+      "BEA"
+    ],
+    "2026-12-26": [
+      "PAULA",
+      "JESUS",
+      "RICARDO",
+      "JOSE"
+    ],
+    "2026-12-27": [
+      "M.JOSE",
+      "DAVID",
+      "CHEMA",
+      "MARIA"
+    ],
+    "2026-12-28": [
+      "SALVA",
+      null,
+      null,
+      null
+    ],
+    "2026-12-29": [
+      "VALLE",
+      "PAULA",
+      "LOLA",
+      "JULIA"
+    ],
+    "2026-12-30": [
+      "KIKO",
+      "BEA",
+      "AGUEDA",
+      "ANGEL"
+    ],
+    "2026-12-31": [
+      "SANTI",
+      "JOSE",
+      "DAVID",
+      "JESUS"
+    ],
+    "2027-01-01": [
+      "RICARDO",
+      "ROBERTO",
+      "LAURA",
+      "M.CARMEN"
+    ],
+    "2027-01-02": [
+      "ANGELA",
+      "PABLO",
+      "MARIA",
+      "CAROL"
+    ],
+    "2027-01-03": [
+      "PAULA",
+      "ELENA",
+      "SANTI",
+      "MANUEL"
+    ],
+    "2027-01-04": [
+      "JESUS",
+      "LUIS H",
+      "KIKO",
+      "DAVID"
+    ],
+    "2027-01-05": [
+      "ANGELA",
+      "MARINA",
+      "MAR",
+      "LUIS R"
+    ],
+    "2027-01-06": [
+      "PABLO",
+      "ELENA",
+      "MANUEL",
+      "ROBERTO"
+    ],
+    "2027-01-07": [
+      "CAROL",
+      "LAURA",
+      "RICARDO",
+      "PAULA"
+    ],
+    "2027-01-08": [
+      "JESUS",
+      "DAVID",
+      "SANTI",
+      "ANGELA"
+    ],
+    "2027-01-09": [
+      "LUIS H",
+      "M.CARMEN",
+      "KIKO",
+      null
+    ],
+    "2027-01-10": [
+      "ROBERTO",
+      "LOLA",
+      "BEA",
+      "SALVA"
+    ],
+    "2027-01-11": [
+      "ANGEL",
+      "PAULA",
+      "MAR",
+      "MARINA"
+    ],
+    "2027-01-12": [
+      "AGUEDA",
+      "SANTI",
+      "MARIA",
+      "MANUEL"
+    ],
+    "2027-01-13": [
+      "JULIA",
+      "RICARDO",
+      "LAURA",
+      "DAVID"
+    ],
+    "2027-01-14": [
+      "M.CARMEN",
+      "ANGELA",
+      "CHEMA",
+      "LUIS H"
+    ],
+    "2027-01-15": [
+      "KIKO",
+      "SALVA",
+      "PAULA",
+      "PABLO"
+    ],
+    "2027-01-16": [
+      "MAR",
+      "SANTI",
+      "MANUEL",
+      "LUIS R"
+    ],
+    "2027-01-17": [
+      "JOSE",
+      "ANGEL",
+      "LAURA",
+      "MARINA"
+    ],
+    "2027-01-18": [
+      "CHEMA",
+      "BEA",
+      "M.CARMEN",
+      "ELENA"
+    ],
+    "2027-01-19": [
+      "KIKO",
+      "SALVA",
+      "PABLO",
+      "ROBERTO"
+    ],
+    "2027-01-20": [
+      "VALLE",
+      "JESUS",
+      "LUIS H",
+      "LUIS R"
+    ],
+    "2027-01-21": [
+      "MANUEL",
+      "SANTI",
+      "DAVID",
+      "JULIA"
+    ],
+    "2027-01-22": [
+      "CHEMA",
+      "CAROL",
+      "BEA",
+      "LOLA"
+    ],
+    "2027-01-23": [
+      "MARINA",
+      "ROBERTO",
+      "PABLO",
+      "AGUEDA"
+    ],
+    "2027-01-24": [
+      "MAR",
+      "ANGELA",
+      "VALLE",
+      "LUIS H"
+    ],
+    "2027-01-25": [
+      "KIKO",
+      "JESUS",
+      "MANUEL",
+      "JOSE"
+    ],
+    "2027-01-26": [
+      "ELENA",
+      "DAVID",
+      "LOLA",
+      "BEA"
+    ],
+    "2027-01-27": [
+      "MARIA",
+      "SANTI",
+      "ROBERTO",
+      "PABLO"
+    ],
+    "2027-01-28": [
+      "PAULA",
+      "MAR",
+      "VALLE",
+      "M.JOSE"
+    ],
+    "2027-01-29": [
+      "RICARDO",
+      "MARINA",
+      "ANGELA",
+      "LAURA"
+    ],
+    "2027-01-30": [
+      "LOLA",
+      "JULIA",
+      "JOSE",
+      "ELENA"
+    ],
+    "2027-01-31": [
+      "DAVID",
+      "CAROL",
+      "KIKO",
+      "JESUS"
+    ],
+    "2027-02-01": [
+      "AGUEDA",
+      "VALLE",
+      "ROBERTO",
+      "LUIS R"
+    ],
+    "2027-02-02": [
+      "LUIS H",
+      "CHEMA",
+      "PAULA",
+      "MAR"
+    ],
+    "2027-02-03": [
+      "LOLA",
+      "JULIA",
+      "RICARDO",
+      "JOSE"
+    ],
+    "2027-02-04": [
+      "CAROL",
+      "KIKO",
+      "MARINA",
+      "SALVA"
+    ],
+    "2027-02-05": [
+      "SANTI",
+      "MANUEL",
+      "DAVID",
+      "ROBERTO"
+    ],
+    "2027-02-06": [
+      "CHEMA",
+      "LAURA",
+      "JESUS",
+      "LUIS H"
+    ],
+    "2027-02-07": [
+      "LOLA",
+      "JULIA",
+      "RICARDO",
+      "PAULA"
+    ],
+    "2027-02-08": [
+      "PABLO",
+      "MAR",
+      "ELENA",
+      "CAROL"
+    ],
+    "2027-02-09": [
+      "ANGELA",
+      "M.CARMEN",
+      "M.JOSE",
+      "MANUEL"
+    ],
+    "2027-02-10": [
+      "BEA",
+      "CHEMA",
+      "ANGEL",
+      "MARINA"
+    ],
+    "2027-02-11": [
+      "ROBERTO",
+      "LOLA",
+      "SANTI",
+      "LUIS R"
+    ],
+    "2027-02-12": [
+      "LUIS H",
+      "JULIA",
+      "CAROL",
+      "PABLO"
+    ],
+    "2027-02-13": [
+      "VALLE",
+      "MANUEL",
+      "PAULA",
+      "ANGELA"
+    ],
+    "2027-02-14": [
+      "CHEMA",
+      "BEA",
+      "SALVA",
+      "MARIA"
+    ],
+    "2027-02-15": [
+      "ANGEL",
+      "LOLA",
+      "JOSE",
+      "JESUS"
+    ],
+    "2027-02-16": [
+      "ELENA",
+      "RICARDO",
+      "MARINA",
+      "DAVID"
+    ],
+    "2027-02-17": [
+      "SANTI",
+      "AGUEDA",
+      "LUIS H",
+      "M.CARMEN"
+    ],
+    "2027-02-18": [
+      "BEA",
+      "CHEMA",
+      "ANGELA",
+      "JULIA"
+    ],
+    "2027-02-19": [
+      "JOSE",
+      "KIKO",
+      "JESUS",
+      "LUIS R"
+    ],
+    "2027-02-20": [
+      "DAVID",
+      "RICARDO",
+      "ELENA",
+      "LOLA"
+    ],
+    "2027-02-21": [
+      "LAURA",
+      "VALLE",
+      "MANUEL",
+      "MAR"
+    ],
+    "2027-02-22": [
+      "MARINA",
+      "MARIA",
+      "JULIA",
+      "BEA"
+    ],
+    "2027-02-23": [
+      "JOSE",
+      "ROBERTO",
+      "SALVA",
+      "CAROL"
+    ],
+    "2027-02-24": [
+      "DAVID",
+      "RICARDO",
+      "PABLO",
+      "ANGELA"
+    ],
+    "2027-02-25": [
+      "JESUS",
+      "LUIS H",
+      "VALLE",
+      "LAURA"
+    ],
+    "2027-02-26": [
+      "M.CARMEN",
+      "MAR",
+      "PAULA",
+      "ANGEL"
+    ],
+    "2027-02-27": [
+      "JOSE",
+      "KIKO",
+      "BEA",
+      "AGUEDA"
+    ],
+    "2027-02-28": [
+      "SANTI",
+      "PABLO",
+      "MARINA",
+      "M.JOSE"
+    ]
+  },
+  "worker_assignments": {
+    "AGUEDA": [
+      "2026-12-30",
+      "2027-01-12",
+      "2027-01-23",
+      "2027-02-01",
+      "2027-02-17",
+      "2027-02-27"
+    ],
+    "ANGEL": [
+      "2026-12-24",
+      "2026-12-30",
+      "2027-01-11",
+      "2027-01-17",
+      "2027-02-10",
+      "2027-02-15",
+      "2027-02-26"
+    ],
+    "ANGELA": [
+      "2027-01-02",
+      "2027-01-05",
+      "2027-01-08",
+      "2027-01-14",
+      "2027-01-24",
+      "2027-01-29",
+      "2027-02-09",
+      "2027-02-13",
+      "2027-02-18",
+      "2027-02-24"
+    ],
+    "BEA": [
+      "2026-12-25",
+      "2026-12-30",
+      "2027-01-10",
+      "2027-01-18",
+      "2027-01-22",
+      "2027-01-26",
+      "2027-02-10",
+      "2027-02-14",
+      "2027-02-18",
+      "2027-02-22",
+      "2027-02-27"
+    ],
+    "CAROL": [
+      "2027-01-02",
+      "2027-01-07",
+      "2027-01-22",
+      "2027-01-31",
+      "2027-02-04",
+      "2027-02-08",
+      "2027-02-12",
+      "2027-02-23"
+    ],
+    "CHEMA": [
+      "2026-12-23",
+      "2026-12-27",
+      "2027-01-14",
+      "2027-01-18",
+      "2027-01-22",
+      "2027-02-02",
+      "2027-02-06",
+      "2027-02-10",
+      "2027-02-14",
+      "2027-02-18"
+    ],
+    "DAVID": [
+      "2026-12-23",
+      "2026-12-27",
+      "2026-12-31",
+      "2027-01-04",
+      "2027-01-08",
+      "2027-01-13",
+      "2027-01-21",
+      "2027-01-26",
+      "2027-01-31",
+      "2027-02-05",
+      "2027-02-16",
+      "2027-02-20",
+      "2027-02-24"
+    ],
+    "ELENA": [
+      "2027-01-03",
+      "2027-01-06",
+      "2027-01-18",
+      "2027-01-26",
+      "2027-01-30",
+      "2027-02-08",
+      "2027-02-16",
+      "2027-02-20"
+    ],
+    "JESUS": [
+      "2026-12-26",
+      "2026-12-31",
+      "2027-01-04",
+      "2027-01-08",
+      "2027-01-20",
+      "2027-01-25",
+      "2027-01-31",
+      "2027-02-06",
+      "2027-02-15",
+      "2027-02-19",
+      "2027-02-25"
+    ],
+    "JOSE": [
+      "2026-12-26",
+      "2026-12-31",
+      "2027-01-17",
+      "2027-01-25",
+      "2027-01-30",
+      "2027-02-03",
+      "2027-02-15",
+      "2027-02-19",
+      "2027-02-23",
+      "2027-02-27"
+    ],
+    "JULIA": [
+      "2026-12-25",
+      "2026-12-29",
+      "2027-01-13",
+      "2027-01-21",
+      "2027-01-30",
+      "2027-02-03",
+      "2027-02-07",
+      "2027-02-12",
+      "2027-02-18",
+      "2027-02-22"
+    ],
+    "KIKO": [
+      "2026-12-25",
+      "2026-12-30",
+      "2027-01-04",
+      "2027-01-09",
+      "2027-01-15",
+      "2027-01-19",
+      "2027-01-25",
+      "2027-01-31",
+      "2027-02-04",
+      "2027-02-19",
+      "2027-02-27"
+    ],
+    "LAURA": [
+      "2027-01-01",
+      "2027-01-07",
+      "2027-01-13",
+      "2027-01-17",
+      "2027-01-29",
+      "2027-02-06",
+      "2027-02-21",
+      "2027-02-25"
+    ],
+    "LOLA": [
+      "2026-12-24",
+      "2026-12-29",
+      "2027-01-10",
+      "2027-01-22",
+      "2027-01-26",
+      "2027-01-30",
+      "2027-02-03",
+      "2027-02-07",
+      "2027-02-11",
+      "2027-02-15",
+      "2027-02-20"
+    ],
+    "LUIS H": [
+      "2027-01-04",
+      "2027-01-09",
+      "2027-01-14",
+      "2027-01-20",
+      "2027-01-24",
+      "2027-02-02",
+      "2027-02-06",
+      "2027-02-12",
+      "2027-02-17",
+      "2027-02-25"
+    ],
+    "LUIS R": [
+      "2027-01-05",
+      "2027-01-16",
+      "2027-01-20",
+      "2027-02-01",
+      "2027-02-11",
+      "2027-02-19"
+    ],
+    "M.CARMEN": [
+      "2027-01-01",
+      "2027-01-09",
+      "2027-01-14",
+      "2027-01-18",
+      "2027-02-09",
+      "2027-02-17",
+      "2027-02-26"
+    ],
+    "M.JOSE": [
+      "2026-12-23",
+      "2026-12-27",
+      "2027-01-28",
+      "2027-02-09",
+      "2027-02-28"
+    ],
+    "MANUEL": [
+      "2027-01-03",
+      "2027-01-06",
+      "2027-01-12",
+      "2027-01-16",
+      "2027-01-21",
+      "2027-01-25",
+      "2027-02-05",
+      "2027-02-09",
+      "2027-02-13",
+      "2027-02-21"
+    ],
+    "MAR": [
+      "2027-01-05",
+      "2027-01-11",
+      "2027-01-16",
+      "2027-01-24",
+      "2027-01-28",
+      "2027-02-02",
+      "2027-02-08",
+      "2027-02-21",
+      "2027-02-26"
+    ],
+    "MARIA": [
+      "2026-12-23",
+      "2026-12-27",
+      "2027-01-02",
+      "2027-01-12",
+      "2027-01-27",
+      "2027-02-14",
+      "2027-02-22"
+    ],
+    "MARINA": [
+      "2026-12-24",
+      "2027-01-05",
+      "2027-01-11",
+      "2027-01-17",
+      "2027-01-23",
+      "2027-01-29",
+      "2027-02-04",
+      "2027-02-10",
+      "2027-02-16",
+      "2027-02-22",
+      "2027-02-28"
+    ],
+    "PABLO": [
+      "2027-01-02",
+      "2027-01-06",
+      "2027-01-15",
+      "2027-01-19",
+      "2027-01-23",
+      "2027-01-27",
+      "2027-02-08",
+      "2027-02-12",
+      "2027-02-24",
+      "2027-02-28"
+    ],
+    "PAULA": [
+      "2026-12-26",
+      "2026-12-29",
+      "2027-01-03",
+      "2027-01-07",
+      "2027-01-11",
+      "2027-01-15",
+      "2027-01-28",
+      "2027-02-02",
+      "2027-02-07",
+      "2027-02-13",
+      "2027-02-26"
+    ],
+    "RICARDO": [
+      "2026-12-26",
+      "2027-01-01",
+      "2027-01-07",
+      "2027-01-13",
+      "2027-01-29",
+      "2027-02-03",
+      "2027-02-07",
+      "2027-02-16",
+      "2027-02-20",
+      "2027-02-24"
+    ],
+    "ROBERTO": [
+      "2027-01-01",
+      "2027-01-06",
+      "2027-01-10",
+      "2027-01-19",
+      "2027-01-23",
+      "2027-01-27",
+      "2027-02-01",
+      "2027-02-05",
+      "2027-02-11",
+      "2027-02-23"
+    ],
+    "SALVA": [
+      "2026-12-24",
+      "2026-12-28",
+      "2027-01-10",
+      "2027-01-15",
+      "2027-01-19",
+      "2027-02-04",
+      "2027-02-14",
+      "2027-02-23"
+    ],
+    "SANTI": [
+      "2026-12-31",
+      "2027-01-03",
+      "2027-01-08",
+      "2027-01-12",
+      "2027-01-16",
+      "2027-01-21",
+      "2027-01-27",
+      "2027-02-05",
+      "2027-02-11",
+      "2027-02-17",
+      "2027-02-28"
+    ],
+    "VALLE": [
+      "2026-12-25",
+      "2026-12-29",
+      "2027-01-20",
+      "2027-01-24",
+      "2027-01-28",
+      "2027-02-01",
+      "2027-02-13",
+      "2027-02-21",
+      "2027-02-25"
+    ]
+  },
+  "workers_data": [
+    {
+      "id": "JULIA",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "25-12-2026",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 31-12-2026; 10-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 3,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "KIKO",
+      "target_shifts": 8,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "SANTI",
+        "RICARDO",
+        "CHEMA",
+        "VALLE"
+      ],
+      "mandatory_days": "25-12-2026; 30-12-2026; 04-01-2027; 09-01-2027",
+      "days_off": "08-01-2027",
+      "work_periods": "23-12-2026 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": true,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 12,
+      "_mandatory_count": 4,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 4,
+        "2027-02": 3
+      }
+    },
+    {
+      "id": "MARINA",
+      "target_shifts": 0,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "no_last_post": false,
+      "only_last_post": false,
+      "mandatory_days": "24-12-2026;05-01-2027;11-01-2027;17-01-2027;23-01-2027;29-01-2027;04-02-2027;10-02-2027;16-02-2027;22-02-2027;28-02-2027",
+      "days_off": "30-12-2026",
+      "work_periods": "23-12-2026 - 30-06-2027",
+      "auto_calculate_shifts": false,
+      "has_cadence": true,
+      "cadence_days": 6,
+      "cadence_start_date": "24-12-2026",
+      "_raw_target": 11,
+      "_mandatory_count": 11,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 0,
+        "2027-02": 0
+      }
+    },
+    {
+      "id": "ROBERTO",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "06-01-2027",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 5,
+        "2027-02": 4
+      }
+    },
+    {
+      "id": "BEA",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "25-12-2026",
+      "days_off": "",
+      "work_periods": "24-12-2026 - 31-12-2026; 10-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 3,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "VALLE",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "SANTI",
+        "KIKO",
+        "RICARDO",
+        "CHEMA"
+      ],
+      "mandatory_days": "25-12-2026",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 31-12-2026; 10-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": true,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 3,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "AGUEDA",
+      "target_shifts": 6,
+      "work_percentage": 67.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "26-12-2026 - 31-12-2026; 11-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 6,
+      "_mandatory_count": 0,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 2,
+        "2027-02": 3
+      }
+    },
+    {
+      "id": "ANGEL",
+      "target_shifts": 6,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "24-12-2026",
+      "days_off": "22-01-2027; 23-01-2027; 24-01-2027; 05-02-2027; 06-02-2027; 07-02-2027; 19-02-2027; 20-02-2027; 21-02-2027; 05-03-2027; 06-03-2027; 07-03-2027; 19-03-2027; 20-03-2027; 21-03-2027; 02-04-2027; 03-04-2027; 05-04-2027; 16-04-2027; 17-04-2027; 18-04-2027; 30-04-2027; 01-05-2027; 02-05-2027; 14-05-2027; 15-05-2027; 16-05-2027; 28-05-2027; 29-05-2027; 30-05-2027; 11-06-2027; 12-06-2027;13-06-2027; 25-06-2027; 26-06-2027; 27-06-2027",
+      "work_periods": "23-12-2026 - 31-12-2026; 11-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": false,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_original_target_shifts": 4,
+      "_raw_target": 7,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 2,
+        "2027-02": 3
+      }
+    },
+    {
+      "id": "MARIA",
+      "target_shifts": 5,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "23-12-2026;27-12-2026",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 30-06-2027",
+      "auto_calculate_shifts": false,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_original_target_shifts": 3,
+      "_raw_target": 7,
+      "_mandatory_count": 2,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 3,
+        "2027-02": 2
+      }
+    },
+    {
+      "id": "ELENA",
+      "target_shifts": 7,
+      "work_percentage": 80.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "06-01-2027",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 8,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 4,
+        "2027-02": 3
+      }
+    },
+    {
+      "id": "RICARDO",
+      "target_shifts": 11,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "SANTI",
+        "KIKO",
+        "CHEMA",
+        "VALLE"
+      ],
+      "mandatory_days": "01-01-2027",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": true,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 12,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 5,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "LUIS H",
+      "target_shifts": 10,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 0,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 5,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "SALVA",
+      "target_shifts": 7,
+      "work_percentage": 80.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "24-12-2026",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 31-12-2026;10-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 8,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 3,
+        "2027-02": 3
+      }
+    },
+    {
+      "id": "M.JOSE",
+      "target_shifts": 3,
+      "work_percentage": 50.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "23-12-2026; 27-12-2026",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 29-12-2026; 11-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 5,
+      "_mandatory_count": 2,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 1,
+        "2027-02": 2
+      }
+    },
+    {
+      "id": "M.CARMEN",
+      "target_shifts": 6,
+      "work_percentage": 67.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "01-01-2027",
+      "days_off": "30-04-2027; 01-05-2027; 02-05-2027",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 7,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 3,
+        "2027-02": 3
+      }
+    },
+    {
+      "id": "PABLO",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "06-01-2027",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 5,
+        "2027-02": 4
+      }
+    },
+    {
+      "id": "PAULA",
+      "target_shifts": 12,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "01-11-2027",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 12,
+      "_mandatory_count": 0,
+      "monthly_targets": {
+        "2026-12": 2,
+        "2027-01": 5,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "MANUEL",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "06-01-2027",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 5,
+        "2027-02": 4
+      }
+    },
+    {
+      "id": "CAROL",
+      "target_shifts": 8,
+      "work_percentage": 80.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 8,
+      "_mandatory_count": 0,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 4,
+        "2027-02": 4
+      }
+    },
+    {
+      "id": "MAR",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "05-01-2027",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 5,
+        "2027-02": 4
+      }
+    },
+    {
+      "id": "SANTI",
+      "target_shifts": 10,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "RICARDO",
+        "KIKO",
+        "CHEMA",
+        "VALLE"
+      ],
+      "mandatory_days": "31-12-2026",
+      "days_off": "",
+      "work_periods": "30-12-2026 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": true,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 11,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 5,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "LUIS R",
+      "target_shifts": 5,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "05-01-2027",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": false,
+      "no_last_post": false,
+      "only_last_post": true,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_original_target_shifts": 3,
+      "_raw_target": 6,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 2,
+        "2027-02": 3
+      }
+    },
+    {
+      "id": "LAURA",
+      "target_shifts": 7,
+      "work_percentage": 80.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "01-01-2027",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 8,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 4,
+        "2027-02": 3
+      }
+    },
+    {
+      "id": "CHEMA",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": true,
+      "incompatible_with": [
+        "SANTI",
+        "KIKO",
+        "RICARDO",
+        "VALLE"
+      ],
+      "mandatory_days": "27-12-2026",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 31-12-2026; 10-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": true,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 3,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "DAVID",
+      "target_shifts": 10,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "27-12-2026; 31-12-2026",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 12,
+      "_mandatory_count": 2,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 5,
+        "2027-02": 4
+      }
+    },
+    {
+      "id": "LOLA",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "24-12-2026",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 31-12-2026; 10-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 3,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "JOSE",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "31-12-2026",
+      "days_off": "",
+      "work_periods": "25-12-2026 - 31-12-2026; 10-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 3,
+        "2027-02": 5
+      }
+    },
+    {
+      "id": "ANGELA",
+      "target_shifts": 9,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "05-01-2027",
+      "days_off": "",
+      "work_periods": "01-01-2027 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 10,
+      "_mandatory_count": 1,
+      "monthly_targets": {
+        "2026-12": 0,
+        "2027-01": 5,
+        "2027-02": 4
+      }
+    },
+    {
+      "id": "JESUS",
+      "target_shifts": 10,
+      "work_percentage": 100.0,
+      "is_incompatible": false,
+      "incompatible_with": [],
+      "mandatory_days": "27-12-2026;31-12-2026",
+      "days_off": "",
+      "work_periods": "23-12-2026 - 30-06-2027",
+      "auto_calculate_shifts": true,
+      "no_last_post": false,
+      "only_last_post": false,
+      "has_cadence": false,
+      "cadence_days": 0,
+      "cadence_start_date": "",
+      "_raw_target": 12,
+      "_mandatory_count": 2,
+      "monthly_targets": {
+        "2026-12": 1,
+        "2027-01": 5,
+        "2027-02": 4
+      }
+    }
+  ],
+  "config": {
+    "start_date": "2026-12-23",
+    "end_date": "2027-02-28",
+    "num_shifts": 4,
+    "gap_between_shifts": 4,
+    "gap_periods": [
+      {
+        "start_date": "2026-12-23",
+        "end_date": "2027-01-08",
+        "gap": 3
+      }
+    ],
+    "max_consecutive_weekends": 3
+  }
+}
