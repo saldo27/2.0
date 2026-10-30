@@ -56,6 +56,24 @@ _REJECTION_TO_VIOLATION = {
 }
 
 
+def config_forced_dates(worker: dict | None, date_utils: Any) -> set[datetime]:
+    """Dates a worker must keep: ``mandatory_days``, including cadence dates.
+
+    A clash is left in place, and kept out of the score, only when the worker is
+    on cadence or both dates are in this set. One mandatory date still loses
+    the other, non-mandatory day.
+    """
+    if not worker or date_utils is None:
+        return set()
+    raw = worker.get("mandatory_days") or ""
+    if not raw:
+        return set()
+    try:
+        return set(date_utils.parse_dates(raw))
+    except (TypeError, ValueError):
+        return set()
+
+
 @dataclass(frozen=True)
 class SpacingRejection:
     """Why a candidate date cannot sit next to one existing assignment."""
@@ -802,11 +820,14 @@ class ConstraintChecker:
             gap_periods = getattr(self.scheduler, "gap_periods", None) or []
             # Cadence workers are outside spacing and Rosell limits; only exclusivity applies
             fixed_cadence = is_fixed_cadence(worker)
+            protected = config_forced_dates(worker, self.date_utils)
 
             for i, date2 in enumerate(assigned_dates if not fixed_cadence else []):
                 for date1 in assigned_dates[:i]:
-                    # Report the pair even when one side is mandatory. Repair keeps
-                    # a pair only when both dates are mandatory.
+                    # Both dates mandatory: configuration conflict, not repaired.
+                    # One mandatory date is still reported so repair can move the other day.
+                    if date1 in protected and date2 in protected:
+                        continue
                     pair_gap = get_effective_min_gap(
                         worker, default_gap, date=date2, other_date=date1, gap_periods=gap_periods
                     )
@@ -842,7 +863,8 @@ class ConstraintChecker:
                 run_dates: list = []
 
                 def _flush_last_post_run() -> None:
-                    if len(run_dates) > MAX_CONSECUTIVE_LAST_POSTS:
+                    protected_in_run = sum(d in protected for d in run_dates)
+                    if len(run_dates) > MAX_CONSECUTIVE_LAST_POSTS and protected_in_run < 2:
                         violations.append(
                             {
                                 "type": "consecutive_last_post",

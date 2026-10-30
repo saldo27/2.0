@@ -605,6 +605,17 @@ class Scheduler:
             logging.error(f"Error checking schedule constraints: {e!s}", exc_info=True)
             return []
 
+    def _config_forced_assignment(self, worker_id: str, date: datetime) -> bool:
+        """True when ``date`` is a mandatory day or a cadence date for ``worker_id``."""
+        builder = self.schedule_builder if hasattr(self, "schedule_builder") else None
+        is_mandatory = getattr(builder, "is_mandatory", None)
+        if callable(is_mandatory) and bool(is_mandatory(worker_id, date)):
+            return True
+        from saldo27.constraint_checker import config_forced_dates
+
+        worker = next((item for item in self.workers_data if item["id"] == worker_id), None)
+        return date in config_forced_dates(worker, self.date_utils)
+
     def _fix_constraint_violations(self, violations: list[dict[str, Any]] | None = None) -> int:
         """
         Try to fix constraint violations in the current schedule.
@@ -628,31 +639,21 @@ class Scheduler:
                     date1 = violation["date1"]
                     date2 = violation["date2"]
 
-                    # HARD INVARIANT: a weekly_pattern (7/14-day same-weekday) violation may
-                    # ONLY be left in place when BOTH colliding dates are mandatory_days for
-                    # that worker (an unavoidable configuration conflict). There is no other
-                    # sanctioned exception — any other 7/14 violation (e.g. one created as a
-                    # last-resort relaxation while filling a deficit/empty slot) must always
-                    # be undone here, never silently tolerated.
-
-                    # CRITICAL: Check if either date is mandatory
-                    date1_is_mandatory = schedule_builder.is_mandatory(worker_id, date1) if schedule_builder else False
-                    date2_is_mandatory = schedule_builder.is_mandatory(worker_id, date2) if schedule_builder else False
-
-                    # If both are mandatory, we cannot fix this - it's a configuration error
-                    if date1_is_mandatory and date2_is_mandatory:
-                        logging.error(
-                            f"Cannot fix violation: Worker {worker_id} has mandatory assignments on both {date1} and {date2} which violate constraints. This is a configuration error."
+                    # Cadence, or both dates mandatory: leave the clash and do not score it.
+                    # A single mandatory date keeps its day; the other day is removed.
+                    worker = next((item for item in self.workers_data if item["id"] == worker_id), None)
+                    forced1 = self._config_forced_assignment(worker_id, date1)
+                    forced2 = self._config_forced_assignment(worker_id, date2)
+                    if is_fixed_cadence(worker) or (forced1 and forced2):
+                        logging.info(
+                            f"Leaving {violation['type']} for {worker_id} between {date1} and {date2}: "
+                            "cadence or two mandatory dates; not repaired and not scored."
                         )
                         continue
 
-                    # Decide which date to unassign - prioritize keeping mandatory assignments
-                    if date2_is_mandatory:
+                    if forced2:
                         date_to_unassign = date1
-                    elif date1_is_mandatory:
-                        date_to_unassign = date2
                     else:
-                        # Neither is mandatory - prefer to unassign the later date
                         date_to_unassign = date2
 
                     # Find the shift number for this worker on this date
@@ -757,6 +758,20 @@ class Scheduler:
                     worker_id = violation["worker_id"]
                     date1 = violation["date1"]
                     date2 = violation["date2"]
+
+                    assigned_in_run = [
+                        day
+                        for day in self.worker_assignments.get(worker_id, ())
+                        if date1 is not None and date2 is not None and date1 <= day <= date2
+                    ]
+                    worker = next((item for item in self.workers_data if item["id"] == worker_id), None)
+                    forced_in_run = sum(self._config_forced_assignment(worker_id, day) for day in assigned_in_run)
+                    if is_fixed_cadence(worker) or forced_in_run >= 2:
+                        logging.info(
+                            f"Leaving consecutive last-post for {worker_id} between {date1} and {date2}: "
+                            "cadence or two mandatory dates; not repaired and not scored."
+                        )
+                        continue
 
                     candidates_to_unassign = [d for d in (date2, date1) if d is not None]
                     fixed = False

@@ -4,7 +4,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from saldo27.balance_validator import BalanceValidator
-from saldo27.utilities import get_effective_min_gap
+from saldo27.constraint_checker import config_forced_dates
+from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
 
 
 class OptimizationMetrics:
@@ -353,13 +354,24 @@ class OptimizationMetrics:
             scheduler = self.scheduler
 
             # --- Gap violations (fast: O(total_assignments) per worker) ---
+            # Cadence workers, and a pair whose two dates are both mandatory, are
+            # configuration: not repaired and not scored. One mandatory date does
+            # not excuse the pair; repair moves the other day.
+            protected_by_worker = {
+                worker["id"]: config_forced_dates(worker, scheduler.date_utils) for worker in scheduler.workers_data
+            }
             for worker in scheduler.workers_data:
+                if is_fixed_cadence(worker):
+                    continue
                 worker_id = worker["id"]
                 assignments = sorted(scheduler.worker_assignments.get(worker_id, set()))
                 if len(assignments) < 2:
                     continue
+                protected = protected_by_worker[worker_id]
                 gap_periods = getattr(scheduler, "gap_periods", None) or []
                 for i in range(1, len(assignments)):
+                    if assignments[i] in protected and assignments[i - 1] in protected:
+                        continue
                     min_days = get_effective_min_gap(
                         worker,
                         scheduler.gap_between_shifts,
@@ -374,14 +386,20 @@ class OptimizationMetrics:
                         violation_count += 1
 
             # --- Incompatibility violations (fast: O(dates * posts^2)) ---
+            # Both sides mandatory or cadence: configuration conflict, no penalty.
             checker = getattr(scheduler, "constraint_checker", None)
             if checker is not None:
                 for date, workers in scheduler.schedule.items():
                     assigned = [w for w in workers if w is not None]
                     for i in range(len(assigned)):
                         for j in range(i + 1, len(assigned)):
-                            if checker._are_workers_incompatible(assigned[i], assigned[j]):
-                                violation_count += 1
+                            if not checker._are_workers_incompatible(assigned[i], assigned[j]):
+                                continue
+                            if date in protected_by_worker.get(assigned[i], ()) and date in protected_by_worker.get(
+                                assigned[j], ()
+                            ):
+                                continue
+                            violation_count += 1
 
             # Scale: each violation penalises ~1 point (out of 100)
             # Keep penalty light so balance improvements aren't drowned out
