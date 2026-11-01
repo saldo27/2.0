@@ -32,14 +32,15 @@ Saldo27 permite:
 ### Validación y balance
 
 - Verificación de incompatibilidades
-- Control de descansos mínimos, global o por intervalo de fechas (si las dos guardias piden mínimos distintos, se exige el mayor)
+- Control de descansos mínimos, global o por intervalo de fechas (si las dos guardias piden mínimos distintos, se exige el mayor); los períodos de gap de la UI llegan íntegros al motor de generación
 - Restricciones de patrón semanal 7/14 días
-- Balance de fines de semana
-- Balance de turnos en días puente
+- Límite de Rosell (último puesto) consecutivos: reparación preferente por swap el mismo día y, si no, desasignación con relleno del hueco
+- Balance de fines de semana (protegido en el Ajuste Final frente a intercambios laborable↔finde)
+- Balance de turnos en días puente (objetivos de cadencia coherentes con `_raw_target`)
 - Objetivo mensual fijo garantizado para trabajadores con número fijo de guardias/mes, incluso tras la corrección final de restricciones
 - Prorrateo automático del objetivo mensual (manual y automático) según días disponibles por `work_periods` y `days_off` (vacaciones/permisos)
 - Aviso de posible conflicto cuando un día obligatorio (`mandatory_days`) cae dentro de un período de vacaciones o fuera del período de trabajo configurado
-- Score de calidad con zonas sin penalización (carga ±10%, fines de semana ±15%, rotación de puestos ±20%), recalculado tras el Ajuste Final
+- Score de calidad con zonas sin penalización (carga ±10%, fines de semana ±15%, puentes ±0.5, rotación ±20%), **neutral ante desbalances estructurales** de config (`no_last_post`, `only_last_post`, cliques de incompatibilidad, cadencia, mandatory, huecos no rellenables); recalculado tras el Ajuste Final
 
 ### Análisis y exportación
 
@@ -93,15 +94,19 @@ La aplicación se sirve por defecto en `http://localhost:8501`.
 
 ```text
 src/saldo27/
-  application/      # Casos de uso y flujo de generación
-  domain/           # Modelos de dominio y estado del calendario
-  infrastructure/   # Integraciones y motores opcionales
-  app_streamlit.py  # Interfaz principal
-  run_app.py        # Entrada CLI: `saldo27`
+  application/           # Casos de uso y flujo de generación
+  domain/                # Modelos de dominio y estado del calendario
+  infrastructure/        # Integraciones y motores opcionales
+  app_streamlit.py       # Interfaz principal
+  run_app.py             # Entrada CLI: `saldo27`
+  structural_score.py    # Baselines de scoring conscientes de la config
+  optimization_metrics.py
+  adaptive_iterations.py
+  final_adjustment_engine.py
 tests/
-  e2e/              # Pruebas end-to-end con Playwright
-docs/               # Documentación complementaria
-packaging/          # Empaquetado Windows / PyInstaller
+  e2e/                   # Pruebas end-to-end con Playwright (CI en ubuntu-24.04)
+docs/                    # Documentación complementaria
+packaging/               # Empaquetado Windows / PyInstaller
 ```
 
 ## Desarrollo
@@ -153,8 +158,18 @@ uv run pytest
 - El proyecto usa rutas relativas al directorio de trabajo para archivos generados por el usuario.
 - OR-Tools es opcional a nivel de arquitectura, pero está declarado como dependencia del proyecto.
 - El sistema admite continuidad entre períodos mediante importación de un JSON exportado previamente.
+- El score mide calidad del motor **dado** el condicionamiento del reparto: no castiga techos impuestos por incompatibilidad + `no_last_post`, spillover de Rosell hacia quien sí puede, ni huecos que nadie puede cubrir.
+
+## Cambios recientes (v3.6)
+
+- **Score estructural**: `structural_score.py` alimenta `OptimizationMetrics` y `AdaptiveIterationManager.overall_quality` con baselines factibles (cliques de incompat, Rosell estructural, fill solo de huecos rellenables).
+- **Rosell consecutivos**: la reparación ya no deja puestos vacíos sin intentar swap/relleno.
+- **Ajuste Final / balance WE**: intercambios laborable↔finde y optimizadores de carga no empeoran el balance de fines de semana; swap de puesto el mismo día sin error de sincronización de tracking.
+- **Cadencia y puentes**: el objetivo de puentes de trabajadores con cadencia usa el objetivo de turnos real (`_raw_target`), no `target_shifts=0`.
+- **`gap_periods`**: los intervalos de mínimo distintos configurados en la UI se pasan al `Scheduler` en la generación.
+- **CI e2e**: job Playwright fijado a `ubuntu-24.04` por compatibilidad de browsers.
 
 ## Estado del proyecto
 
-Versión de la aplicación (Streamlit): `3.5`.
+Versión de la aplicación (Streamlit): `3.6`.
 Versión del paquete en `pyproject.toml`: `2.5.0`.

@@ -2,7 +2,7 @@
 
 Shared guidelines for AI coding assistants (Claude, Copilot, etc.) working on this project.
 
-**Current version: 3.5 (Septiembre 2026)**
+**Current version: 3.6 (Noviembre 2026)**
 
 ## Project overview
 
@@ -25,7 +25,8 @@ packaging/                # PyInstaller hooks, .spec file, Windows installer
 
 | Module | Role |
 |--------|------|
-| `app_streamlit.py` | Streamlit UI — the main entry point (v3.5) |
+| `app_streamlit.py` | Streamlit UI — the main entry point (v3.6) |
+| `structural_score.py` | Constraint-aware scoring baselines (incompat cliques, structural empties, Rosell spillover); shared by OptimizationMetrics and AdaptiveIterationManager |
 | `scheduler.py` | Top-level Scheduler orchestrator |
 | `scheduler_core.py` | Core optimisation loop |
 | `schedule_builder.py` | Initial schedule construction |
