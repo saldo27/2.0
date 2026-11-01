@@ -18,6 +18,22 @@ def is_fixed_cadence(worker_data: dict | None) -> bool:
     return bool(worker_data and worker_data.get("has_cadence"))
 
 
+def worker_flag_enabled(worker_data: dict | None, key: str) -> bool:
+    """Return whether a boolean worker flag is enabled.
+
+    Accepts real bools and common string/number encodings from JSON / UI forms
+    (``\"true\"``, ``\"1\"``, ``\"si\"``, …). Missing or empty → False.
+    """
+    if not worker_data:
+        return False
+    value = worker_data.get(key, False)
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "y", "si", "sí", "on"}
+    if isinstance(value, (int, float)):
+        return value != 0
+    return bool(value)
+
+
 def coerce_datetime(value: object) -> datetime | None:
     """Return a datetime for a datetime, a date, or an ISO / DD-MM-YYYY string."""
     if isinstance(value, datetime):
@@ -518,13 +534,18 @@ class DateTimeUtils:
 
     def identify_bridge_periods(self, holidays: list[datetime], year: int) -> list[dict]:
         """
-        Identify bridge periods (puentes) where a holiday is adjacent to a weekend.
+        Identify bridge periods (puentes) where a holiday couples to a weekend.
 
-        A bridge period is defined as:
-        - Holiday Thursday: Thu-Fri-Sat-Sun
-        - Holiday Friday: Fri-Sat-Sun
-        - Holiday Monday: Fri-Sat-Sun-Mon
-        - Holiday Tuesday: Fri-Sat-Sun-Mon-Tue
+        A puente exists only when a holiday anticipates or prolongs the weekend.
+        The day before the holiday (prefestivo) is always included when the
+        holiday anticipates the weekend — it behaves like an extra Friday:
+
+        - Thursday holiday → Wed(pre)-Thu-Fri-Sat-Sun, unless Wednesday is also
+          a holiday (mid-week cluster that does not couple to the weekend)
+        - Friday holiday → Thu(pre)-Fri-Sat-Sun
+        - Monday holiday → Sat-Sun-Mon (prolongs; Sunday is already the prefestivo)
+        - Tuesday holiday → Sat-Sun-Mon(pre)-Tue (prolongs), unless Wednesday is
+          also a holiday (same mid-week cluster rule as Thursday)
 
         Args:
             holidays: List of holiday dates
@@ -544,7 +565,10 @@ class DateTimeUtils:
             return []
 
         bridge_periods = []
-        holidays_set = set(holidays)
+        holidays_set = {h.date() if isinstance(h, datetime) else h for h in holidays}
+
+        def _is_holiday(day: datetime) -> bool:
+            return day.date() in holidays_set
 
         for holiday in holidays:
             # Only process holidays in the specified year
@@ -553,9 +577,13 @@ class DateTimeUtils:
 
             weekday = holiday.weekday()  # 0=Monday, 1=Tuesday, ..., 6=Sunday
 
-            # Holiday on Thursday (3) -> Bridge: Thu-Fri-Sat-Sun
+            # Holiday on Thursday (3) -> Wed(prefestivo)-Thu-Fri-Sat-Sun
+            # Skip when Wednesday is also a holiday: the cluster sits mid-week and
+            # does not anticipate the coming weekend (e.g. 7-10 Jan after Reyes).
             if weekday == 3:
-                start_date = holiday
+                if _is_holiday(holiday - timedelta(days=1)):
+                    continue
+                start_date = holiday - timedelta(days=1)  # Wednesday prefestivo
                 end_date = holiday + timedelta(days=3)  # Sunday
                 bridge_periods.append(
                     {
@@ -567,9 +595,9 @@ class DateTimeUtils:
                     }
                 )
 
-            # Holiday on Friday (4) -> Bridge: Fri-Sat-Sun
+            # Holiday on Friday (4) -> Thu(prefestivo)-Fri-Sat-Sun
             elif weekday == 4:
-                start_date = holiday
+                start_date = holiday - timedelta(days=1)  # Thursday prefestivo
                 end_date = holiday + timedelta(days=2)  # Sunday
                 bridge_periods.append(
                     {
@@ -581,9 +609,9 @@ class DateTimeUtils:
                     }
                 )
 
-            # Holiday on Monday (0) -> Bridge: Fri-Sat-Sun-Mon
+            # Holiday on Monday (0) -> Bridge: Sat-Sun-Mon (prolongs the weekend)
             elif weekday == 0:
-                start_date = holiday - timedelta(days=3)  # Friday
+                start_date = holiday - timedelta(days=2)  # Saturday
                 end_date = holiday
                 bridge_periods.append(
                     {
@@ -595,9 +623,13 @@ class DateTimeUtils:
                     }
                 )
 
-            # Holiday on Tuesday (1) -> Bridge: Fri-Sat-Sun-Mon-Tue
+            # Holiday on Tuesday (1) -> Bridge: Sat-Sun-Mon-Tue (prolongs the weekend)
+            # Monday is both the día puente and the prefestivo of Tuesday.
+            # Skip when Wednesday is also a holiday: mid-week cluster (e.g. 1-5 Jan).
             elif weekday == 1:
-                start_date = holiday - timedelta(days=4)  # Friday
+                if _is_holiday(holiday + timedelta(days=1)):
+                    continue
+                start_date = holiday - timedelta(days=3)  # Saturday
                 end_date = holiday
                 bridge_periods.append(
                     {

@@ -19,11 +19,14 @@ class BridgeManager:
     """
     Gestiona la detección y tracking de puentes (bridge holidays).
 
-    Un puente ocurre cuando un festivo se solapa con un fin de semana:
-    - Festivo Jueves → Puente Jueves a Domingo (4 días)
-    - Festivo Viernes → Puente Viernes a Domingo (3 días)
-    - Festivo Lunes → Puente Viernes a Lunes (3 días)
-    - Festivo Martes → Puente Viernes a Martes (4 días)
+    Un puente ocurre cuando un festivo se acopla a un fin de semana.
+    Incluye el prefestivo (día anterior al festivo, tratado como viernes):
+    - Festivo Jueves → Mié(pre)-Jue-Vie-Sáb-Dom (anticipa), salvo si el miércoles
+      también es festivo (bloque a mitad de semana)
+    - Festivo Viernes → Jue(pre)-Vie-Sáb-Dom (anticipa)
+    - Festivo Lunes → Sáb-Dom-Lun (prolonga)
+    - Festivo Martes → Sáb-Dom-Lun(pre)-Mar (prolonga), salvo si el miércoles
+      también es festivo
     """
 
     def __init__(self):
@@ -67,19 +70,19 @@ class BridgeManager:
 
         # Sort holidays for processing
         holiday_dates.sort()
+        holiday_set = set(holiday_dates)
+
+        if isinstance(start_date, datetime):
+            start = start_date.date()
+        else:
+            start = start_date
+
+        if isinstance(end_date, datetime):
+            end = end_date.date()
+        else:
+            end = end_date
 
         for holiday in holiday_dates:
-            # Check if holiday is within the schedule period
-            if isinstance(start_date, datetime):
-                start = start_date.date()
-            else:
-                start = start_date
-
-            if isinstance(end_date, datetime):
-                end = end_date.date()
-            else:
-                end = end_date
-
             if holiday < start or holiday > end:
                 continue
 
@@ -88,10 +91,10 @@ class BridgeManager:
 
             bridge_info = None
 
-            # Check if it creates a bridge
-            if weekday == 3:  # Thursday
-                # Bridge: Thursday to Sunday (4 days)
-                bridge_start = holiday
+            if weekday == 3:  # Thursday — anticipates weekend (skip mid-week cluster)
+                if (holiday - timedelta(days=1)) in holiday_set:
+                    continue
+                bridge_start = holiday - timedelta(days=1)  # Wednesday prefestivo
                 bridge_end = holiday + timedelta(days=3)  # Sunday
                 bridge_info = {
                     "holiday_date": holiday,
@@ -103,9 +106,8 @@ class BridgeManager:
                     "bridge_days": self._get_date_range(bridge_start, bridge_end),
                 }
 
-            elif weekday == 4:  # Friday
-                # Bridge: Friday to Sunday (3 days)
-                bridge_start = holiday
+            elif weekday == 4:  # Friday — anticipates weekend (includes Thursday prefestivo)
+                bridge_start = holiday - timedelta(days=1)  # Thursday prefestivo
                 bridge_end = holiday + timedelta(days=2)  # Sunday
                 bridge_info = {
                     "holiday_date": holiday,
@@ -117,9 +119,8 @@ class BridgeManager:
                     "bridge_days": self._get_date_range(bridge_start, bridge_end),
                 }
 
-            elif weekday == 0:  # Monday
-                # Bridge: Friday to Monday (3 days)
-                bridge_start = holiday - timedelta(days=3)  # Previous Friday
+            elif weekday == 0:  # Monday — prolongs weekend
+                bridge_start = holiday - timedelta(days=2)  # Saturday
                 bridge_end = holiday
                 bridge_info = {
                     "holiday_date": holiday,
@@ -131,9 +132,10 @@ class BridgeManager:
                     "bridge_days": self._get_date_range(bridge_start, bridge_end),
                 }
 
-            elif weekday == 1:  # Tuesday
-                # Bridge: Friday to Tuesday (4 days)
-                bridge_start = holiday - timedelta(days=4)  # Previous Friday
+            elif weekday == 1:  # Tuesday — prolongs weekend (skip mid-week cluster)
+                if (holiday + timedelta(days=1)) in holiday_set:
+                    continue
+                bridge_start = holiday - timedelta(days=3)  # Saturday
                 bridge_end = holiday
                 bridge_info = {
                     "holiday_date": holiday,

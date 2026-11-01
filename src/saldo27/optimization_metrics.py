@@ -5,6 +5,7 @@ from typing import Any
 
 from saldo27.balance_validator import BalanceValidator
 from saldo27.constraint_checker import config_forced_dates
+from saldo27.structural_score import StructuralScoreBaselines
 from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
 
 
@@ -19,6 +20,8 @@ class OptimizationMetrics:
         self.cached_metrics = {}
         self.iteration_history = []
         self.operation_performance = {}
+        self._baselines: StructuralScoreBaselines | None = None
+        self._baselines_hash: str | None = None
 
         # Umbrales de mejora por tipo de operación (calibrados para mejoras incrementales)
         self.quality_thresholds = {
@@ -31,6 +34,14 @@ class OptimizationMetrics:
             "adjust_last_post_distribution": 0.0005,  # 0.05% mejora mínima
             "default": 0.0005,  # 0.05% mejora mínima por defecto
         }
+
+    def _structural_baselines(self) -> StructuralScoreBaselines:
+        """Fresh baselines when the schedule hash changes; reuse within one score pass."""
+        current_hash = self.get_schedule_hash()
+        if self._baselines is None or self._baselines_hash != current_hash:
+            self._baselines = StructuralScoreBaselines(self.scheduler)
+            self._baselines_hash = current_hash
+        return self._baselines
 
     def get_schedule_hash(self) -> str:
         """Generar hash del estado actual del schedule"""
@@ -109,47 +120,29 @@ class OptimizationMetrics:
             return 0.0
 
     def _calculate_fill_rate_score(self) -> float:
-        """Calcular score basado en el fill rate"""
+        """Fill rate treating structurally unfillable holes as filled."""
         try:
-            total_slots = 0
-            filled_slots = 0
-
-            for date, workers in self.scheduler.schedule.items():
-                total_slots += len(workers)
-                filled_slots += sum(1 for worker in workers if worker is not None)
-
-            if total_slots == 0:
-                return 100.0
-
-            fill_rate = filled_slots / total_slots
-            return fill_rate * 100
-
+            return self._structural_baselines().structural_fill_rate()
         except Exception as e:
             logging.error(f"Error calculating fill rate score: {e}")
             return 0.0
 
     def _calculate_workload_balance_score(self) -> float:
-        """Calcular score basado en el balance de carga de trabajo.
+        """Workload balance vs clique-scaled ``scoring_shift_target`` (±10% deadzone).
 
-        Mide la desviación media de cada trabajador respecto a su propio
-        target_shifts en lugar del coeficiente de variación global.  El enfoque
-        CV es incorrecto cuando existe configuración manual de objetivos distintos
-        (p. ej. GABI=60, MÓNICA=24): ese spread es intencionado y no debe
-        penalizarse como desequilibrio.
-
-        Desviaciones por debajo del ±10% se consideran tolerancia normal y no
-        penalizan el score (zona muerta); solo el exceso por encima del umbral
-        contribuye a la penalización.
+        Configuration-driven under-capacity (incompat cliques) is absorbed into
+        the scoring target so it does not look like an optimiser failure.
         """
         try:
             if not self.scheduler.workers_data:
                 return 100.0
 
+            baselines = self._structural_baselines()
             date_utils = getattr(self.scheduler, "date_utils", None)
             deviations = []
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
-                target = worker.get("target_shifts", 0)
+                target = baselines.scoring_shift_target(worker)
                 assignments = self.scheduler.worker_assignments.get(worker_id, set())
                 # target_shifts excludes mandatory shifts, so compare against non-mandatory only.
                 _, count = BalanceValidator.compute_non_mandatory_assigned(worker, assignments, date_utils)
@@ -159,12 +152,9 @@ class OptimizationMetrics:
             if not deviations:
                 return 100.0
 
-            # Zona muerta: no penalizar desviaciones <= 10%.
             deadzone = 0.10
             effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
-
             avg_deviation_pct = sum(effective_deviations) / len(effective_deviations)
-            # Escala (tras la zona muerta): 0 % exceso → 100, 10 % exceso → 60, 25 % exceso → 0
             return max(0.0, 100.0 - avg_deviation_pct * 400.0)
 
         except Exception as e:
@@ -172,46 +162,32 @@ class OptimizationMetrics:
             return 0.0
 
     def _calculate_weekend_balance_score(self) -> float:
-        """Calcular score basado en el balance de fines de semana.
-
-        Counts Friday + Saturday + Sunday + Holidays + Pre-holidays to match
-        the definition used by the scheduling operations.
-        Compares each worker's actual weekend count against
-        ``Scheduler.get_weekend_objective`` (shift objective × weekend slot ratio),
-        so workers with intentionally different targets (manual config) are scored fairly.
-
-        Desviaciones por debajo del ±15% se consideran tolerancia normal y no
-        penalizan el score (zona muerta); solo el exceso por encima del umbral
-        contribuye a la penalización.
-        """
+        """Weekend balance vs clique-scaled scoring weekend objectives (±15% deadzone)."""
         try:
             if not self.scheduler.workers_data:
                 return 100.0
 
+            baselines = self._structural_baselines()
             holidays = getattr(self.scheduler, "holidays", set())
 
             deviations = []
             for worker in self.scheduler.workers_data:
                 assignments = self.scheduler.worker_assignments.get(worker["id"], set())
-                # Mandatory weekends count in both the actual count and the objective.
                 actual_wknd = sum(
                     1
                     for date in assignments
                     if hasattr(date, "weekday") and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
-                expected_wknd = self.scheduler.get_weekend_objective(worker)
+                expected_wknd = baselines.scoring_weekend_objective(worker)
                 if expected_wknd > 0:
                     deviations.append(abs(actual_wknd - expected_wknd) / expected_wknd)
 
             if not deviations:
                 return 100.0
 
-            # Zona muerta: no penalizar desviaciones <= 15%.
             deadzone = 0.15
             effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
-
             avg_deviation_pct = sum(effective_deviations) / len(effective_deviations)
-            # Escala (tras la zona muerta): 0 % exceso → 100, 10 % exceso → 60, 25 % exceso → 0
             return max(0.0, 100.0 - avg_deviation_pct * 400.0)
 
         except Exception as e:
@@ -219,32 +195,19 @@ class OptimizationMetrics:
             return 0.0
 
     def _calculate_bridge_balance_score(self) -> float:
-        """Calcular score basado en el balance de turnos en días de puente.
-
-        Compara cada trabajador con su objetivo de puentes
-        (``Scheduler.get_bridge_objective_for_worker``, proporcional a su
-        objetivo de turnos, cadencia incluida). A diferencia del balance de weekends (zona muerta
-        relativa del ±15%), los puentes son mucho menos frecuentes — sus
-        objetivos suelen ser fracciones pequeñas (p.ej. 1-3 turnos) — por lo
-        que una tolerancia relativa sería inestable (un objetivo de 1 turno
-        con un ±15% no tolera ninguna desviación entera). En su lugar se usa
-        la misma tolerancia absoluta ±0.5 turnos que
-        ``BalanceValidator.validate_bridge_balance`` ya usa para violaciones.
-
-        Si no hay periodos de puente definidos, o ningún trabajador tiene un
-        objetivo de puente > 0, se devuelve 100 (sin penalización aplicable).
-        """
+        """Bridge balance vs clique-scaled scoring bridge objectives (±0.5 deadzone)."""
         try:
             bridge_periods = getattr(self.scheduler, "bridge_periods", None)
             if not bridge_periods or not self.scheduler.workers_data:
                 return 100.0
 
+            baselines = self._structural_baselines()
             deviations = []
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
                 if self.scheduler._shift_objective(worker) <= 0:
                     continue
-                target_bridges = self.scheduler.get_bridge_objective_for_worker(worker_id)
+                target_bridges = baselines.scoring_bridge_objective(worker)
                 if target_bridges <= 0:
                     continue
                 actual_bridges = self.scheduler.count_bridges_for_worker(worker_id)
@@ -253,13 +216,9 @@ class OptimizationMetrics:
             if not deviations:
                 return 100.0
 
-            # Zona muerta: tolerancia absoluta ±0.5 turnos (alineada con
-            # BalanceValidator.validate_bridge_balance).
             deadzone = 0.5
             effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
-
             avg_excess = sum(effective_deviations) / len(effective_deviations)
-            # Escala (tras la zona muerta): 0 turnos de exceso → 100, 2 turnos → 0.
             return max(0.0, 100.0 - avg_excess * 50.0)
 
         except Exception as e:
@@ -267,45 +226,29 @@ class OptimizationMetrics:
             return 0.0
 
     def _calculate_post_rotation_score(self) -> float:
-        """Calcular score basado en la rotación de puestos.
+        """Post-rotation score vs structural Rosell expectations (spillover-neutral).
 
-        Compares each worker's actual post distribution against the expected
-        EQUAL share across their AVAILABLE posts (not num_shifts, which would
-        wrongly penalise workers with no_last_post=True for never filling P4).
-
-        Uses mean absolute relative deviation so the penalty scales with the
-        magnitude of imbalance instead of absolute squared differences.
-
-        Trabajadores con `no_last_post` u `only_last_post` tienen su rotación
-        de puestos condicionada por configuración (nunca pueden/deben cubrir
-        todos los puestos por igual), así que se consideran sin desviación
-        (score 100) en lugar de penalizarlos por una distribución estructural.
-
-        Para el resto de trabajadores, desviaciones por debajo del ±20% se
-        consideran tolerancia normal y no penalizan el score (zona muerta).
+        ``no_last_post`` / ``only_last_post`` / cadence workers are perfect by
+        config. Unrestricted workers are compared to ``get_last_post_objective``
+        (already structural) plus an even split of the remaining mass on non-last
+        posts, so absorbing extra Rosell forced by ``no_last`` peers does not
+        penalise them.
         """
         try:
             if not self.scheduler.workers_data or self.scheduler.num_shifts <= 1:
                 return 100.0
 
+            baselines = self._structural_baselines()
             post_balance_scores = []
+            num_shifts = self.scheduler.num_shifts
 
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
-
-                # Workers with a restricted/forced post assignment cannot rotate
-                # evenly by design; treat them as having no deviation.
-                if worker.get("no_last_post", False) or worker.get("only_last_post", False):
-                    post_balance_scores.append(100.0)
-                    continue
-
                 assignments = self.scheduler.worker_assignments.get(worker_id, set())
-
                 if not assignments:
                     continue
 
-                # Contar asignaciones por puesto
-                post_counts: dict[int, int] = {}
+                post_counts: dict[int, int] = {i: 0 for i in range(num_shifts)}
                 for date in assignments:
                     if date in self.scheduler.schedule:
                         workers_in_posts = self.scheduler.schedule[date]
@@ -313,26 +256,20 @@ class OptimizationMetrics:
                             if assigned_worker == worker_id:
                                 post_counts[post_idx] = post_counts.get(post_idx, 0) + 1
 
-                if not post_counts:
+                total = sum(post_counts.values())
+                if total == 0:
                     continue
 
-                # Expected count per AVAILABLE post (not num_shifts, which would
-                # penalise no_last_post workers for never filling P4).
-                n_posts_used = len(post_counts)
-                expected_per_post = sum(post_counts.values()) / n_posts_used
-
-                if expected_per_post == 0:
+                expected = baselines.expected_post_counts(worker, total)
+                if expected is None:
+                    post_balance_scores.append(100.0)
                     continue
 
-                # Mean absolute relative deviation: 0 = perfect, 1 = all on one post
-                mard = (
-                    sum(abs(count - expected_per_post) for count in post_counts.values())
-                    / n_posts_used
-                    / expected_per_post
+                # Mean absolute relative deviation vs structural expectation.
+                mard = sum(abs(post_counts.get(i, 0) - expected.get(i, 0.0)) for i in range(num_shifts)) / num_shifts / (
+                    total / num_shifts
                 )
-                # Zona muerta: no penalizar desviaciones <= 20%.
                 effective_mard = max(0.0, mard - 0.20)
-                # Escala (tras la zona muerta): 0 % exceso → 100, 25 % exceso → 75, 100 % exceso → 0
                 worker_score = max(0.0, 100.0 - effective_mard * 100.0)
                 post_balance_scores.append(worker_score)
 

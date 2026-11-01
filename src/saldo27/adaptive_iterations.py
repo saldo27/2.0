@@ -4,7 +4,11 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
-from saldo27.utilities import get_effective_min_gap
+from saldo27.balance_validator import BalanceValidator
+from saldo27.constraint_checker import config_forced_dates
+from saldo27.optimization_metrics import OptimizationMetrics
+from saldo27.structural_score import StructuralScoreBaselines
+from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
 
 
 class AdaptiveIterationManager:
@@ -384,43 +388,38 @@ class AdaptiveIterationManager:
         )
 
     def calculate_quality_metrics(self, scheduler_instance) -> dict[str, float]:
-        """Calculate comprehensive quality metrics for the current schedule"""
+        """Calculate comprehensive quality metrics for the current schedule.
+
+        Balance / coverage components use the same structural baselines as
+        ``OptimizationMetrics`` so config-driven imbalance does not look like
+        poor optimisation quality.
+        """
         metrics = {}
 
         if not hasattr(scheduler_instance, "schedule") or not scheduler_instance.schedule:
             return metrics
 
         try:
-            # Basic coverage metrics
-            total_slots = sum(len(shifts) for shifts in scheduler_instance.schedule.values())
-            filled_slots = sum(
-                1 for shifts in scheduler_instance.schedule.values() for shift in shifts if shift is not None
-            )
-            metrics["coverage_percentage"] = (filled_slots / total_slots * 100) if total_slots > 0 else 0
+            opt = OptimizationMetrics(scheduler_instance)
+            baselines = StructuralScoreBaselines(scheduler_instance)
 
-            # Worker distribution quality
+            metrics["coverage_percentage"] = baselines.structural_fill_rate()
+
+            # Diagnostic raw spread (not used in overall_quality weights).
             worker_assignments = scheduler_instance.worker_assignments or {}
             assignment_counts = [len(assignments) for assignments in worker_assignments.values()]
-
             if assignment_counts:
                 metrics["assignment_std_dev"] = statistics.stdev(assignment_counts) if len(assignment_counts) > 1 else 0
-                metrics["assignment_balance"] = max(
-                    0, 100 - (metrics["assignment_std_dev"] / statistics.mean(assignment_counts) * 100)
-                )
                 metrics["min_assignments"] = min(assignment_counts)
                 metrics["max_assignments"] = max(assignment_counts)
                 metrics["assignment_range"] = metrics["max_assignments"] - metrics["min_assignments"]
 
-            # Weekend and holiday distribution
-            weekend_holiday_counts = self._calculate_weekend_holiday_distribution(scheduler_instance)
-            if weekend_holiday_counts:
-                metrics["weekend_balance"] = self._calculate_distribution_balance(weekend_holiday_counts)
+            metrics["assignment_balance"] = opt._calculate_workload_balance_score()
+            metrics["weekend_balance"] = opt._calculate_weekend_balance_score()
 
-            # Constraint satisfaction rate
-            constraint_satisfaction = self._evaluate_constraint_satisfaction(scheduler_instance)
+            constraint_satisfaction = self._evaluate_constraint_satisfaction(scheduler_instance, baselines)
             metrics.update(constraint_satisfaction)
 
-            # Overall quality score (weighted combination)
             metrics["overall_quality"] = self._calculate_overall_quality_score(metrics)
 
         except Exception as e:
@@ -462,40 +461,50 @@ class AdaptiveIterationManager:
         balance_score = max(0, 100 - (std_dev / mean_val * 50))
         return balance_score
 
-    def _evaluate_constraint_satisfaction(self, scheduler_instance) -> dict[str, float]:
+    def _evaluate_constraint_satisfaction(
+        self, scheduler_instance, baselines: StructuralScoreBaselines | None = None
+    ) -> dict[str, float]:
         """Evaluate how well constraints are satisfied"""
         metrics = {}
 
-        # Gap constraint satisfaction
         gap_violations = self._count_gap_violations(scheduler_instance)
         total_assignments = sum(len(assignments) for assignments in scheduler_instance.worker_assignments.values())
         metrics["gap_compliance"] = max(0, 100 - (gap_violations / max(1, total_assignments) * 100))
 
-        # Incompatibility constraint satisfaction
         incompatibility_violations = self._count_incompatibility_violations(scheduler_instance)
         total_shifts = sum(len(shifts) for shifts in scheduler_instance.schedule.values())
         metrics["incompatibility_compliance"] = max(0, 100 - (incompatibility_violations / max(1, total_shifts) * 50))
 
-        # Target shifts satisfaction
-        target_satisfaction = self._evaluate_target_satisfaction(scheduler_instance)
-        metrics["target_satisfaction"] = target_satisfaction
+        if baselines is None:
+            baselines = StructuralScoreBaselines(scheduler_instance)
+        metrics["target_satisfaction"] = self._evaluate_target_satisfaction(scheduler_instance, baselines)
 
         return metrics
 
     def _count_gap_violations(self, scheduler_instance) -> int:
-        """Count violations of gap between shifts constraint"""
+        """Count gap violations, exempting cadence and dual-mandatory pairs (config)."""
         violations = 0
         gap_days = getattr(scheduler_instance, "gap_between_shifts", 3)
         gap_periods = getattr(scheduler_instance, "gap_periods", None) or []
         workers_data = getattr(scheduler_instance, "workers_data", [])
-        workers_map = {w["id"]: w for w in workers_data}
+        date_utils = getattr(scheduler_instance, "date_utils", None)
+        protected_by_worker = {
+            worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data
+        }
 
-        for worker_id, assignments in scheduler_instance.worker_assignments.items():
-            worker_data = workers_map.get(worker_id)
-            sorted_dates = sorted(assignments)
+        for worker in workers_data:
+            if is_fixed_cadence(worker):
+                continue
+            worker_id = worker["id"]
+            sorted_dates = sorted(scheduler_instance.worker_assignments.get(worker_id, ()))
+            if len(sorted_dates) < 2:
+                continue
+            protected = protected_by_worker.get(worker_id, set())
             for i in range(1, len(sorted_dates)):
+                if sorted_dates[i] in protected and sorted_dates[i - 1] in protected:
+                    continue
                 effective_gap = get_effective_min_gap(
-                    worker_data,
+                    worker,
                     gap_days,
                     date=sorted_dates[i],
                     other_date=sorted_dates[i - 1],
@@ -508,12 +517,15 @@ class AdaptiveIterationManager:
         return violations
 
     def _count_incompatibility_violations(self, scheduler_instance) -> int:
-        """Count violations of incompatibility constraints"""
+        """Count real incompatibility violations (dual-mandatory/cadence pairs exempt)."""
         violations = 0
         workers_data = getattr(scheduler_instance, "workers_data", [])
+        date_utils = getattr(scheduler_instance, "date_utils", None)
+        protected_by_worker = {
+            worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data
+        }
 
-        # Build incompatibility map
-        incompatible_map = {}
+        incompatible_map: dict[str, set[str]] = {}
         for worker in workers_data:
             worker_id = worker["id"]
             incompatible_list = worker.get("incompatible_with", [])
@@ -521,37 +533,41 @@ class AdaptiveIterationManager:
                 incompatible_list = [incompatible_list] if incompatible_list else []
             incompatible_map[worker_id] = set(incompatible_list)
 
-        # Check each day for incompatibility violations
         for date, shifts in scheduler_instance.schedule.items():
             workers_on_date = [w for w in shifts if w is not None]
             for i, worker1 in enumerate(workers_on_date):
                 for worker2 in workers_on_date[i + 1 :]:
-                    if worker2 in incompatible_map.get(worker1, set()) or worker1 in incompatible_map.get(
+                    if worker2 not in incompatible_map.get(worker1, set()) and worker1 not in incompatible_map.get(
                         worker2, set()
                     ):
-                        violations += 1
+                        continue
+                    if date in protected_by_worker.get(worker1, ()) and date in protected_by_worker.get(worker2, ()):
+                        continue
+                    violations += 1
 
         return violations
 
-    def _evaluate_target_satisfaction(self, scheduler_instance) -> float:
-        """Evaluate how well target shift assignments are met"""
+    def _evaluate_target_satisfaction(self, scheduler_instance, baselines: StructuralScoreBaselines) -> float:
+        """Target satisfaction vs clique-scaled scoring targets (non-mandatory counts)."""
         workers_data = getattr(scheduler_instance, "workers_data", [])
         if not workers_data:
             return 100.0
 
+        date_utils = getattr(scheduler_instance, "date_utils", None)
         satisfaction_scores = []
 
         for worker in workers_data:
-            worker_id = worker["id"]
-            target_shifts = worker.get("target_shifts", 0)
-            actual_shifts = len(scheduler_instance.worker_assignments.get(worker_id, set()))
+            target_shifts = baselines.scoring_shift_target(worker)
+            assignments = scheduler_instance.worker_assignments.get(worker["id"], set())
+            _, actual = BalanceValidator.compute_non_mandatory_assigned(worker, assignments, date_utils)
 
-            if target_shifts == 0:
-                satisfaction_scores.append(100.0)  # No target, perfect satisfaction
+            if target_shifts <= 0:
+                satisfaction_scores.append(100.0)
             else:
-                # Calculate satisfaction as percentage (capped at 100%)
-                satisfaction = min(100.0, (actual_shifts / target_shifts) * 100)
-                satisfaction_scores.append(satisfaction)
+                # Symmetric: over- and under-assignment both reduce satisfaction.
+                ratio = actual / target_shifts
+                satisfaction = min(ratio, 2.0 - ratio) * 100.0 if ratio <= 2.0 else 0.0
+                satisfaction_scores.append(max(0.0, satisfaction))
 
         return statistics.mean(satisfaction_scores) if satisfaction_scores else 100.0
 

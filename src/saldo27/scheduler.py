@@ -11,7 +11,7 @@ from saldo27.scheduler_initializer import SchedulerInitializer
 from saldo27.scheduler_reporting import SchedulerReportingService
 from saldo27.scheduler_tracking import SchedulerTrackingState
 from saldo27.scheduler_validation import SchedulerValidationService
-from saldo27.utilities import DateTimeUtils, is_fixed_cadence
+from saldo27.utilities import DateTimeUtils, is_fixed_cadence, worker_flag_enabled
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -476,23 +476,25 @@ class Scheduler:
         """Objective number of last-post (Rosell) shifts for ``worker``.
 
         ``no_last_post`` workers get 0 and ``only_last_post`` workers get their
-        whole shift objective. Every other worker shares the Rosell days left
-        after the ``only_last_post`` workers, proportional to their objective.
-        A fixed-cadence worker is outside Rosell balancing: their objective is
-        the Rosell shifts they currently hold.
+        whole shift objective (100%). Every other worker shares the Rosell days
+        left after the ``only_last_post`` workers, proportional to their
+        objective. A fixed-cadence worker is outside Rosell balancing: their
+        objective is the Rosell shifts they currently hold.
         """
-        if worker.get("no_last_post", False):
+        if worker_flag_enabled(worker, "no_last_post"):
             return 0.0
-        if is_fixed_cadence(worker) and not worker.get("only_last_post", False):
+        if is_fixed_cadence(worker) and not worker_flag_enabled(worker, "only_last_post"):
             return float(self._current_last_post_count(worker["id"]))
         objective = self._shift_objective(worker)
-        if worker.get("only_last_post", False):
+        if worker_flag_enabled(worker, "only_last_post"):
             return float(objective)
 
         eligible_total = sum(
             self._shift_objective(w)
             for w in self.workers_data
-            if not w.get("no_last_post", False) and not w.get("only_last_post", False) and not is_fixed_cadence(w)
+            if not worker_flag_enabled(w, "no_last_post")
+            and not worker_flag_enabled(w, "only_last_post")
+            and not is_fixed_cadence(w)
         )
         if eligible_total <= 0:
             return 0.0
@@ -502,12 +504,14 @@ class Scheduler:
         reserved = sum(
             self._shift_objective(w)
             for w in self.workers_data
-            if w.get("only_last_post", False) and not w.get("no_last_post", False)
+            if worker_flag_enabled(w, "only_last_post") and not worker_flag_enabled(w, "no_last_post")
         )
         reserved += sum(
             self._current_last_post_count(w["id"])
             for w in self.workers_data
-            if is_fixed_cadence(w) and not w.get("no_last_post", False) and not w.get("only_last_post", False)
+            if is_fixed_cadence(w)
+            and not worker_flag_enabled(w, "no_last_post")
+            and not worker_flag_enabled(w, "only_last_post")
         )
         return max(0, rosell_days - reserved) * objective / eligible_total
 
@@ -615,6 +619,152 @@ class Scheduler:
 
         worker = next((item for item in self.workers_data if item["id"] == worker_id), None)
         return date in config_forced_dates(worker, self.date_utils)
+
+    def _worker_cfg(self, worker_id: str) -> dict[str, Any] | None:
+        return next((item for item in self.workers_data if item["id"] == worker_id), None)
+
+    def _record_post_move(self, worker_id: str | None, old_post: int, new_post: int) -> None:
+        """Point ``worker_posts`` at the post the worker holds after a same-day swap."""
+        if not worker_id:
+            return
+        posts = self.worker_posts.get(worker_id)
+        if not isinstance(posts, set):
+            posts = set()
+            self.worker_posts[worker_id] = posts
+        posts.add(new_post)
+        if old_post == new_post or old_post not in posts:
+            return
+        for check_date in self.worker_assignments.get(worker_id, ()):
+            if self._get_worker_assigned_to_post(check_date, old_post) == worker_id:
+                return
+        posts.discard(old_post)
+
+    def _swap_posts_same_day(self, date: datetime, post_a: int, post_b: int) -> None:
+        """Swap two workers on the same date and keep post tracking consistent."""
+        slots = self.schedule[date]
+        worker_a = slots[post_a]
+        worker_b = slots[post_b]
+        slots[post_a], slots[post_b] = worker_b, worker_a
+        self._record_post_move(worker_a, post_a, post_b)
+        self._record_post_move(worker_b, post_b, post_a)
+
+    def _can_move_worker_to_last_post(self, worker_id: str, date: datetime) -> bool:
+        """Whether ``worker_id`` may take Rosell on ``date`` without new hard violations."""
+        cfg = self._worker_cfg(worker_id)
+        if cfg is None:
+            return False
+        if cfg.get("no_last_post", False):
+            return False
+        checker = getattr(self, "constraint_checker", None)
+        if checker is not None and checker._would_exceed_consecutive_last_post(worker_id, date, True):
+            return False
+        return True
+
+    def _try_swap_off_last_post(self, worker_id: str, date: datetime, last_post: int) -> bool:
+        """Move ``worker_id`` off Rosell via a same-day post swap. Returns True on success."""
+        slots = self.schedule.get(date)
+        if not slots or slots[last_post] != worker_id:
+            return False
+        holder_cfg = self._worker_cfg(worker_id)
+        if holder_cfg and holder_cfg.get("only_last_post", False):
+            return False
+
+        for other_post, partner_id in enumerate(slots):
+            if other_post == last_post or partner_id is None or partner_id == worker_id:
+                continue
+            partner_cfg = self._worker_cfg(partner_id)
+            if partner_cfg and partner_cfg.get("only_last_post", False):
+                continue
+            if not self._can_move_worker_to_last_post(partner_id, date):
+                continue
+            self._swap_posts_same_day(date, last_post, other_post)
+            logging.info(
+                f"Fixed consecutive last-post: swapped {worker_id} off Rosell with "
+                f"{partner_id} on {date.strftime('%Y-%m-%d')} (posts {last_post + 1}↔{other_post + 1})"
+            )
+            return True
+        return False
+
+    def _try_refill_empty_post(self, date: datetime, post: int, exclude_worker_id: str | None = None) -> bool:
+        """Fill an empty post using schedule-builder scoring. Returns True if filled."""
+        slots = self.schedule.get(date)
+        if slots is None or slots[post] is not None:
+            return False
+
+        builder = getattr(self, "schedule_builder", None)
+        if builder is None or not hasattr(builder, "_calculate_worker_score"):
+            return False
+
+        ranked: list[tuple[float, str]] = []
+        for worker_data in self.workers_data:
+            candidate_id = worker_data["id"]
+            if candidate_id == exclude_worker_id:
+                continue
+            if date in self.worker_assignments.get(candidate_id, ()):
+                continue
+            score = builder._calculate_worker_score(worker_data, date, post, relaxation_level=1)
+            if score == float("-inf"):
+                continue
+            ranked.append((score, candidate_id))
+
+        if not ranked:
+            # Last attempt: slightly more permissive scoring before leaving a hole.
+            for worker_data in self.workers_data:
+                candidate_id = worker_data["id"]
+                if candidate_id == exclude_worker_id:
+                    continue
+                if date in self.worker_assignments.get(candidate_id, ()):
+                    continue
+                score = builder._calculate_worker_score(worker_data, date, post, relaxation_level=2)
+                if score == float("-inf"):
+                    continue
+                ranked.append((score, candidate_id))
+
+        if not ranked:
+            return False
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        best_id = ranked[0][1]
+        slots[post] = best_id
+        self._update_tracking_data(best_id, date, post, removing=False)
+        logging.info(
+            f"Refilled empty post {post + 1} on {date.strftime('%Y-%m-%d')} with {best_id} "
+            f"after consecutive-Rosell repair"
+        )
+        return True
+
+    def _repair_consecutive_last_post_on_date(self, worker_id: str, date: datetime) -> bool:
+        """Repair a consecutive-Rosell hit on ``date`` without leaving a hole when possible.
+
+        Order: same-day post swap → unassign+refill → unassign only (last resort).
+        """
+        slots = self.schedule.get(date)
+        if not slots:
+            return False
+        last_post = len(slots) - 1
+        if slots[last_post] != worker_id:
+            # Worker may sit on a non-last post for this date in the run window; nothing to do.
+            return False
+
+        if self._try_swap_off_last_post(worker_id, date, last_post):
+            return True
+
+        # Swap failed — unassign then try to refill so coverage does not drop.
+        slots[last_post] = None
+        self.worker_assignments[worker_id].discard(date)
+        self._update_tracking_data(worker_id, date, last_post, removing=True)
+        refilled = self._try_refill_empty_post(date, last_post, exclude_worker_id=worker_id)
+        if refilled:
+            logging.info(
+                f"Fixed consecutive last-post violation: replaced {worker_id} on "
+                f"{date.strftime('%Y-%m-%d')} Rosell"
+            )
+        else:
+            logging.warning(
+                f"Fixed consecutive last-post by unassigning {worker_id} from "
+                f"{date.strftime('%Y-%m-%d')} but could not refill the empty Rosell slot"
+            )
+        return True
 
     def _fix_constraint_violations(self, violations: list[dict[str, Any]] | None = None) -> int:
         """
@@ -752,9 +902,8 @@ class Scheduler:
                         fixes_made += 1
 
                 elif violation["type"] == "consecutive_last_post":
-                    # Fix by unassigning the worker from one of the shifts in the
-                    # over-length last-post run (prefer the most recent date in
-                    # the run so earlier, already-settled shifts are undisturbed).
+                    # Prefer a same-day post swap so coverage stays intact. Only
+                    # unassign as a last resort, and then refill the emptied slot.
                     worker_id = violation["worker_id"]
                     date1 = violation["date1"]
                     date2 = violation["date2"]
@@ -773,31 +922,17 @@ class Scheduler:
                         )
                         continue
 
-                    candidates_to_unassign = [d for d in (date2, date1) if d is not None]
+                    candidates = [d for d in (date2, date1) if d is not None]
                     fixed = False
-                    for date_to_unassign in candidates_to_unassign:
+                    for date_to_fix in candidates:
                         if schedule_builder and not schedule_builder._can_modify_assignment(
                             worker_id,
-                            date_to_unassign,
+                            date_to_fix,
                             "fix_consecutive_last_post",
                             enforce_monthly_target_floor=False,
                         ):
                             continue
-
-                        shift_num = None
-                        if date_to_unassign in self.schedule:
-                            for i, worker in enumerate(self.schedule[date_to_unassign]):
-                                if worker == worker_id:
-                                    shift_num = i
-                                    break
-
-                        if shift_num is not None:
-                            self.schedule[date_to_unassign][shift_num] = None
-                            self.worker_assignments[worker_id].discard(date_to_unassign)
-                            self._update_tracking_data(worker_id, date_to_unassign, shift_num, removing=True)
-                            logging.info(
-                                f"Fixed consecutive last-post violation: Unassigned worker {worker_id} from {date_to_unassign}"
-                            )
+                        if self._repair_consecutive_last_post_on_date(worker_id, date_to_fix):
                             fixes_made += 1
                             fixed = True
                             break

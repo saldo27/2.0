@@ -2,7 +2,7 @@
 Sistema de Generación de Calendario de guardias - Interfaz Streamlit
 Reemplazo moderno de la interfaz Kivy con funcionalidad web
 
-Versión: 3.5 (Septiembre 2026)
+Versión: 3.6 (Noviembre 2026)
 """
 
 # IMPORTANTE: Configurar locale ANTES de importar streamlit
@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import traceback
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -42,7 +43,12 @@ from saldo27.application.use_cases import (
 from saldo27.license_manager import license_manager
 from saldo27.scheduler import Scheduler
 from saldo27.scheduler_config import SchedulerConfig, setup_logging
-from saldo27.utilities import format_gap_periods_text, normalize_gap_periods, parse_gap_periods_text
+from saldo27.utilities import (
+    format_gap_periods_text,
+    normalize_gap_periods,
+    parse_gap_periods_text,
+    worker_flag_enabled,
+)
 
 # Suprimir debug output de librerías externas
 logging.getLogger("pdfplumber").setLevel(logging.WARNING)
@@ -50,7 +56,7 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # Constante de versión
-APP_VERSION = "3.5"
+APP_VERSION = "3.6"
 
 # ===== IMPORTS FORZADOS PARA PYINSTALLER =====
 # Estos módulos se importan dinámicamente en otros archivos,
@@ -219,6 +225,9 @@ if "config" not in st.session_state:
 if "fa_pending_result" not in st.session_state:
     st.session_state.fa_pending_result = None
 
+if "schedule_pre_fa" not in st.session_state:
+    st.session_state.schedule_pre_fa = None
+
 if "license_checked" not in st.session_state:
     st.session_state.license_checked = True
     can_use, message, remaining = license_manager.can_use()
@@ -240,6 +249,8 @@ if "analytics_insights" not in st.session_state:
 # Schedule Analysis (Revisión)
 if "revision_stats" not in st.session_state:
     st.session_state.revision_stats = None
+if "revision_display_scheduler" not in st.session_state:
+    st.session_state.revision_display_scheduler = None
 if "revision_alerts" not in st.session_state:
     st.session_state.revision_alerts = None
 if "revision_analyzer" not in st.session_state:
@@ -460,6 +471,7 @@ def load_schedule_from_json(uploaded_file):
                     # A freshly imported schedule invalidates any Ajuste Final
                     # result computed against the previous one.
                     st.session_state.fa_pending_result = None
+                    st.session_state.schedule_pre_fa = copy.deepcopy(schedule)
 
                     return True, "✅ Calendario y configuración importados correctamente"
             except Exception as e:
@@ -556,6 +568,7 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             # A freshly generated schedule invalidates any Ajuste Final
             # result computed against the previous one.
             st.session_state.fa_pending_result = None
+            st.session_state.schedule_pre_fa = copy.deepcopy(scheduler.schedule)
             return True, result.message
 
         return False, result.message
@@ -630,13 +643,149 @@ def compute_schedule_changes(
     return changes
 
 
-def get_worker_statistics():
-    """Obtener estadísticas de asignaciones por médico usando el motor central"""
+def _norm_worker_key(value: object) -> str:
+    """Normalize worker id/name for matching (case/space insensitive)."""
+    return " ".join(str(value).strip().casefold().split())
+
+
+def _plantilla_workers_by_id(
+    workers_config: list[dict[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Index plantilla workers by normalized id and name for resilient matching."""
+    if workers_config is None:
+        workers_config = collect_rosell_flag_sources()
+    indexed: dict[str, dict[str, Any]] = {}
+    for worker in workers_config:
+        if not isinstance(worker, dict) or worker.get("id") is None:
+            continue
+        indexed[_norm_worker_key(worker["id"])] = worker
+        name = worker.get("name")
+        if name:
+            indexed.setdefault(_norm_worker_key(name), worker)
+    return indexed
+
+
+def collect_rosell_flag_sources(
+    extra_sources: list[list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Merge worker dicts that may carry ``no_last_post`` / ``only_last_post``.
+
+    Sources (later sources only promote True flags onto earlier ones):
+    1. ``st.session_state.workers_data`` (plantilla UI)
+    2. Live generation ``scheduler.workers_data`` when present
+    3. Any ``extra_sources`` (e.g. snapshot taken before swapping the active scheduler)
+    """
+    merged: dict[str, dict[str, Any]] = {}
+
+    def _ingest(workers: list[dict[str, Any]] | None) -> None:
+        for worker in workers or []:
+            if not isinstance(worker, dict) or worker.get("id") is None:
+                continue
+            key = _norm_worker_key(worker["id"])
+            current = merged.get(key)
+            if current is None:
+                merged[key] = dict(worker)
+                continue
+            # Promote Rosell flags; keep the richest known record.
+            if worker_flag_enabled(worker, "no_last_post"):
+                current["no_last_post"] = True
+                current["only_last_post"] = False
+            elif worker_flag_enabled(worker, "only_last_post") and not worker_flag_enabled(
+                current, "no_last_post"
+            ):
+                current["only_last_post"] = True
+
+    _ingest(list(st.session_state.get("workers_data") or []))
+    live = st.session_state.get("scheduler")
+    if live is not None and getattr(live, "workers_data", None):
+        _ingest(list(live.workers_data))
+    for source in extra_sources or []:
+        _ingest(list(source))
+    return list(merged.values())
+
+
+def sync_rosell_flags_from_plantilla(
+    scheduler: Scheduler, workers_config: list[dict[str, Any]] | None = None
+) -> int:
+    """Promote ``no_last_post`` / ``only_last_post`` from the plantilla onto ``scheduler``.
+
+    Only turns flags **on** from the plantilla. Never clears a True already on
+    the scheduler (a stale/incomplete plantilla must not wipe generation flags).
+    Returns how many workers were changed.
+    """
+    plantilla = _plantilla_workers_by_id(workers_config)
+    if not plantilla:
+        return 0
+
+    updated = 0
+    for worker in scheduler.workers_data:
+        cfg = plantilla.get(_norm_worker_key(worker.get("id", "")))
+        if cfg is None:
+            name = worker.get("name")
+            if name:
+                cfg = plantilla.get(_norm_worker_key(name))
+        if cfg is None:
+            continue
+        before_no = worker_flag_enabled(worker, "no_last_post")
+        before_only = worker_flag_enabled(worker, "only_last_post")
+        no_last = before_no or worker_flag_enabled(cfg, "no_last_post")
+        only_last = (not no_last) and (before_only or worker_flag_enabled(cfg, "only_last_post"))
+        if before_no != no_last or before_only != only_last:
+            updated += 1
+        worker["no_last_post"] = no_last
+        worker["only_last_post"] = only_last
+    return updated
+
+
+def _rosell_objective_for_stats(
+    scheduler: Scheduler,
+    worker_data: dict[str, Any] | None,
+    *,
+    shift_target: int | float,
+    plantilla_cfg: dict[str, Any] | None,
+) -> tuple[int, bool, bool]:
+    """Return ``(obj_rosell, no_last, only_last)`` for the statistics table.
+
+    ``no_last_post`` → 0. ``only_last_post`` → 100% of the shift objective shown
+    in the same row. Flags are the OR of scheduler worker + plantilla.
+    """
+    no_last = worker_flag_enabled(worker_data, "no_last_post") or worker_flag_enabled(
+        plantilla_cfg, "no_last_post"
+    )
+    only_last = (not no_last) and (
+        worker_flag_enabled(worker_data, "only_last_post")
+        or worker_flag_enabled(plantilla_cfg, "only_last_post")
+    )
+    if worker_data is not None:
+        worker_data["no_last_post"] = no_last
+        worker_data["only_last_post"] = only_last
+    if no_last:
+        return 0, True, False
+    if only_last:
+        try:
+            return int(round(float(shift_target))), False, True
+        except (TypeError, ValueError):
+            return 0, False, True
+    if worker_data is None:
+        return 0, False, False
+    return round(scheduler.get_last_post_objective(worker_data)), False, False
+
+
+def get_worker_statistics(workers_config: list[dict[str, Any]] | None = None):
+    """Obtener estadísticas de asignaciones por médico usando el motor central.
+
+    ``workers_config`` is the authoritative source of Rosell flags when the active
+    scheduler is a Revision display object (plantilla / generation snapshot).
+    """
     if st.session_state.scheduler is None:
         return None
 
     # Usar el calculador de estadísticas centralizado
     scheduler = st.session_state.scheduler
+    flag_source = workers_config if workers_config is not None else collect_rosell_flag_sources()
+    # Promote missing Rosell flags from plantilla; never wipe flags already on.
+    sync_rosell_flags_from_plantilla(scheduler, flag_source)
+    plantilla = _plantilla_workers_by_id(flag_source)
     core_stats = scheduler.stats.calculate_statistics()
 
     # Rosell = último puesto de cada día. Con variable_shifts el índice del
@@ -674,27 +823,23 @@ def get_worker_statistics():
         weekend_deviation = weekend_shifts - weekend_target
         weekend_deviation_pct = (weekend_deviation / weekend_target * 100) if weekend_target > 0 else 0
 
-        # Rosell (último puesto cubierto de cada día)
+        # Rosell: no_last → 0; only_last → 100% del Objetivo de turnos de la fila.
+        plantilla_cfg = plantilla.get(_norm_worker_key(worker_id))
+        if plantilla_cfg is None and worker_data and worker_data.get("name"):
+            plantilla_cfg = plantilla.get(_norm_worker_key(worker_data["name"]))
         rosell_count = rosell_by_worker.get(worker_id, 0)
-        # Workers with no_last_post=True have rosell target = 0
-        # Workers with only_last_post=True: target = all their shifts, deviation = 0
-        if worker_data and worker_data.get("no_last_post", False):
-            rosell_target = 0
-            rosell_deviation = rosell_count if rosell_count > 0 else 0
-            rosell_deviation_pct = float("inf") if rosell_count > 0 else 0.0
-        elif worker_data and worker_data.get("only_last_post", False):
-            rosell_target = target
-            rosell_deviation = 0
-            rosell_deviation_pct = 0.0
+        rosell_target, is_no_last, _is_only_last = _rosell_objective_for_stats(
+            scheduler, worker_data, shift_target=target, plantilla_cfg=plantilla_cfg
+        )
+        rosell_deviation = rosell_count - rosell_target
+        if is_no_last and rosell_count > 0:
+            rosell_deviation_pct = float("inf")
+        elif rosell_target > 0:
+            rosell_deviation_pct = rosell_deviation / rosell_target * 100
+        elif rosell_count > 0:
+            rosell_deviation_pct = float("inf")
         else:
-            rosell_target = round(scheduler.get_last_post_objective(worker_data)) if worker_data else 0
-            rosell_deviation = rosell_count - rosell_target
-            if rosell_target > 0:
-                rosell_deviation_pct = rosell_deviation / rosell_target * 100
-            elif rosell_count > 0:
-                rosell_deviation_pct = float("inf")
-            else:
-                rosell_deviation_pct = 0.0
+            rosell_deviation_pct = 0.0
 
         # Format the Rosell deviation percentage
         if rosell_deviation_pct == float("inf"):
@@ -945,7 +1090,7 @@ def render_final_adjustment_result(result: dict[str, Any]) -> None:
                         f"{_fa_scheduler.start_date.strftime('%Y%m%d')}_{_fa_scheduler.end_date.strftime('%Y%m%d')}"
                     )
                     _fa_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    _fa_filename = f"calendario_ajuste_final_{_fa_period_str}_{_fa_ts}.pdf"
+                    _fa_filename = f"schedule_all_months_adjusted_{_fa_period_str}_{_fa_ts}.pdf"
                     _fa_generated = _fa_exporter.export_all_months_calendar(filename=_fa_filename)
                     if _fa_generated:
                         st.success(f"✅ PDF generado: {_fa_generated}")
@@ -959,12 +1104,707 @@ def render_final_adjustment_result(result: dict[str, Any]) -> None:
         st.info("ℹ️ No hay calendario disponible para mostrar.")
 
 
-def check_violations():
-    """Verificar violaciones de restricciones usando el motor central"""
+
+@contextmanager
+def temporary_schedule_snapshot(schedule_snapshot: dict | None):
+    """Temporarily point the live scheduler at ``schedule_snapshot`` for UI rendering.
+
+    Used so the Estadísticas tab can show the pre-Ajuste-Final repartition while
+    the active ``scheduler.schedule`` remains the post-adjustment one.
+    """
+    scheduler = st.session_state.scheduler
+    if scheduler is None or schedule_snapshot is None:
+        yield False
+        return
+    original_schedule = scheduler.schedule
+    original_session_schedule = st.session_state.schedule
+    try:
+        scheduler.schedule = copy.deepcopy(schedule_snapshot)
+        st.session_state.schedule = scheduler.schedule
+        if hasattr(scheduler, "_synchronize_tracking_data"):
+            scheduler._synchronize_tracking_data()
+        yield True
+    finally:
+        scheduler.schedule = original_schedule
+        st.session_state.schedule = original_session_schedule
+        if hasattr(scheduler, "_synchronize_tracking_data"):
+            scheduler._synchronize_tracking_data()
+
+
+@contextmanager
+def temporary_active_scheduler(scheduler: Scheduler | None):
+    """Temporarily replace ``st.session_state.scheduler`` / ``schedule`` for rendering."""
+    if scheduler is None:
+        yield False
+        return
+    original_scheduler = st.session_state.scheduler
+    original_session_schedule = st.session_state.schedule
+    try:
+        st.session_state.scheduler = scheduler
+        st.session_state.schedule = scheduler.schedule
+        yield True
+    finally:
+        st.session_state.scheduler = original_scheduler
+        st.session_state.schedule = original_session_schedule
+
+
+def build_revision_display_scheduler(
+    analyzer, workers_config: list[dict[str, Any]] | None = None
+) -> Scheduler:
+    """Build a display-only Scheduler from a parsed ``ScheduleAnalyzer`` calendar.
+
+    Objectives (``_raw_target`` / ``target_shifts``) are set to each worker's
+    actual assignment count so the shared Estadísticas panel can render the
+    same columns/charts without inventing unreachable targets.
+
+    Rosell flags (``no_last_post`` / ``only_last_post``) are copied from the
+    configured plantilla when available, so Obj. Rosell stays 0 / 100%.
+    """
+    num_shifts = int(getattr(analyzer, "shifts_per_day", 4) or 4)
+    schedule: dict[datetime, list] = {}
+    assignment_counts: dict[str, int] = {}
+
+    for day_data in getattr(analyzer, "calendar_data", []) or []:
+        day = day_data.get("date")
+        if day is None:
+            continue
+        if not isinstance(day, datetime):
+            day = datetime.combine(day, datetime.min.time())
+        slots: list = [None] * num_shifts
+        positioned = day_data.get("workers_with_position") or []
+        if positioned:
+            for worker_name, pos in positioned:
+                if worker_name and 0 <= int(pos) < num_shifts:
+                    slots[int(pos)] = worker_name
+        else:
+            for idx, worker_name in enumerate(day_data.get("workers") or []):
+                if worker_name and idx < num_shifts:
+                    slots[idx] = worker_name
+        schedule[day] = slots
+        for worker_name in slots:
+            if worker_name:
+                assignment_counts[worker_name] = assignment_counts.get(worker_name, 0) + 1
+
+    if not schedule:
+        raise ValueError("El analizador no tiene días parseados para mostrar estadísticas.")
+
+    if workers_config is None:
+        workers_config = collect_rosell_flag_sources()
+    configured_by_id = _plantilla_workers_by_id(workers_config)
+
+    workers_data = []
+    for worker_id in sorted(assignment_counts):
+        count = assignment_counts[worker_id]
+        cfg = configured_by_id.get(_norm_worker_key(worker_id), {})
+        no_last = worker_flag_enabled(cfg, "no_last_post")
+        only_last = (not no_last) and worker_flag_enabled(cfg, "only_last_post")
+        workers_data.append(
+            {
+                "id": worker_id,
+                "name": str(cfg.get("name") or worker_id),
+                "target_shifts": count,
+                "_raw_target": count,
+                "work_percentage": float(cfg.get("work_percentage", 100) or 100),
+                # Plantilla fields needed for Verificación de Restricciones
+                "work_periods": str(cfg.get("work_periods", "") or ""),
+                "mandatory_days": str(cfg.get("mandatory_days", "") or ""),
+                "days_off": str(cfg.get("days_off", "") or ""),
+                "incompatible_with": list(cfg.get("incompatible_with") or []),
+                "is_incompatible": bool(cfg.get("is_incompatible", False)),
+                "auto_calculate_shifts": bool(cfg.get("auto_calculate_shifts", True)),
+                "no_last_post": no_last,
+                "only_last_post": only_last,
+                "has_cadence": bool(cfg.get("has_cadence", False)),
+                "cadence_days": int(cfg.get("cadence_days", 0) or 0),
+                "cadence_start_date": str(cfg.get("cadence_start_date", "") or ""),
+            }
+        )
+
+    holidays = []
+    for holiday in getattr(analyzer, "holidays", []) or []:
+        if isinstance(holiday, datetime):
+            holidays.append(holiday)
+        else:
+            holidays.append(datetime.combine(holiday, datetime.min.time()))
+
+    start_date = min(schedule)
+    end_date = max(schedule)
+    session_cfg = st.session_state.get("config") or {}
+    display = Scheduler(
+        {
+            "start_date": start_date,
+            "end_date": end_date,
+            "num_shifts": num_shifts,
+            "workers_data": workers_data,
+            "holidays": holidays,
+            "variable_shifts": list(session_cfg.get("variable_shifts") or []),
+            "gap_between_shifts": int(session_cfg.get("gap_between_shifts") or 3),
+            "gap_periods": list(session_cfg.get("gap_periods") or []),
+            "max_consecutive_weekends": int(session_cfg.get("max_consecutive_weekends") or 3),
+        }
+    )
+    # TargetCalculator overwrites targets on init; restore actual counts for display.
+    for worker in display.workers_data:
+        count = assignment_counts.get(worker["id"], 0)
+        worker["target_shifts"] = count
+        worker["_raw_target"] = count
+
+    display.schedule = schedule
+    display.schedule_builder = getattr(display, "schedule_builder", None)
+    if display.schedule_builder is None:
+        from saldo27.schedule_builder import ScheduleBuilder
+
+        display.schedule_builder = ScheduleBuilder(display)
+    display._synchronize_tracking_data()
+    # Re-apply after Scheduler init in case ingestion/cadence paths touch worker dicts.
+    sync_rosell_flags_from_plantilla(display, workers_config)
+    return display
+
+
+def render_assignment_statistics(
+    *,
+    title_suffix: str = "",
+    caption: str | None = None,
+    key_prefix: str = "stats",
+    workers_config: list[dict[str, Any]] | None = None,
+) -> None:
+    """Render the assignment / weekend / bridge statistics panel for the current schedule view.
+
+    ``key_prefix`` must be unique per call site: this panel is shown both in
+    Estadísticas (pre-FA) and Ajuste Final (post-FA), and Streamlit requires
+    distinct element keys for duplicated plotly charts / dataframes.
+
+    ``workers_config`` carries Rosell flags when the active scheduler is a
+    Revision display object swapped in via ``temporary_active_scheduler``.
+    """
+    header = "📊 Estadísticas de Asignación" + (f" — {title_suffix}" if title_suffix else "")
+    st.header(header)
+    if caption:
+        st.caption(caption)
+    _k = key_prefix
+
     if st.session_state.scheduler is None:
+        st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Reparto' en la barra lateral.")
+    else:
+        # Estadísticas por trabajador
+        stats_df = get_worker_statistics(workers_config=workers_config)
+
+        if stats_df is not None:
+            # Métricas generales - Totales
+            st.subheader("📈 Resumen General")
+            col1, col2, col3 = st.columns(3)
+
+            # CORRECCIÓN: Total Objetivo son los slots totales a cubrir según la
+            # configuración del scheduler (num_shifts × días del rango), no los
+            # tamaños reales de las listas del dict (que pueden quedarse cortos).
+            scheduler = st.session_state.scheduler
+            total_target = sum(
+                scheduler._get_shifts_for_date(d)
+                for d in scheduler._get_date_range(scheduler.start_date, scheduler.end_date)
+            )
+            total_assigned = stats_df["Asignados"].sum()
+            avg_deviation = stats_df["Desviación"].mean()
+
+            with col1:
+                st.metric("Total Objetivo", total_target)
+            with col2:
+                st.metric("Total Asignado", total_assigned, f"{total_assigned - total_target:+d}")
+            with col3:
+                st.metric("Desviación Promedio", f"{avg_deviation:+.1f}")
+
+            # Métricas de Weekend
+            st.subheader("🌙 Resumen Fines de semana")
+            st.caption("*Incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
+            col4, col5, col6 = st.columns(3)
+
+            # CORRECCIÓN: Objetivo Weekend debe ser el número real de slots de weekend a cubrir
+            # Usa _get_shifts_for_date para respetar la configuración (no len(shifts) del dict)
+            from datetime import timedelta
+
+            holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
+            total_weekend_target = 0
+            for d in scheduler._get_date_range(scheduler.start_date, scheduler.end_date):
+                is_weekend = scheduler.date_utils.is_weekend_day(d, holidays_set)
+                if is_weekend:
+                    total_weekend_target += scheduler._get_shifts_for_date(d)
+
+            total_weekend_assigned = stats_df["Weekend"].sum()
+            avg_weekend_deviation = stats_df["Desv. Wknd"].mean()
+
+            with col4:
+                st.metric("Objetivo Fines de Semana", total_weekend_target)
+            with col5:
+                st.metric(
+                    "Fines de semana Asignados",
+                    total_weekend_assigned,
+                    f"{total_weekend_assigned - total_weekend_target:+d}",
+                )
+            with col6:
+                st.metric("Desv. Weekend Prom.", f"{avg_weekend_deviation:+.1f}")
+
+            st.markdown("---")
+
+            # Tabla de estadísticas
+            st.subheader("📋 Estadísticas por Médico")
+            st.caption("*Fin de semana: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
+
+            # Colorear según desviación
+            def color_deviation(val):
+                if isinstance(val, str) and "%" in val:
+                    pct = float(val.replace("%", "").replace("+", ""))
+                    if abs(pct) <= 10:
+                        return "background-color: #d4edda"
+                    elif abs(pct) <= 15:
+                        return "background-color: #fff3cd"
+                    else:
+                        return "background-color: #f8d7da"
+                return ""
+
+            styled_df = stats_df.style.map(color_deviation, subset=["Desv. %", "Desv. Wknd %", "Desv. Rosell %"])
+
+            # Configurar ancho de columnas (9 caracteres ≈ 72px)
+            column_config_stats = {}
+            for col in styled_df.columns:
+                column_config_stats[col] = st.column_config.Column(col, width=72)
+
+            st.dataframe(
+                styled_df,
+                width="stretch",
+                hide_index=True,
+                column_config=column_config_stats,
+                key=f"{_k}_worker_stats_table",
+            )
+
+            # ---- Tabla de turnos por médico y mes ----
+            st.markdown("---")
+            st.subheader("📅 Turnos Asignados por Mes")
+
+            import locale
+            from collections import OrderedDict
+
+            scheduler = st.session_state.scheduler
+            month_names_es = {
+                1: "Ene",
+                2: "Feb",
+                3: "Mar",
+                4: "Abr",
+                5: "May",
+                6: "Jun",
+                7: "Jul",
+                8: "Ago",
+                9: "Sep",
+                10: "Oct",
+                11: "Nov",
+                12: "Dic",
+            }
+
+            # Determine which (year, month) combos exist in the schedule
+            months_in_schedule = OrderedDict()
+            for date in sorted(scheduler.schedule.keys()):
+                key = (date.year, date.month)
+                if key not in months_in_schedule:
+                    months_in_schedule[key] = f"{month_names_es[date.month]} {date.year}"
+
+            # Build per-worker, per-month counts
+            # Use the schedule as single source of truth (same as calculate_statistics)
+            # to stay in sync with the per-worker table above.
+            monthly_rows = []
+            for worker in scheduler.workers_data:
+                wid = worker["id"]
+                row = {"Médico": wid}
+                month_counts: dict[tuple[int, int], int] = {}
+                for d, shifts in scheduler.schedule.items():
+                    count = shifts.count(wid)
+                    if count:
+                        key = (d.year, d.month)
+                        month_counts[key] = month_counts.get(key, 0) + count
+                total = 0
+                for mkey, mname in months_in_schedule.items():
+                    cnt = month_counts.get(mkey, 0)
+                    row[mname] = cnt
+                    total += cnt
+                row["Total"] = total
+                monthly_rows.append(row)
+
+            # Totals row
+            totals_row: dict[str, Any] = {"Médico": "TOTAL"}
+            grand_total = 0
+            for mkey, mname in months_in_schedule.items():
+                col_sum = sum(r[mname] for r in monthly_rows)
+                totals_row[mname] = col_sum
+                grand_total += col_sum
+            totals_row["Total"] = grand_total
+            monthly_rows.append(totals_row)
+
+            monthly_df = pd.DataFrame(monthly_rows)
+
+            # Configure column widths (8 chars ≈ 64px)
+            column_config_monthly = {col: st.column_config.Column(col, width=64) for col in monthly_df.columns}
+
+            st.dataframe(
+                monthly_df,
+                width="stretch",
+                hide_index=True,
+                column_config=column_config_monthly,
+                key=f"{_k}_monthly_table",
+            )
+
+            # Gráfico de barras
+            st.markdown("---")
+            st.subheader("📊 Comparación Objetivo vs Asignado")
+
+            fig = go.Figure()
+            fig.add_trace(
+                go.Bar(name="Objetivo", x=stats_df["Médico"], y=stats_df["Objetivo"], marker_color="lightblue")
+            )
+            fig.add_trace(
+                go.Bar(name="Asignado", x=stats_df["Médico"], y=stats_df["Asignados"], marker_color="darkblue")
+            )
+
+            fig.update_layout(barmode="group", xaxis_title="Médico", yaxis_title="Número de Turnos", height=400)
+
+            st.plotly_chart(fig, width="stretch", key=f"{_k}_obj_vs_asg")
+
+            # Gráfico de desviación
+            st.markdown("---")
+            st.subheader("📈 Desviación por Médico")
+
+            fig2 = px.bar(
+                stats_df,
+                x="Médico",
+                y="Desviación",
+                color="Desviación",
+                color_continuous_scale=["red", "yellow", "green", "yellow", "red"],
+                color_continuous_midpoint=0,
+            )
+
+            fig2.update_layout(height=400)
+            st.plotly_chart(fig2, width="stretch", key=f"{_k}_deviation")
+
+            # Gráfico de Weekend (Vie/Sab/Dom + Festivos + Pre-festivos)
+            st.markdown("---")
+            st.subheader("🌙 Turnos de Finde por Médico")
+            st.caption("*Incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
+
+            fig3 = go.Figure()
+            fig3.add_trace(
+                go.Bar(
+                    name="Objetivo Findes", x=stats_df["Médico"], y=stats_df["Obj. Weekend"], marker_color="lightsalmon"
+                )
+            )
+            fig3.add_trace(
+                go.Bar(name="Weekend Asignados", x=stats_df["Médico"], y=stats_df["Weekend"], marker_color="darkred")
+            )
+
+            fig3.update_layout(barmode="group", xaxis_title="Médico", yaxis_title="Turnos de Weekend", height=400)
+
+            st.plotly_chart(fig3, width="stretch", key=f"{_k}_weekend_asg")
+
+            # Gráfico de desviación de weekend
+            st.markdown("---")
+            st.subheader("📉 Desviación de Weekend por Médico")
+
+            fig4 = px.bar(
+                stats_df,
+                x="Médico",
+                y="Desv. Wknd",
+                color="Desv. Wknd",
+                color_continuous_scale=["red", "yellow", "green", "yellow", "red"],
+                color_continuous_midpoint=0,
+            )
+
+            fig4.update_layout(height=400, yaxis_title="Desviación (turnos)")
+            st.plotly_chart(fig4, width="stretch", key=f"{_k}_weekend_dev")
+
+            # Gráficos de Puentes (Bridge)
+            st.markdown("---")
+            st.subheader("🌉 Turnos de Puente por Médico")
+            st.caption(
+                "*Puente: periodos de 3-4 días que incluyen festivos adyacentes a fin de semana (Jue-Dom, Vie-Dom, Vie-Lun, Vie-Mar). Se cuenta cada turno individual en días de puente.*"
+            )
+
+            # Verificar si el scheduler tiene soporte para puentes
+            scheduler = st.session_state.scheduler
+            has_bridge_support = (
+                hasattr(scheduler, "worker_bridge_counts")
+                and hasattr(scheduler, "get_bridge_objective_for_worker")
+                and hasattr(scheduler, "count_bridges_for_worker")
+            )
+
+            if not has_bridge_support:
+                st.info(
+                    "ℹ️ El reparto actual no incluye información de puentes, genere uno nuevo para ver estas estadísticas."
+                )
+            else:
+                # Obtener estadísticas de puentes
+                bridge_stats = {}
+
+                for worker in scheduler.workers_data:
+                    worker_id = worker["id"]
+                    assigned_bridges = scheduler.count_bridges_for_worker(worker_id)
+                    objective = scheduler.get_bridge_objective_for_worker(worker_id)
+                    deviation = assigned_bridges - objective
+                    bridge_stats[worker_id] = {
+                        "Asignados": assigned_bridges,
+                        "Objetivo": objective,
+                        "Desviación": deviation,
+                    }
+
+                # Crear DataFrame de puentes
+                bridge_df = pd.DataFrame.from_dict(bridge_stats, orient="index").reset_index()
+                bridge_df.columns = ["Médico", "Asignados", "Objetivo", "Desviación"]
+
+                # Gráfico comparativo de puentes
+                fig5 = go.Figure()
+                fig5.add_trace(
+                    go.Bar(
+                        name="Objetivo Turnos Puente",
+                        x=bridge_df["Médico"],
+                        y=bridge_df["Objetivo"],
+                        marker_color="lightgreen",
+                    )
+                )
+                fig5.add_trace(
+                    go.Bar(
+                        name="Turnos Puente Asignados",
+                        x=bridge_df["Médico"],
+                        y=bridge_df["Asignados"],
+                        marker_color="darkgreen",
+                    )
+                )
+
+                fig5.update_layout(
+                    barmode="group", xaxis_title="Médico", yaxis_title="Número de Turnos en Puente", height=400
+                )
+
+                st.plotly_chart(fig5, width="stretch", key=f"{_k}_bridge_asg")
+
+                # Gráfico de desviación de puentes
+                st.markdown("---")
+                st.subheader("📉 Desviación de Turnos en Puente por Médico")
+                st.caption("*Tolerancia objetivo: ±0.5 guardias*")
+
+                # Añadir indicador de tolerancia
+                bridge_df["Dentro_Tolerancia"] = bridge_df["Desviación"].abs() <= 0.5
+
+                fig6 = go.Figure()
+
+                # Barras coloreadas según tolerancia
+                colors = ["green" if x else "red" for x in bridge_df["Dentro_Tolerancia"]]
+
+                fig6.add_trace(
+                    go.Bar(
+                        x=bridge_df["Médico"],
+                        y=bridge_df["Desviación"],
+                        marker_color=colors,
+                        text=bridge_df["Desviación"].round(2),
+                        textposition="outside",
+                    )
+                )
+
+                # Líneas de tolerancia
+                fig6.add_hline(
+                    y=0.5,
+                    line_dash="dash",
+                    line_color="orange",
+                    annotation_text="Tolerancia +0.5",
+                    annotation_position="right",
+                )
+                fig6.add_hline(
+                    y=-0.5,
+                    line_dash="dash",
+                    line_color="orange",
+                    annotation_text="Tolerancia -0.5",
+                    annotation_position="right",
+                )
+                fig6.add_hline(y=0, line_dash="solid", line_color="gray", line_width=1)
+
+                fig6.update_layout(
+                    height=400, yaxis_title="Desviación (turnos)", xaxis_title="Médico", showlegend=False
+                )
+                st.plotly_chart(fig6, width="stretch", key=f"{_k}_bridge_dev")
+
+                # Tabla resumen de puentes
+                st.markdown("---")
+                st.subheader("📋 Resumen de Puentes por Médico")
+
+                # Formatear la tabla
+                bridge_display_df = bridge_df.copy()
+                bridge_display_df["Objetivo"] = bridge_display_df["Objetivo"].round(2)
+                bridge_display_df["Desviación"] = bridge_display_df["Desviación"].apply(lambda x: f"{x:+.2f}")
+                bridge_display_df["Estado"] = bridge_display_df["Dentro_Tolerancia"].apply(
+                    lambda x: "✅ OK" if x else "⚠️ Fuera de tolerancia"
+                )
+                bridge_display_df = bridge_display_df[["Médico", "Objetivo", "Asignados", "Desviación", "Estado"]]
+
+                # Colorear según estado
+                def color_bridge_status(row):
+                    if "⚠️" in str(row["Estado"]):
+                        return ["background-color: #f8d7da"] * len(row)
+                    else:
+                        return ["background-color: #d4edda"] * len(row)
+
+                styled_bridge_df = bridge_display_df.style.apply(color_bridge_status, axis=1)
+                # Configurar ancho de columnas (9 caracteres ≈ 72px)
+                column_config_bridge = {
+                    col: st.column_config.Column(col, width=72) for col in bridge_display_df.columns
+                }
+                st.dataframe(
+                    styled_bridge_df,
+                    width="stretch",
+                    hide_index=True,
+                    column_config=column_config_bridge,
+                    key=f"{_k}_bridge_table",
+                )
+
+
+
+def check_violations(scheduler: Scheduler | None = None):
+    """Verificar violaciones de restricciones usando el motor central"""
+    active = scheduler if scheduler is not None else st.session_state.scheduler
+    if active is None:
         return {}
 
-    return collect_constraint_violations(st.session_state.scheduler)
+    return collect_constraint_violations(active)
+
+
+CONSTRAINT_VIOLATION_CATEGORIES: list[dict[str, str]] = [
+    {
+        "key": "incompatibilidades",
+        "title": "🚫 Incompatibilidades",
+        "hint": "Médicos marcados como incompatibles no deben coincidir el mismo día.",
+        "recommendation": "Revise las incompatibilidades configuradas en los trabajadores.",
+    },
+    {
+        "key": "gap_minimo",
+        "title": "⏳ Días mínimos entre guardias",
+        "hint": (
+            "Mínimo global, o el del intervalo de cada fecha. "
+            "Si las dos fechas piden mínimos distintos, se exige el mayor. "
+            "Por debajo del 60 % de jornada se suma un día."
+        ),
+        "recommendation": "Aumente la plantilla o reduzca el gap si las violaciones son inevitables.",
+    },
+    {
+        "key": "patron_7_14",
+        "title": "📅 Patrón 7/14 días",
+        "hint": "Evita dos guardias del mismo día de la semana a exactamente 7 o 14 días.",
+        "recommendation": "Ajuste días obligatorios o aumente el número de trabajadores.",
+    },
+    {
+        "key": "patron_viernes_lunes",
+        "title": "🔀 Patrón viernes–lunes",
+        "hint": "Bloquea el par viernes↔lunes (3 días de separación).",
+        "recommendation": "Revise asignaciones cercanas al fin de semana o los días obligatorios.",
+    },
+    {
+        "key": "gap2_fin_semana",
+        "title": "🌉 Puente fin de semana (gap 2)",
+        "hint": "Con gap efectivo = 2, evita pares que cruzan el fin de semana (jue-sáb, vie-dom, etc.).",
+        "recommendation": "Revise el gap configurado o reasigne una de las dos fechas del par.",
+    },
+    {
+        "key": "mandatory",
+        "title": "🔒 Turnos obligatorios",
+        "hint": "Días marcados como obligatorios (o cadencia) deben quedar asignados.",
+        "recommendation": "Algunos turnos obligatorios faltan o fueron liberados en la optimización.",
+    },
+    {
+        "key": "fuera_cadencia",
+        "title": "🔁 Fuera de cadencia",
+        "hint": "Un médico con cadencia solo puede tener guardias en las fechas de su patrón.",
+        "recommendation": "Elimine las asignaciones extra o regenere el reparto.",
+    },
+    {
+        "key": "dias_no_disponibles",
+        "title": "🚫 Días no disponibles",
+        "hint": "No se debe asignar a un médico en sus días fuera (vacaciones / days_off).",
+        "recommendation": "Revise los rangos de días no disponibles del trabajador afectado.",
+    },
+    {
+        "key": "periodos_trabajo",
+        "title": "📆 Períodos de trabajo",
+        "hint": "Si hay work_periods, solo se asigna dentro de esos rangos.",
+        "recommendation": "Amplíe el período de trabajo o quite asignaciones fuera de rango.",
+    },
+    {
+        "key": "fines_semana_consecutivos",
+        "title": "📆 Fines de semana consecutivos",
+        "hint": "Máximo de fines de semana/festivos consecutivos (semanas ISO).",
+        "recommendation": "Suba el límite o redistribuya fines de semana entre la plantilla.",
+    },
+    {
+        "key": "ultimo_puesto",
+        "title": "🔢 Último puesto",
+        "hint": "Un médico no puede tener 2 o más Rosell seguidos en sus propias guardias. También respeta no_last_post / only_last_post.",
+        "recommendation": "Revise flags de último puesto o reasigne el puesto del día conflictivo.",
+    },
+]
+
+
+def render_constraint_verification(
+    *,
+    violations: dict[str, list[str]] | None = None,
+    title: str = "⚠️ Verificación de Restricciones",
+    caption: str | None = None,
+) -> None:
+    """Render the shared constraint-verification panel (Verificación / Revisión)."""
+    st.header(title)
+    if violations is None:
+        if st.session_state.scheduler is None:
+            st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Reparto' en la barra lateral.")
+            return
+        violations = check_violations()
+
+    total_violations = sum(len(violations.get(cat["key"], [])) for cat in CONSTRAINT_VIOLATION_CATEGORIES)
+
+    if total_violations == 0:
+        st.success("✅ ¡Excelente! No se encontraron violaciones de restricciones")
+    else:
+        st.error(f"❌ Se encontraron {total_violations} violaciones de restricciones")
+
+    st.caption(
+        caption
+        or (
+            "Comprueba todas las restricciones hard del sistema: incompatibilidades, gaps, "
+            "patrones 7/14 y viernes–lunes, puente gap-2, obligatorias, días fuera, "
+            "períodos de trabajo, fines de semana consecutivos y reglas de último puesto."
+        )
+    )
+
+    st.markdown("---")
+
+    def _render_violation_category(category: dict[str, str]) -> int:
+        items = violations.get(category["key"], [])
+        count = len(items)
+        st.subheader(category["title"])
+        st.caption(category["hint"])
+        if count == 0:
+            st.success("✅ 0 violaciones")
+        else:
+            st.error(f"❌ {count} violaciones")
+            with st.expander("Ver detalles"):
+                for item in items[:20]:
+                    st.write(f"• {item}")
+                if count > 20:
+                    st.write(f"... y {count - 20} más")
+        return count
+
+    category_counts: dict[str, int] = {}
+    for row_start in range(0, len(CONSTRAINT_VIOLATION_CATEGORIES), 3):
+        cols = st.columns(3)
+        for col, category in zip(
+            cols, CONSTRAINT_VIOLATION_CATEGORIES[row_start : row_start + 3], strict=False
+        ):
+            with col:
+                category_counts[category["key"]] = _render_violation_category(category)
+
+    if total_violations > 0:
+        st.markdown("---")
+        st.subheader("💡 Recomendaciones")
+        for category in CONSTRAINT_VIOLATION_CATEGORIES:
+            if category_counts.get(category["key"], 0) > 0:
+                st.warning(f"⚠️ {category['recommendation']}")
 
 
 # ==================== PREDICTIVE ANALYTICS ====================
@@ -1633,11 +2473,12 @@ with st.sidebar:
             _new_log_ph.warning(_log_text)
 
 # Tabs principales
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     [
         "👥 Gestión de Médicos",
         "📅 Calendario Generado",
         "📊 Estadísticas",
+        "⚖️ Ajuste Final",
         "⚠️ Verificación de Restricciones",
         "🔮 Predictive Analytics",
         "🔍 Revisión",
@@ -2362,587 +3203,124 @@ with tab2:
             else:
                 st.info("ℹ️ No se encontraron archivos PDF generados")
 
-            # ---- Ajuste Final ------------------------------------------------
-            st.markdown("---")
-            st.subheader("⚖️ Ajuste Final")
-            st.caption(
-                "Ciclo de reequilibrio post-generación: optimiza la distribución de turnos, "
-                "fines de semana y puentes respetando todas las restricciones."
-            )
 
-            # Render any pending result from a previous run BEFORE the button.
-            # This block stays visible across reruns (e.g. the PDF export
-            # button below triggers its own rerun) until it is replaced by a
-            # new Ajuste Final run or cleared when a new schedule is
-            # generated/imported — it is intentionally NOT a one-shot render,
-            # otherwise interacting with any button inside it (like the PDF
-            # export) would immediately wipe it on the very next rerun.
-            _fa_pending_result = st.session_state.get("fa_pending_result")
-            if _fa_pending_result is not None:
-                render_final_adjustment_result(_fa_pending_result)
-
-            if st.button("⚖️ Ejecutar Ajuste Final", type="secondary", key="btn_final_adjustment"):
-                _sched_fa = st.session_state.scheduler
-                _refreshed_pdfs: list[str] = []
-                _pdf_refresh_errors: list[str] = []
-                if _sched_fa is None or _sched_fa.schedule_builder is None:
-                    st.warning("⚠️ El calendario debe estar completamente generado antes de ejecutar el ajuste final.")
-                else:
-                    with st.spinner("Ejecutando ajuste final… esto puede tardar unos segundos."):
-                        try:
-                            from saldo27.final_adjustment_engine import FinalAdjustmentEngine
-
-                            _schedule_before_fa = copy.deepcopy(_sched_fa.schedule)
-
-                            engine = FinalAdjustmentEngine(_sched_fa)
-                            _before_metrics = engine.compute_metrics()
-                            _fa_results = engine.run(max_iterations=300)
-                            _after_metrics = _fa_results["after"]
-                            _fa_stats = _fa_results["stats"]
-                            _total_swaps = (
-                                _fa_stats["shift_swaps"]
-                                + _fa_stats["weekend_swaps"]
-                                + _fa_stats["bridge_swaps"]
-                                + _fa_stats.get("weekend_last_post_swaps", 0)
-                                + _fa_stats.get("ortools_reassignments", 0)
-                            )
-                            _fa_changes = compute_schedule_changes(_schedule_before_fa, _sched_fa.schedule)
-
-                            if _total_swaps > 0:
-                                try:
-                                    from saldo27.pdf_exporter import PDFExporter
-
-                                    _refreshed_pdfs, _pdf_refresh_errors = refresh_generated_report_pdfs(
-                                        _sched_fa, PDFExporter
-                                    )
-                                except Exception as _pdf_exc:
-                                    _pdf_refresh_errors.append(str(_pdf_exc))
-
-                        except Exception as _fa_exc:
-                            st.error(f"Error en el ajuste final: {_fa_exc}")
-                            logging.error("FinalAdjustmentEngine error", exc_info=True)
-                            _fa_results = None
-                        finally:
-                            # Sync session_state.schedule with scheduler schedule even if adjustment fails midway
-                            st.session_state.schedule = _sched_fa.schedule
-
-                    if _fa_results is not None:
-                        # Recalculate the "Score Final" shown in the sidebar
-                        # progress log so it reflects the post-adjustment
-                        # schedule instead of the stale pre-adjustment value.
-                        try:
-                            _fa_new_log_text = build_generation_summary_log(_sched_fa)
-                        except Exception:
-                            logging.error("Error recalculating summary log after Ajuste Final", exc_info=True)
-                            _fa_new_log_text = None
-                        if _fa_new_log_text:
-                            st.session_state._sidebar_log_content = ("code", _fa_new_log_text)
-
-                        # Persist the result so it survives the st.rerun() below and
-                        # is rendered (via the pending-result block above) on the
-                        # next script run — otherwise the immediate rerun discards
-                        # the success/info messages and table before they're shown.
-                        st.session_state.fa_pending_result = {
-                            "total_swaps": _total_swaps,
-                            "fa_stats": _fa_stats,
-                            "refreshed_pdfs": _refreshed_pdfs,
-                            "pdf_refresh_errors": _pdf_refresh_errors,
-                            "before_metrics": _before_metrics,
-                            "after_metrics": _after_metrics,
-                            "changes": _fa_changes,
-                        }
-                        st.rerun()
-
-# ==================== TAB 3: ESTADÍSTICAS ====================
+# ==================== TAB 3: ESTADÍSTICAS (reparto pre-Ajuste Final) ====================
 with tab3:
-    st.header("📊 Estadísticas de Asignación")
-
+    _pre_fa = st.session_state.get("schedule_pre_fa")
+    _fa_done = st.session_state.get("fa_pending_result") is not None
     if st.session_state.scheduler is None:
+        st.header("📊 Estadísticas de Asignación")
         st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Reparto' en la barra lateral.")
+    elif _fa_done and _pre_fa is not None:
+        with temporary_schedule_snapshot(_pre_fa):
+            render_assignment_statistics(
+                caption="📌 Datos del reparto **antes** de ejecutar el Ajuste Final.",
+                key_prefix="stats_pre_fa",
+            )
     else:
-        # Estadísticas por trabajador
-        stats_df = get_worker_statistics()
-
-        if stats_df is not None:
-            # Métricas generales - Totales
-            st.subheader("📈 Resumen General")
-            col1, col2, col3 = st.columns(3)
-
-            # CORRECCIÓN: Total Objetivo son los slots totales a cubrir según la
-            # configuración del scheduler (num_shifts × días del rango), no los
-            # tamaños reales de las listas del dict (que pueden quedarse cortos).
-            scheduler = st.session_state.scheduler
-            total_target = sum(
-                scheduler._get_shifts_for_date(d)
-                for d in scheduler._get_date_range(scheduler.start_date, scheduler.end_date)
-            )
-            total_assigned = stats_df["Asignados"].sum()
-            avg_deviation = stats_df["Desviación"].mean()
-
-            with col1:
-                st.metric("Total Objetivo", total_target)
-            with col2:
-                st.metric("Total Asignado", total_assigned, f"{total_assigned - total_target:+d}")
-            with col3:
-                st.metric("Desviación Promedio", f"{avg_deviation:+.1f}")
-
-            # Métricas de Weekend
-            st.subheader("🌙 Resumen Fines de semana")
-            st.caption("*Incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
-            col4, col5, col6 = st.columns(3)
-
-            # CORRECCIÓN: Objetivo Weekend debe ser el número real de slots de weekend a cubrir
-            # Usa _get_shifts_for_date para respetar la configuración (no len(shifts) del dict)
-            from datetime import timedelta
-
-            holidays_set = set(scheduler.holidays) if scheduler.holidays else set()
-            total_weekend_target = 0
-            for d in scheduler._get_date_range(scheduler.start_date, scheduler.end_date):
-                is_weekend = scheduler.date_utils.is_weekend_day(d, holidays_set)
-                if is_weekend:
-                    total_weekend_target += scheduler._get_shifts_for_date(d)
-
-            total_weekend_assigned = stats_df["Weekend"].sum()
-            avg_weekend_deviation = stats_df["Desv. Wknd"].mean()
-
-            with col4:
-                st.metric("Objetivo Fines de Semana", total_weekend_target)
-            with col5:
-                st.metric(
-                    "Fines de semana Asignados",
-                    total_weekend_assigned,
-                    f"{total_weekend_assigned - total_weekend_target:+d}",
-                )
-            with col6:
-                st.metric("Desv. Weekend Prom.", f"{avg_weekend_deviation:+.1f}")
-
-            st.markdown("---")
-
-            # Tabla de estadísticas
-            st.subheader("📋 Estadísticas por Médico")
-            st.caption("*Fin de semana: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
-
-            # Colorear según desviación
-            def color_deviation(val):
-                if isinstance(val, str) and "%" in val:
-                    pct = float(val.replace("%", "").replace("+", ""))
-                    if abs(pct) <= 10:
-                        return "background-color: #d4edda"
-                    elif abs(pct) <= 15:
-                        return "background-color: #fff3cd"
-                    else:
-                        return "background-color: #f8d7da"
-                return ""
-
-            styled_df = stats_df.style.map(color_deviation, subset=["Desv. %", "Desv. Wknd %", "Desv. Rosell %"])
-
-            # Configurar ancho de columnas (9 caracteres ≈ 72px)
-            column_config_stats = {}
-            for col in styled_df.columns:
-                column_config_stats[col] = st.column_config.Column(col, width=72)
-
-            st.dataframe(styled_df, width="stretch", hide_index=True, column_config=column_config_stats)
-
-            # ---- Tabla de turnos por médico y mes ----
-            st.markdown("---")
-            st.subheader("📅 Turnos Asignados por Mes")
-
-            import locale
-            from collections import OrderedDict
-
-            scheduler = st.session_state.scheduler
-            month_names_es = {
-                1: "Ene",
-                2: "Feb",
-                3: "Mar",
-                4: "Abr",
-                5: "May",
-                6: "Jun",
-                7: "Jul",
-                8: "Ago",
-                9: "Sep",
-                10: "Oct",
-                11: "Nov",
-                12: "Dic",
-            }
-
-            # Determine which (year, month) combos exist in the schedule
-            months_in_schedule = OrderedDict()
-            for date in sorted(scheduler.schedule.keys()):
-                key = (date.year, date.month)
-                if key not in months_in_schedule:
-                    months_in_schedule[key] = f"{month_names_es[date.month]} {date.year}"
-
-            # Build per-worker, per-month counts
-            # Use the schedule as single source of truth (same as calculate_statistics)
-            # to stay in sync with the per-worker table above.
-            monthly_rows = []
-            for worker in scheduler.workers_data:
-                wid = worker["id"]
-                row = {"Médico": wid}
-                month_counts: dict[tuple[int, int], int] = {}
-                for d, shifts in scheduler.schedule.items():
-                    count = shifts.count(wid)
-                    if count:
-                        key = (d.year, d.month)
-                        month_counts[key] = month_counts.get(key, 0) + count
-                total = 0
-                for mkey, mname in months_in_schedule.items():
-                    cnt = month_counts.get(mkey, 0)
-                    row[mname] = cnt
-                    total += cnt
-                row["Total"] = total
-                monthly_rows.append(row)
-
-            # Totals row
-            totals_row: dict[str, Any] = {"Médico": "TOTAL"}
-            grand_total = 0
-            for mkey, mname in months_in_schedule.items():
-                col_sum = sum(r[mname] for r in monthly_rows)
-                totals_row[mname] = col_sum
-                grand_total += col_sum
-            totals_row["Total"] = grand_total
-            monthly_rows.append(totals_row)
-
-            monthly_df = pd.DataFrame(monthly_rows)
-
-            # Configure column widths (8 chars ≈ 64px)
-            column_config_monthly = {col: st.column_config.Column(col, width=64) for col in monthly_df.columns}
-
-            st.dataframe(monthly_df, width="stretch", hide_index=True, column_config=column_config_monthly)
-
-            # Gráfico de barras
-            st.markdown("---")
-            st.subheader("📊 Comparación Objetivo vs Asignado")
-
-            fig = go.Figure()
-            fig.add_trace(
-                go.Bar(name="Objetivo", x=stats_df["Médico"], y=stats_df["Objetivo"], marker_color="lightblue")
-            )
-            fig.add_trace(
-                go.Bar(name="Asignado", x=stats_df["Médico"], y=stats_df["Asignados"], marker_color="darkblue")
-            )
-
-            fig.update_layout(barmode="group", xaxis_title="Médico", yaxis_title="Número de Turnos", height=400)
-
-            st.plotly_chart(fig, width="stretch")
-
-            # Gráfico de desviación
-            st.markdown("---")
-            st.subheader("📈 Desviación por Médico")
-
-            fig2 = px.bar(
-                stats_df,
-                x="Médico",
-                y="Desviación",
-                color="Desviación",
-                color_continuous_scale=["red", "yellow", "green", "yellow", "red"],
-                color_continuous_midpoint=0,
-            )
-
-            fig2.update_layout(height=400)
-            st.plotly_chart(fig2, width="stretch")
-
-            # Gráfico de Weekend (Vie/Sab/Dom + Festivos + Pre-festivos)
-            st.markdown("---")
-            st.subheader("🌙 Turnos de Finde por Médico")
-            st.caption("*Incluye: Viernes, Sábado, Domingo, Festivos y Pre-festivos*")
-
-            fig3 = go.Figure()
-            fig3.add_trace(
-                go.Bar(
-                    name="Objetivo Findes", x=stats_df["Médico"], y=stats_df["Obj. Weekend"], marker_color="lightsalmon"
-                )
-            )
-            fig3.add_trace(
-                go.Bar(name="Weekend Asignados", x=stats_df["Médico"], y=stats_df["Weekend"], marker_color="darkred")
-            )
-
-            fig3.update_layout(barmode="group", xaxis_title="Médico", yaxis_title="Turnos de Weekend", height=400)
-
-            st.plotly_chart(fig3, width="stretch")
-
-            # Gráfico de desviación de weekend
-            st.markdown("---")
-            st.subheader("📉 Desviación de Weekend por Médico")
-
-            fig4 = px.bar(
-                stats_df,
-                x="Médico",
-                y="Desv. Wknd",
-                color="Desv. Wknd",
-                color_continuous_scale=["red", "yellow", "green", "yellow", "red"],
-                color_continuous_midpoint=0,
-            )
-
-            fig4.update_layout(height=400, yaxis_title="Desviación (turnos)")
-            st.plotly_chart(fig4, width="stretch")
-
-            # Gráficos de Puentes (Bridge)
-            st.markdown("---")
-            st.subheader("🌉 Turnos de Puente por Médico")
-            st.caption(
-                "*Puente: periodos de 3-4 días que incluyen festivos adyacentes a fin de semana (Jue-Dom, Vie-Dom, Vie-Lun, Vie-Mar). Se cuenta cada turno individual en días de puente.*"
-            )
-
-            # Verificar si el scheduler tiene soporte para puentes
-            scheduler = st.session_state.scheduler
-            has_bridge_support = (
-                hasattr(scheduler, "worker_bridge_counts")
-                and hasattr(scheduler, "get_bridge_objective_for_worker")
-                and hasattr(scheduler, "count_bridges_for_worker")
-            )
-
-            if not has_bridge_support:
-                st.info(
-                    "ℹ️ El reparto actual no incluye información de puentes, genere uno nuevo para ver estas estadísticas."
-                )
-            else:
-                # Obtener estadísticas de puentes
-                bridge_stats = {}
-
-                for worker in scheduler.workers_data:
-                    worker_id = worker["id"]
-                    assigned_bridges = scheduler.count_bridges_for_worker(worker_id)
-                    objective = scheduler.get_bridge_objective_for_worker(worker_id)
-                    deviation = assigned_bridges - objective
-                    bridge_stats[worker_id] = {
-                        "Asignados": assigned_bridges,
-                        "Objetivo": objective,
-                        "Desviación": deviation,
-                    }
-
-                # Crear DataFrame de puentes
-                bridge_df = pd.DataFrame.from_dict(bridge_stats, orient="index").reset_index()
-                bridge_df.columns = ["Médico", "Asignados", "Objetivo", "Desviación"]
-
-                # Gráfico comparativo de puentes
-                fig5 = go.Figure()
-                fig5.add_trace(
-                    go.Bar(
-                        name="Objetivo Turnos Puente",
-                        x=bridge_df["Médico"],
-                        y=bridge_df["Objetivo"],
-                        marker_color="lightgreen",
-                    )
-                )
-                fig5.add_trace(
-                    go.Bar(
-                        name="Turnos Puente Asignados",
-                        x=bridge_df["Médico"],
-                        y=bridge_df["Asignados"],
-                        marker_color="darkgreen",
-                    )
-                )
-
-                fig5.update_layout(
-                    barmode="group", xaxis_title="Médico", yaxis_title="Número de Turnos en Puente", height=400
-                )
-
-                st.plotly_chart(fig5, width="stretch")
-
-                # Gráfico de desviación de puentes
-                st.markdown("---")
-                st.subheader("📉 Desviación de Turnos en Puente por Médico")
-                st.caption("*Tolerancia objetivo: ±0.5 guardias*")
-
-                # Añadir indicador de tolerancia
-                bridge_df["Dentro_Tolerancia"] = bridge_df["Desviación"].abs() <= 0.5
-
-                fig6 = go.Figure()
-
-                # Barras coloreadas según tolerancia
-                colors = ["green" if x else "red" for x in bridge_df["Dentro_Tolerancia"]]
-
-                fig6.add_trace(
-                    go.Bar(
-                        x=bridge_df["Médico"],
-                        y=bridge_df["Desviación"],
-                        marker_color=colors,
-                        text=bridge_df["Desviación"].round(2),
-                        textposition="outside",
-                    )
-                )
-
-                # Líneas de tolerancia
-                fig6.add_hline(
-                    y=0.5,
-                    line_dash="dash",
-                    line_color="orange",
-                    annotation_text="Tolerancia +0.5",
-                    annotation_position="right",
-                )
-                fig6.add_hline(
-                    y=-0.5,
-                    line_dash="dash",
-                    line_color="orange",
-                    annotation_text="Tolerancia -0.5",
-                    annotation_position="right",
-                )
-                fig6.add_hline(y=0, line_dash="solid", line_color="gray", line_width=1)
-
-                fig6.update_layout(
-                    height=400, yaxis_title="Desviación (turnos)", xaxis_title="Médico", showlegend=False
-                )
-                st.plotly_chart(fig6, width="stretch")
-
-                # Tabla resumen de puentes
-                st.markdown("---")
-                st.subheader("📋 Resumen de Puentes por Médico")
-
-                # Formatear la tabla
-                bridge_display_df = bridge_df.copy()
-                bridge_display_df["Objetivo"] = bridge_display_df["Objetivo"].round(2)
-                bridge_display_df["Desviación"] = bridge_display_df["Desviación"].apply(lambda x: f"{x:+.2f}")
-                bridge_display_df["Estado"] = bridge_display_df["Dentro_Tolerancia"].apply(
-                    lambda x: "✅ OK" if x else "⚠️ Fuera de tolerancia"
-                )
-                bridge_display_df = bridge_display_df[["Médico", "Objetivo", "Asignados", "Desviación", "Estado"]]
-
-                # Colorear según estado
-                def color_bridge_status(row):
-                    if "⚠️" in str(row["Estado"]):
-                        return ["background-color: #f8d7da"] * len(row)
-                    else:
-                        return ["background-color: #d4edda"] * len(row)
-
-                styled_bridge_df = bridge_display_df.style.apply(color_bridge_status, axis=1)
-                # Configurar ancho de columnas (9 caracteres ≈ 72px)
-                column_config_bridge = {
-                    col: st.column_config.Column(col, width=72) for col in bridge_display_df.columns
-                }
-                st.dataframe(styled_bridge_df, width="stretch", hide_index=True, column_config=column_config_bridge)
-
-# ==================== TAB 4: VERIFICACIÓN ====================
-with tab4:
-    st.header("⚠️ Verificación de Restricciones")
-
-    if st.session_state.scheduler is None:
-        st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Reparto' en la barra lateral.")
-    else:
-        violations = check_violations()
-
-        # Categorías alineadas con las restricciones que aplica el motor
-        violation_categories = [
-            {
-                "key": "incompatibilidades",
-                "title": "🚫 Incompatibilidades",
-                "hint": "Médicos marcados como incompatibles no deben coincidir el mismo día.",
-                "recommendation": "Revise las incompatibilidades configuradas en los trabajadores.",
-            },
-            {
-                "key": "gap_minimo",
-                "title": "⏳ Días mínimos entre guardias",
-                "hint": (
-                    "Mínimo global, o el del intervalo de cada fecha. "
-                    "Si las dos fechas piden mínimos distintos, se exige el mayor. "
-                    "Por debajo del 60 % de jornada se suma un día."
-                ),
-                "recommendation": "Aumente la plantilla o reduzca el gap si las violaciones son inevitables.",
-            },
-            {
-                "key": "patron_7_14",
-                "title": "📅 Patrón 7/14 días",
-                "hint": "Evita dos guardias del mismo día de la semana a exactamente 7 o 14 días.",
-                "recommendation": "Ajuste días obligatorios o aumente el número de trabajadores.",
-            },
-            {
-                "key": "patron_viernes_lunes",
-                "title": "🔀 Patrón viernes–lunes",
-                "hint": "Bloquea el par viernes↔lunes (3 días de separación).",
-                "recommendation": "Revise asignaciones cercanas al fin de semana o los días obligatorios.",
-            },
-            {
-                "key": "gap2_fin_semana",
-                "title": "🌉 Puente fin de semana (gap 2)",
-                "hint": "Con gap efectivo = 2, evita pares que cruzan el fin de semana (jue-sáb, vie-dom, etc.).",
-                "recommendation": "Revise el gap configurado o reasigne una de las dos fechas del par.",
-            },
-            {
-                "key": "mandatory",
-                "title": "🔒 Turnos obligatorios",
-                "hint": "Días marcados como obligatorios (o cadencia) deben quedar asignados.",
-                "recommendation": "Algunos turnos obligatorios faltan o fueron liberados en la optimización.",
-            },
-            {
-                "key": "fuera_cadencia",
-                "title": "🔁 Fuera de cadencia",
-                "hint": "Un médico con cadencia solo puede tener guardias en las fechas de su patrón.",
-                "recommendation": "Elimine las asignaciones extra o regenere el reparto.",
-            },
-            {
-                "key": "dias_no_disponibles",
-                "title": "🚫 Días no disponibles",
-                "hint": "No se debe asignar a un médico en sus días fuera (vacaciones / days_off).",
-                "recommendation": "Revise los rangos de días no disponibles del trabajador afectado.",
-            },
-            {
-                "key": "periodos_trabajo",
-                "title": "📆 Períodos de trabajo",
-                "hint": "Si hay work_periods, solo se asigna dentro de esos rangos.",
-                "recommendation": "Amplíe el período de trabajo o quite asignaciones fuera de rango.",
-            },
-            {
-                "key": "fines_semana_consecutivos",
-                "title": "📆 Fines de semana consecutivos",
-                "hint": "Máximo de fines de semana/festivos consecutivos (semanas ISO).",
-                "recommendation": "Suba el límite o redistribuya fines de semana entre la plantilla.",
-            },
-            {
-                "key": "ultimo_puesto",
-                "title": "🔢 Último puesto",
-                "hint": "Un médico no puede tener 2 o más Rosell seguidos en sus propias guardias. También respeta no_last_post / only_last_post.",
-                "recommendation": "Revise flags de último puesto o reasigne el puesto del día conflictivo.",
-            },
-        ]
-
-        total_violations = sum(len(violations.get(cat["key"], [])) for cat in violation_categories)
-
-        if total_violations == 0:
-            st.success("✅ ¡Excelente! No se encontraron violaciones de restricciones")
-        else:
-            st.error(f"❌ Se encontraron {total_violations} violaciones de restricciones")
-
-        st.caption(
-            "Comprueba todas las restricciones hard del sistema: incompatibilidades, gaps, "
-            "patrones 7/14 y viernes–lunes, puente gap-2, obligatorias, días fuera, "
-            "períodos de trabajo, fines de semana consecutivos y reglas de último puesto."
+        render_assignment_statistics(
+            caption="📌 Aún no se ha ejecutado el Ajuste Final: estas cifras coinciden con el calendario actual.",
+            key_prefix="stats_current",
         )
 
-        st.markdown("---")
+# ==================== TAB 4: AJUSTE FINAL ====================
+with tab4:
+    st.header("⚖️ Ajuste Final")
+    st.caption(
+        "Ciclo de reequilibrio post-generación: optimiza la distribución de turnos, "
+        "fines de semana y puentes respetando todas las restricciones. "
+        "El calendario y las estadísticas de esta pestaña reflejan el resultado **después** del ajuste."
+    )
 
-        def _render_violation_category(category: dict) -> int:
-            items = violations.get(category["key"], [])
-            count = len(items)
-            st.subheader(category["title"])
-            st.caption(category["hint"])
-            if count == 0:
-                st.success("✅ 0 violaciones")
-            else:
-                st.error(f"❌ {count} violaciones")
-                with st.expander("Ver detalles"):
-                    for item in items[:20]:
-                        st.write(f"• {item}")
-                    if count > 20:
-                        st.write(f"... y {count - 20} más")
-            return count
+    _fa_pending_result = st.session_state.get("fa_pending_result")
+    if _fa_pending_result is not None:
+        render_final_adjustment_result(_fa_pending_result)
 
-        category_counts: dict[str, int] = {}
-        for row_start in range(0, len(violation_categories), 3):
-            cols = st.columns(3)
-            for col, category in zip(cols, violation_categories[row_start : row_start + 3], strict=False):
-                with col:
-                    category_counts[category["key"]] = _render_violation_category(category)
+    if st.button("⚖️ Ejecutar Ajuste Final", type="secondary", key="btn_final_adjustment"):
+        _sched_fa = st.session_state.scheduler
+        _refreshed_pdfs: list[str] = []
+        _pdf_refresh_errors: list[str] = []
+        if _sched_fa is None or _sched_fa.schedule_builder is None:
+            st.warning("⚠️ El calendario debe estar completamente generado antes de ejecutar el ajuste final.")
+        else:
+            with st.spinner("Ejecutando ajuste final… esto puede tardar unos segundos."):
+                try:
+                    from saldo27.final_adjustment_engine import FinalAdjustmentEngine
 
-        if total_violations > 0:
-            st.markdown("---")
-            st.subheader("💡 Recomendaciones")
-            for category in violation_categories:
-                if category_counts.get(category["key"], 0) > 0:
-                    st.warning(f"⚠️ {category['recommendation']}")
+                    _schedule_before_fa = copy.deepcopy(_sched_fa.schedule)
+                    # Freeze pre-FA schedule for the Estadísticas tab.
+                    st.session_state.schedule_pre_fa = copy.deepcopy(_schedule_before_fa)
 
-# ==================== TAB 5: PREDICTIVE ANALYTICS ====================
+                    engine = FinalAdjustmentEngine(_sched_fa)
+                    _before_metrics = engine.compute_metrics()
+                    _fa_results = engine.run(max_iterations=300)
+                    _after_metrics = _fa_results["after"]
+                    _fa_stats = _fa_results["stats"]
+                    _total_swaps = (
+                        _fa_stats["shift_swaps"]
+                        + _fa_stats["weekend_swaps"]
+                        + _fa_stats["bridge_swaps"]
+                        + _fa_stats.get("weekend_last_post_swaps", 0)
+                        + _fa_stats.get("ortools_reassignments", 0)
+                    )
+                    _fa_changes = compute_schedule_changes(_schedule_before_fa, _sched_fa.schedule)
+
+                    if _total_swaps > 0:
+                        try:
+                            from saldo27.pdf_exporter import PDFExporter
+
+                            _refreshed_pdfs, _pdf_refresh_errors = refresh_generated_report_pdfs(
+                                _sched_fa, PDFExporter
+                            )
+                        except Exception as _pdf_exc:
+                            _pdf_refresh_errors.append(str(_pdf_exc))
+
+                except Exception as _fa_exc:
+                    st.error(f"Error en el ajuste final: {_fa_exc}")
+                    logging.error("FinalAdjustmentEngine error", exc_info=True)
+                    _fa_results = None
+                finally:
+                    st.session_state.schedule = _sched_fa.schedule
+
+            if _fa_results is not None:
+                try:
+                    _fa_new_log_text = build_generation_summary_log(_sched_fa)
+                except Exception:
+                    logging.error("Error recalculating summary log after Ajuste Final", exc_info=True)
+                    _fa_new_log_text = None
+                if _fa_new_log_text:
+                    st.session_state._sidebar_log_content = ("code", _fa_new_log_text)
+
+                st.session_state.fa_pending_result = {
+                    "total_swaps": _total_swaps,
+                    "fa_stats": _fa_stats,
+                    "refreshed_pdfs": _refreshed_pdfs,
+                    "pdf_refresh_errors": _pdf_refresh_errors,
+                    "before_metrics": _before_metrics,
+                    "after_metrics": _after_metrics,
+                    "changes": _fa_changes,
+                }
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("📊 Estadísticas tras el Ajuste Final")
+    if st.session_state.scheduler is None:
+        st.info("ℹ️ No hay calendario generado.")
+    elif st.session_state.get("fa_pending_result") is None:
+        st.info("ℹ️ Ejecute el Ajuste Final para ver aquí el calendario y las estadísticas resultantes.")
+    else:
+        render_assignment_statistics(
+            title_suffix="tras Ajuste Final",
+            caption="📌 Datos del reparto **después** del Ajuste Final (calendario activo).",
+            key_prefix="stats_post_fa",
+        )
+
+# ==================== TAB 5: VERIFICACIÓN ====================
 with tab5:
+    render_constraint_verification()
+
+# ==================== TAB 6: PREDICTIVE ANALYTICS ====================
+with tab6:
     st.header("🔮 Predictive Analytics")
 
     if not st.session_state.predictive_enabled:
@@ -3353,8 +3731,8 @@ with tab5:
             # Placeholder for historical charts
             st.info("ℹ️ Historical analysis requires multiple schedule generations to build trend data.")
 
-# ==================== TAB 6: REVISIÓN ====================
-with tab6:
+# ==================== TAB 7: REVISIÓN ====================
+with tab7:
     st.header("🔍 Revisión de Calendario")
     st.markdown("Cargue un archivo (PDF, Excel o CSV) para analizarlo y generar reportes.")
 
@@ -3534,11 +3912,13 @@ with tab6:
                     analyzer.parse_calendar()
                     df_stats = analyzer.calculate_statistics()
                     alerts = analyzer.get_alerts()
+                    display_scheduler = build_revision_display_scheduler(analyzer)
 
                     # Guardar en session state
-                    st.session_state.revision_stats = df_stats
+                    st.session_state.revision_stats = df_stats  # formato legacy (PDF de revisión)
                     st.session_state.revision_alerts = alerts
-                    st.session_state.revision_analyzer = analyzer  # Guardar para PDF
+                    st.session_state.revision_analyzer = analyzer
+                    st.session_state.revision_display_scheduler = display_scheduler
 
                     st.success("✅ Análisis completado")
 
@@ -3549,73 +3929,76 @@ with tab6:
         # Mostrar resultados si existen
         if st.session_state.revision_stats is not None:
             st.markdown("---")
-            st.subheader("📊 Resultados del Análisis")
-
-            # Resumen general
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                total_workers = len(st.session_state.revision_stats)
-                st.metric("Total Trabajadores", total_workers)
-
-            with col2:
-                total_shifts = st.session_state.revision_stats["Total"].sum()
-                st.metric("Total Guardias", total_shifts)
-
-            with col3:
-                weekend_shifts = st.session_state.revision_stats["Total FS"].sum()
-                st.metric("Guardias F.S.", weekend_shifts)
-
-            with col4:
-                if total_shifts > 0:
-                    pct_weekend = (weekend_shifts / total_shifts) * 100
-                    st.metric("% Fin de Semana", f"{pct_weekend:.1f}%")
-                else:
-                    st.metric("% Fin de Semana", "N/A")
-
-            # Tabla de estadísticas
-            st.markdown("**Tabla de Estadísticas Completa**")
-            st.caption(
-                "📌 Nota: Festivos cuentan como Domingo, PreFestivos cuentan como Viernes, Puente = turnos en períodos de puente"
+            _rev_display = None
+            _rev_analyzer = st.session_state.get("revision_analyzer")
+            # Snapshot flag sources BEFORE swapping the active scheduler for display.
+            # temporary_active_scheduler replaces session.scheduler with the revision
+            # display object, so generation-scheduler flags would otherwise be lost.
+            _gen_workers = []
+            _live = st.session_state.get("scheduler")
+            if _live is not None and getattr(_live, "workers_data", None):
+                _gen_workers = list(_live.workers_data)
+            _flag_source = collect_rosell_flag_sources(extra_sources=[_gen_workers])
+            _flag_hits = sum(
+                1
+                for w in _flag_source
+                if worker_flag_enabled(w, "no_last_post") or worker_flag_enabled(w, "only_last_post")
             )
 
-            # Mostrar tabla con columnas organizadas
-            # Festivos cuentan como Domingo, PreFestivos (Lun-Jue) cuentan como Viernes
-            cols_principales = [
-                "Médico",
-                "Total",
-                "Viernes",
-                "Sábado",
-                "Domingo",
-                "Total FS",
-                "% FS",
-                "Puente",
-                "% Puente",
-                "Rosell",
-                "% Rosell",
-            ]
-            cols_meses = [c for c in st.session_state.revision_stats.columns if c.startswith("Mes:")]
+            # Siempre reconstruir con la plantilla/reparto actual.
+            if _rev_analyzer is not None:
+                try:
+                    _rev_display = build_revision_display_scheduler(
+                        _rev_analyzer, workers_config=_flag_source
+                    )
+                    sync_rosell_flags_from_plantilla(_rev_display, _flag_source)
+                    st.session_state.revision_display_scheduler = _rev_display
+                except Exception as _rev_build_exc:
+                    logging.error("No se pudo reconstruir el scheduler de revisión: %s", _rev_build_exc)
+                    _rev_display = st.session_state.get("revision_display_scheduler")
+                    if _rev_display is not None:
+                        sync_rosell_flags_from_plantilla(_rev_display, _flag_source)
+            else:
+                _rev_display = st.session_state.get("revision_display_scheduler")
+                if _rev_display is not None:
+                    sync_rosell_flags_from_plantilla(_rev_display, _flag_source)
 
-            # Seleccionar columnas disponibles
-            cols_a_mostrar = []
-            for col in cols_principales:
-                if col in st.session_state.revision_stats.columns:
-                    cols_a_mostrar.append(col)
-            cols_a_mostrar.extend(cols_meses)
+            if _rev_display is not None:
+                if _flag_hits == 0:
+                    st.warning(
+                        "⚠️ No hay flags Rosell (no_last_post / only_last_post) en la plantilla "
+                        "ni en el reparto activo. Obj. Rosell usará el reparto proporcional. "
+                        "Cargue los médicos configurados o genere/importe un reparto con esos flags."
+                    )
+                with temporary_active_scheduler(_rev_display):
+                    render_assignment_statistics(
+                        title_suffix="Revisión",
+                        caption=(
+                            "📌 Mismo formato que Estadísticas / Ajuste Final. "
+                            "Turnos: objetivo = guardias detectadas. "
+                            "Rosell: no_last_post → Obj. 0; only_last_post → Obj. 100% "
+                            f"(flags detectados en plantilla/reparto: {_flag_hits})."
+                        ),
+                        key_prefix="stats_revision",
+                        workers_config=_flag_source,
+                    )
+                    st.session_state.revision_stats_ui = get_worker_statistics(
+                        workers_config=_flag_source
+                    )
 
-            # Filtrar solo columnas que existen
-            cols_a_mostrar = [c for c in cols_a_mostrar if c in st.session_state.revision_stats.columns]
-
-            # Configurar columnas con ancho mínimo ("small")
-            column_config = {}
-            for col in cols_a_mostrar:
-                column_config[col] = st.column_config.Column(col, width="small")
-
-            st.dataframe(
-                st.session_state.revision_stats[cols_a_mostrar],
-                hide_index=True,
-                use_container_width=False,
-                column_config=column_config,
-            )
+                    st.markdown("---")
+                    _rev_violations = check_violations(_rev_display)
+                    render_constraint_verification(
+                        violations=_rev_violations,
+                        title="⚠️ Verificación de Restricciones — Revisión",
+                        caption=(
+                            "Mismo formato que la pestaña Verificación. "
+                            "Se aplica al calendario analizado usando la plantilla/reparto "
+                            "cargados (gaps, incompatibilidades, Rosell, days_off, etc.)."
+                        ),
+                    )
+            else:
+                st.warning("⚠️ No se pudieron reconstruir las estadísticas en el formato estándar.")
 
             # Mostrar alertas de guardias consecutivas en CAJA SEPARADA
             st.markdown("---")
@@ -3669,9 +4052,13 @@ with tab6:
 
             exp_col1, exp_col2, exp_col3 = st.columns(3)
 
+            _export_stats = st.session_state.get("revision_stats_ui")
+            if _export_stats is None:
+                _export_stats = st.session_state.revision_stats
+
             with exp_col1:
-                # Exportar CSV
-                csv_data = st.session_state.revision_stats.to_csv(index=False)
+                # Exportar CSV (mismo formato que el panel de Estadísticas cuando esté disponible)
+                csv_data = _export_stats.to_csv(index=False)
                 st.download_button(
                     label="📊 Descargar Estadísticas (CSV)",
                     data=csv_data,
@@ -3680,7 +4067,7 @@ with tab6:
                 )
 
             with exp_col2:
-                # Exportar PDF
+                # Exportar PDF (sigue usando el DataFrame legacy del analizador)
                 if st.button("📄 Generar Reporte PDF"):
                     try:
                         with st.spinner("Generando PDF..."):
@@ -3705,7 +4092,7 @@ with tab6:
                 # Exportar Excel
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(cast("Any", buffer), engine="openpyxl") as writer:
-                    st.session_state.revision_stats.to_excel(writer, sheet_name="Estadísticas", index=False)
+                    _export_stats.to_excel(writer, sheet_name="Estadísticas", index=False)
                     if st.session_state.revision_alerts is not None and not st.session_state.revision_alerts.empty:
                         st.session_state.revision_alerts.to_excel(writer, sheet_name="Alertas", index=False)
 
@@ -3723,7 +4110,7 @@ with tab6:
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: gray;'>"
-    "Sistema de Generación de Guardias v3.5 | "
+    "Sistema de Generación de Guardias v3.6 | "
     "Interfaz Streamlit | "
     f"Todos los derechos reservados, 2026©,  {datetime.now().year}"
     "</div>",
