@@ -216,9 +216,7 @@ def test_nav26_bridge_days_exclude_reyes_false_bridges(dtu):
         datetime(2027, 5, 1),
         datetime(2027, 6, 9),
     ]
-    bridges = dtu.identify_bridge_periods_for_span(
-        holidays, datetime(2026, 12, 23), datetime(2027, 6, 30)
-    )
+    bridges = dtu.identify_bridge_periods_for_span(holidays, datetime(2026, 12, 23), datetime(2027, 6, 30))
     expected = {
         # Navidad (23 = prefestivo del 24 jueves)
         datetime(2026, 12, 23),

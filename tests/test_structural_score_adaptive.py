@@ -96,9 +96,7 @@ def test_adaptive_overall_quality_neutral_on_clique_shortfall():
         _worker("FREE", target_shifts=3, _raw_target=3),
     ]
     # Three weekdays: clique capacity 3 vs nominal 60 → scaled target 1 each.
-    scheduler = _scheduler(
-        workers, start=datetime(2026, 3, 2), end=datetime(2026, 3, 4), num_shifts=2
-    )
+    scheduler = _scheduler(workers, start=datetime(2026, 3, 2), end=datetime(2026, 3, 4), num_shifts=2)
     for w in scheduler.workers_data:
         if w["id"] == "FREE":
             w["target_shifts"] = 3
