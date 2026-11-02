@@ -488,9 +488,7 @@ class AdaptiveIterationManager:
         gap_periods = getattr(scheduler_instance, "gap_periods", None) or []
         workers_data = getattr(scheduler_instance, "workers_data", [])
         date_utils = getattr(scheduler_instance, "date_utils", None)
-        protected_by_worker = {
-            worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data
-        }
+        protected_by_worker = {worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data}
 
         for worker in workers_data:
             if is_fixed_cadence(worker):
@@ -521,9 +519,7 @@ class AdaptiveIterationManager:
         violations = 0
         workers_data = getattr(scheduler_instance, "workers_data", [])
         date_utils = getattr(scheduler_instance, "date_utils", None)
-        protected_by_worker = {
-            worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data
-        }
+        protected_by_worker = {worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data}
 
         incompatible_map: dict[str, set[str]] = {}
         for worker in workers_data:

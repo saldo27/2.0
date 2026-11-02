@@ -693,9 +693,7 @@ def collect_rosell_flag_sources(
             if worker_flag_enabled(worker, "no_last_post"):
                 current["no_last_post"] = True
                 current["only_last_post"] = False
-            elif worker_flag_enabled(worker, "only_last_post") and not worker_flag_enabled(
-                current, "no_last_post"
-            ):
+            elif worker_flag_enabled(worker, "only_last_post") and not worker_flag_enabled(current, "no_last_post"):
                 current["only_last_post"] = True
 
     _ingest(list(st.session_state.get("workers_data") or []))
@@ -707,9 +705,7 @@ def collect_rosell_flag_sources(
     return list(merged.values())
 
 
-def sync_rosell_flags_from_plantilla(
-    scheduler: Scheduler, workers_config: list[dict[str, Any]] | None = None
-) -> int:
+def sync_rosell_flags_from_plantilla(scheduler: Scheduler, workers_config: list[dict[str, Any]] | None = None) -> int:
     """Promote ``no_last_post`` / ``only_last_post`` from the plantilla onto ``scheduler``.
 
     Only turns flags **on** from the plantilla. Never clears a True already on
@@ -752,12 +748,9 @@ def _rosell_objective_for_stats(
     ``no_last_post`` → 0. ``only_last_post`` → 100% of the shift objective shown
     in the same row. Flags are the OR of scheduler worker + plantilla.
     """
-    no_last = worker_flag_enabled(worker_data, "no_last_post") or worker_flag_enabled(
-        plantilla_cfg, "no_last_post"
-    )
+    no_last = worker_flag_enabled(worker_data, "no_last_post") or worker_flag_enabled(plantilla_cfg, "no_last_post")
     only_last = (not no_last) and (
-        worker_flag_enabled(worker_data, "only_last_post")
-        or worker_flag_enabled(plantilla_cfg, "only_last_post")
+        worker_flag_enabled(worker_data, "only_last_post") or worker_flag_enabled(plantilla_cfg, "only_last_post")
     )
     if worker_data is not None:
         worker_data["no_last_post"] = no_last
@@ -1107,7 +1100,6 @@ def render_final_adjustment_result(result: dict[str, Any]) -> None:
         st.info("ℹ️ No hay calendario disponible para mostrar.")
 
 
-
 @contextmanager
 def temporary_schedule_snapshot(schedule_snapshot: dict | None):
     """Temporarily point the live scheduler at ``schedule_snapshot`` for UI rendering.
@@ -1151,9 +1143,7 @@ def temporary_active_scheduler(scheduler: Scheduler | None):
         st.session_state.schedule = original_session_schedule
 
 
-def build_revision_display_scheduler(
-    analyzer, workers_config: list[dict[str, Any]] | None = None
-) -> Scheduler:
+def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, Any]] | None = None) -> Scheduler:
     """Build a display-only Scheduler from a parsed ``ScheduleAnalyzer`` calendar.
 
     Objectives (``_raw_target`` / ``target_shifts``) are set to each worker's
@@ -1661,7 +1651,6 @@ def render_assignment_statistics(
                 )
 
 
-
 def check_violations(scheduler: Scheduler | None = None):
     """Verificar violaciones de restricciones usando el motor central"""
     active = scheduler if scheduler is not None else st.session_state.scheduler
@@ -1899,9 +1888,7 @@ def render_constraint_verification(
     category_counts: dict[str, int] = {}
     for row_start in range(0, len(CONSTRAINT_VIOLATION_CATEGORIES), 3):
         cols = st.columns(3)
-        for col, category in zip(
-            cols, CONSTRAINT_VIOLATION_CATEGORIES[row_start : row_start + 3], strict=False
-        ):
+        for col, category in zip(cols, CONSTRAINT_VIOLATION_CATEGORIES[row_start : row_start + 3], strict=False):
             with col:
                 category_counts[category["key"]] = _render_violation_category(category)
 
@@ -3375,9 +3362,7 @@ with tab4:
                         try:
                             from saldo27.pdf_exporter import PDFExporter
 
-                            _refreshed_pdfs, _pdf_refresh_errors = refresh_generated_report_pdfs(
-                                _sched_fa, PDFExporter
-                            )
+                            _refreshed_pdfs, _pdf_refresh_errors = refresh_generated_report_pdfs(_sched_fa, PDFExporter)
                         except Exception as _pdf_exc:
                             _pdf_refresh_errors.append(str(_pdf_exc))
 
@@ -4054,9 +4039,7 @@ with tab7:
             # Siempre reconstruir con la plantilla/reparto actual.
             if _rev_analyzer is not None:
                 try:
-                    _rev_display = build_revision_display_scheduler(
-                        _rev_analyzer, workers_config=_flag_source
-                    )
+                    _rev_display = build_revision_display_scheduler(_rev_analyzer, workers_config=_flag_source)
                     sync_rosell_flags_from_plantilla(_rev_display, _flag_source)
                     st.session_state.revision_display_scheduler = _rev_display
                 except Exception as _rev_build_exc:
@@ -4088,9 +4071,7 @@ with tab7:
                         key_prefix="stats_revision",
                         workers_config=_flag_source,
                     )
-                    st.session_state.revision_stats_ui = get_worker_statistics(
-                        workers_config=_flag_source
-                    )
+                    st.session_state.revision_stats_ui = get_worker_statistics(workers_config=_flag_source)
 
                     st.markdown("---")
                     _rev_score = compute_schedule_score_breakdown(_rev_display)

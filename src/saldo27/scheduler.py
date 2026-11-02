@@ -756,8 +756,7 @@ class Scheduler:
         refilled = self._try_refill_empty_post(date, last_post, exclude_worker_id=worker_id)
         if refilled:
             logging.info(
-                f"Fixed consecutive last-post violation: replaced {worker_id} on "
-                f"{date.strftime('%Y-%m-%d')} Rosell"
+                f"Fixed consecutive last-post violation: replaced {worker_id} on {date.strftime('%Y-%m-%d')} Rosell"
             )
         else:
             logging.warning(

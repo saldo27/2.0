@@ -108,7 +108,9 @@ def clique_day_capacity(
             continue
         if scheduler._get_shifts_for_date(date) <= 0:
             continue
-        if any(_worker_available_on_date(scheduler, workers_by_id[wid], date) for wid in clique if wid in workers_by_id):
+        if any(
+            _worker_available_on_date(scheduler, workers_by_id[wid], date) for wid in clique if wid in workers_by_id
+        ):
             capacity += 1
     return float(capacity)
 
@@ -149,18 +151,14 @@ class StructuralScoreBaselines:
     def scoring_shift_target(self, worker: dict[str, Any]) -> float:
         """Non-mandatory target capped by incompat-clique capacity."""
         if self._shift_targets is None:
-            nominal = {
-                w["id"]: float(w.get("target_shifts", 0) or 0) for w in self.scheduler.workers_data
-            }
+            nominal = {w["id"]: float(w.get("target_shifts", 0) or 0) for w in self.scheduler.workers_data}
             self._shift_targets = scale_objectives_for_cliques(self.scheduler, nominal)
         return float(self._shift_targets.get(worker["id"], 0.0))
 
     def scoring_weekend_objective(self, worker: dict[str, Any]) -> float:
         if self._weekend_objectives is None:
             holidays = set(getattr(self.scheduler, "holidays", ()) or ())
-            nominal = {
-                w["id"]: float(self.scheduler.get_weekend_objective(w)) for w in self.scheduler.workers_data
-            }
+            nominal = {w["id"]: float(self.scheduler.get_weekend_objective(w)) for w in self.scheduler.workers_data}
             self._weekend_objectives = scale_objectives_for_cliques(
                 self.scheduler,
                 nominal,
@@ -178,9 +176,7 @@ class StructuralScoreBaselines:
             def _is_bridge(date: datetime) -> bool:
                 return bool(self.scheduler.date_utils.get_bridge_period_for_date(date, self.scheduler.bridge_periods))
 
-            self._bridge_objectives = scale_objectives_for_cliques(
-                self.scheduler, nominal, date_predicate=_is_bridge
-            )
+            self._bridge_objectives = scale_objectives_for_cliques(self.scheduler, nominal, date_predicate=_is_bridge)
         return float(self._bridge_objectives.get(worker["id"], 0.0))
 
     def is_structural_empty(self, date: datetime, post: int) -> bool:

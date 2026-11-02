@@ -295,8 +295,10 @@ class OptimizationMetrics:
                     continue
 
                 # Mean absolute relative deviation vs structural expectation.
-                mard = sum(abs(post_counts.get(i, 0) - expected.get(i, 0.0)) for i in range(num_shifts)) / num_shifts / (
-                    total / num_shifts
+                mard = (
+                    sum(abs(post_counts.get(i, 0) - expected.get(i, 0.0)) for i in range(num_shifts))
+                    / num_shifts
+                    / (total / num_shifts)
                 )
                 effective_mard = max(0.0, mard - 0.20)
                 worker_score = max(0.0, 100.0 - effective_mard * 100.0)
