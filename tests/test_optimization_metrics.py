@@ -368,3 +368,25 @@ def test_fill_rate_fillable_empty_still_penalizes():
     scheduler.worker_assignments = {"A": {day}, "B": set()}
 
     assert OptimizationMetrics(scheduler)._calculate_fill_rate_score() < 100.0
+
+
+def test_get_score_breakdown_matches_overall_score():
+    """Breakdown overall must match calculate_overall_schedule_score and expose weights."""
+    workers = [
+        _worker("A"),
+        _worker("B"),
+    ]
+    scheduler = _build_scheduler(workers, num_shifts=2)
+    day = datetime(2026, 3, 2)
+    scheduler.schedule = {day: ["A", "B"]}
+    scheduler.worker_assignments = {"A": {day}, "B": {day}}
+    scheduler.workers_data[0]["target_shifts"] = 1
+    scheduler.workers_data[1]["target_shifts"] = 1
+
+    metrics = OptimizationMetrics(scheduler)
+    breakdown = metrics.get_score_breakdown()
+
+    assert set(breakdown["components"]) == set(OptimizationMetrics.SCORE_WEIGHTS)
+    assert set(breakdown["weights"]) == set(OptimizationMetrics.SCORE_WEIGHTS)
+    assert 0.0 <= breakdown["overall"] <= 100.0
+    assert breakdown["overall"] == metrics.calculate_overall_schedule_score()
