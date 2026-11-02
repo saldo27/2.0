@@ -1,7 +1,7 @@
 import hashlib
 import logging
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 from saldo27.balance_validator import BalanceValidator
 from saldo27.constraint_checker import config_forced_dates
@@ -57,6 +57,57 @@ class OptimizationMetrics:
             logging.warning(f"Error generating schedule hash: {e}")
             return datetime.now().isoformat()  # Fallback
 
+    # Pesos del score global (compartidos por calculate / breakdown / UI).
+    SCORE_WEIGHTS: ClassVar[dict[str, float]] = {
+        "fill_rate": 0.35,
+        "workload_balance": 0.25,
+        "weekend_balance": 0.10,
+        "bridge_balance": 0.05,
+        "post_rotation": 0.15,
+        "constraint_penalty": 0.10,
+    }
+
+    def get_score_breakdown(self) -> dict[str, Any]:
+        """Return overall score plus raw component scores and weights.
+
+        Used by the Revisión UI and diagnostics. ``overall`` is clamped to 0–100
+        (same as :meth:`calculate_overall_schedule_score`).
+        """
+        fill_rate_score = self._calculate_fill_rate_score()
+        workload_balance_score = self._calculate_workload_balance_score()
+        weekend_balance_score = self._calculate_weekend_balance_score()
+        bridge_balance_score = self._calculate_bridge_balance_score()
+        post_rotation_score = self._calculate_post_rotation_score()
+        constraint_violations_penalty = self._calculate_constraint_violations_penalty()
+        weights = dict(self.SCORE_WEIGHTS)
+
+        overall_score = (
+            fill_rate_score * weights["fill_rate"]
+            + workload_balance_score * weights["workload_balance"]
+            + weekend_balance_score * weights["weekend_balance"]
+            + bridge_balance_score * weights["bridge_balance"]
+            + post_rotation_score * weights["post_rotation"]
+            - constraint_violations_penalty * weights["constraint_penalty"]
+        )
+        overall = max(0.0, min(100.0, float(overall_score)))
+
+        # Keep the regular score cache coherent for subsequent calls.
+        self.schedule_hash = self.get_schedule_hash()
+        self.cached_metrics["overall_score"] = overall
+
+        return {
+            "overall": overall,
+            "components": {
+                "fill_rate": float(fill_rate_score),
+                "workload_balance": float(workload_balance_score),
+                "weekend_balance": float(weekend_balance_score),
+                "bridge_balance": float(bridge_balance_score),
+                "post_rotation": float(post_rotation_score),
+                "constraint_penalty": float(constraint_violations_penalty),
+            },
+            "weights": weights,
+        }
+
     def calculate_overall_schedule_score(self, log_components: bool = False) -> float:
         """Calcular un score general del schedule actual"""
         try:
@@ -64,56 +115,34 @@ class OptimizationMetrics:
             if not log_components and current_hash == self.schedule_hash and "overall_score" in self.cached_metrics:
                 return self.cached_metrics["overall_score"]
 
-            # Componentes del score
-            fill_rate_score = self._calculate_fill_rate_score()
-            workload_balance_score = self._calculate_workload_balance_score()
-            weekend_balance_score = self._calculate_weekend_balance_score()
-            bridge_balance_score = self._calculate_bridge_balance_score()
-            post_rotation_score = self._calculate_post_rotation_score()
-            constraint_violations_penalty = self._calculate_constraint_violations_penalty()
-
-            # Pesos para cada componente.
-            # bridge_balance se añade como componente propio (antes los puentes
-            # no contribuían en absoluto al score general, así que las pasadas
-            # de rebalanceo de puentes podían ser revertidas por
-            # _finalization_phase sin que esa pérdida de calidad se reflejase
-            # aquí). Su peso (0.05) sale de weekend_balance (0.15 → 0.10) ya
-            # que los puentes son un subconjunto, mucho menos frecuente, del
-            # mismo concepto de "días especiales".
-            weights = {
-                "fill_rate": 0.35,
-                "workload_balance": 0.25,
-                "weekend_balance": 0.10,
-                "bridge_balance": 0.05,
-                "post_rotation": 0.15,
-                "constraint_penalty": 0.10,
-            }
-
-            overall_score = (
-                fill_rate_score * weights["fill_rate"]
-                + workload_balance_score * weights["workload_balance"]
-                + weekend_balance_score * weights["weekend_balance"]
-                + bridge_balance_score * weights["bridge_balance"]
-                + post_rotation_score * weights["post_rotation"]
-                - constraint_violations_penalty * weights["constraint_penalty"]
-            )
+            breakdown = self.get_score_breakdown()
+            components = breakdown["components"]
+            weights = breakdown["weights"]
 
             if log_components:
                 logging.info(
                     f"📊 Score components: "
-                    f"fill={fill_rate_score:.1f}(×.35={fill_rate_score * 0.35:.1f}) "
-                    f"workload={workload_balance_score:.1f}(×.25={workload_balance_score * 0.25:.1f}) "
-                    f"weekend={weekend_balance_score:.1f}(×.10={weekend_balance_score * 0.10:.1f}) "
-                    f"bridge={bridge_balance_score:.1f}(×.05={bridge_balance_score * 0.05:.1f}) "
-                    f"post_rot={post_rotation_score:.1f}(×.15={post_rotation_score * 0.15:.1f}) "
-                    f"penalty={constraint_violations_penalty:.1f}(×.10={constraint_violations_penalty * 0.10:.1f})"
+                    f"fill={components['fill_rate']:.1f}"
+                    f"(×.{int(weights['fill_rate'] * 100):02d}"
+                    f"={components['fill_rate'] * weights['fill_rate']:.1f}) "
+                    f"workload={components['workload_balance']:.1f}"
+                    f"(×.{int(weights['workload_balance'] * 100):02d}"
+                    f"={components['workload_balance'] * weights['workload_balance']:.1f}) "
+                    f"weekend={components['weekend_balance']:.1f}"
+                    f"(×.{int(weights['weekend_balance'] * 100):02d}"
+                    f"={components['weekend_balance'] * weights['weekend_balance']:.1f}) "
+                    f"bridge={components['bridge_balance']:.1f}"
+                    f"(×.{int(weights['bridge_balance'] * 100):02d}"
+                    f"={components['bridge_balance'] * weights['bridge_balance']:.1f}) "
+                    f"post_rot={components['post_rotation']:.1f}"
+                    f"(×.{int(weights['post_rotation'] * 100):02d}"
+                    f"={components['post_rotation'] * weights['post_rotation']:.1f}) "
+                    f"penalty={components['constraint_penalty']:.1f}"
+                    f"(×.{int(weights['constraint_penalty'] * 100):02d}"
+                    f"={components['constraint_penalty'] * weights['constraint_penalty']:.1f})"
                 )
 
-            # Cachear resultado
-            self.schedule_hash = current_hash
-            self.cached_metrics["overall_score"] = max(0, min(100, overall_score))
-
-            return self.cached_metrics["overall_score"]
+            return float(breakdown["overall"])
 
         except Exception as e:
             logging.error(f"Error calculating overall schedule score: {e}")

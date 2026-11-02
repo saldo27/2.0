@@ -41,6 +41,7 @@ from saldo27.application.use_cases import (
     run_simulation,
 )
 from saldo27.license_manager import license_manager
+from saldo27.optimization_metrics import OptimizationMetrics
 from saldo27.scheduler import Scheduler
 from saldo27.scheduler_config import SchedulerConfig, setup_logging
 from saldo27.utilities import (
@@ -251,6 +252,8 @@ if "revision_stats" not in st.session_state:
     st.session_state.revision_stats = None
 if "revision_display_scheduler" not in st.session_state:
     st.session_state.revision_display_scheduler = None
+if "revision_score" not in st.session_state:
+    st.session_state.revision_score = None
 if "revision_alerts" not in st.session_state:
     st.session_state.revision_alerts = None
 if "revision_analyzer" not in st.session_state:
@@ -591,11 +594,11 @@ def get_schedule_dataframe():
     dates = sorted(schedule.keys())
     data = []
 
-    for date in dates:
-        workers = schedule[date]
+    for day in dates:
+        workers = schedule[day]
         row = {
-            "Fecha": date.strftime("%d-%m-%Y"),
-            "Día": ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"][date.weekday()],
+            "Fecha": day.strftime("%d-%m-%Y"),
+            "Día": ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"][day.weekday()],
         }
         for i, worker in enumerate(workers):
             row[f"Puesto {i + 1}"] = worker if worker else "-"
@@ -763,7 +766,7 @@ def _rosell_objective_for_stats(
         return 0, True, False
     if only_last:
         try:
-            return int(round(float(shift_target))), False, True
+            return round(float(shift_target)), False, True
         except (TypeError, ValueError):
             return 0, False, True
     if worker_data is None:
@@ -1740,6 +1743,109 @@ CONSTRAINT_VIOLATION_CATEGORIES: list[dict[str, str]] = [
         "recommendation": "Revise flags de último puesto o reasigne el puesto del día conflictivo.",
     },
 ]
+
+
+_SCORE_COMPONENT_LABELS: dict[str, str] = {
+    "fill_rate": "Cobertura",
+    "workload_balance": "Balance de carga",
+    "weekend_balance": "Fines de semana",
+    "bridge_balance": "Puentes",
+    "post_rotation": "Rotación de puestos",
+    "constraint_penalty": "Penalización (violaciones)",
+}
+
+
+def compute_schedule_score_breakdown(scheduler: Scheduler | None) -> dict[str, Any] | None:
+    """Compute the overall schedule score breakdown for a display/active scheduler."""
+    if scheduler is None:
+        return None
+    try:
+        return OptimizationMetrics(scheduler).get_score_breakdown()
+    except Exception as exc:
+        logging.warning("No se pudo calcular el score del reparto: %s", exc)
+        return None
+
+
+def render_schedule_score(
+    *,
+    scheduler: Scheduler | None = None,
+    breakdown: dict[str, Any] | None = None,
+    title: str = "🎯 Score del Reparto",
+    caption: str | None = None,
+) -> None:
+    """Render the overall schedule score and weighted component breakdown."""
+    st.header(title)
+    if breakdown is None:
+        breakdown = compute_schedule_score_breakdown(
+            scheduler if scheduler is not None else st.session_state.get("scheduler")
+        )
+    if not breakdown:
+        st.info("ℹ️ No se pudo calcular el score del reparto con el calendario actual.")
+        return
+
+    overall = float(breakdown.get("overall", 0.0))
+    components = breakdown.get("components") or {}
+    weights = breakdown.get("weights") or dict(OptimizationMetrics.SCORE_WEIGHTS)
+
+    if overall >= 95:
+        verdict = "🌟 Excelente"
+        tone = "success"
+    elif overall >= 85:
+        verdict = "👍 Bueno"
+        tone = "success"
+    elif overall >= 70:
+        verdict = "⚠️ Regular"
+        tone = "warning"
+    else:
+        verdict = "❌ Bajo"
+        tone = "error"
+
+    st.caption(
+        caption
+        or (
+            "Mismo score que usa el optimizador (cobertura, balance de carga, "
+            "fines de semana, puentes, rotación de puestos y penalización por violaciones)."
+        )
+    )
+
+    col_score, col_verdict, col_bar = st.columns([1, 1, 2])
+    with col_score:
+        st.metric("Score global", f"{overall:.1f} / 100")
+    with col_verdict:
+        getattr(st, tone)(verdict)
+    with col_bar:
+        st.progress(min(1.0, max(0.0, overall / 100.0)))
+
+    st.markdown("---")
+    st.subheader("Componentes")
+    cols = st.columns(3)
+    ordered_keys = [
+        "fill_rate",
+        "workload_balance",
+        "weekend_balance",
+        "bridge_balance",
+        "post_rotation",
+        "constraint_penalty",
+    ]
+    for idx, key in enumerate(ordered_keys):
+        raw = float(components.get(key, 0.0))
+        weight = float(weights.get(key, 0.0))
+        contribution = raw * weight if key != "constraint_penalty" else -(raw * weight)
+        label = _SCORE_COMPONENT_LABELS.get(key, key)
+        with cols[idx % 3]:
+            if key == "constraint_penalty":
+                st.metric(
+                    label,
+                    f"{raw:.1f}",
+                    f"peso {weight:.0%} → {contribution:+.1f}",
+                    delta_color="inverse",
+                )
+            else:
+                st.metric(
+                    label,
+                    f"{raw:.1f}",
+                    f"peso {weight:.0%} → {contribution:+.1f}",
+                )
 
 
 def render_constraint_verification(
@@ -3984,6 +4090,19 @@ with tab7:
                     )
                     st.session_state.revision_stats_ui = get_worker_statistics(
                         workers_config=_flag_source
+                    )
+
+                    st.markdown("---")
+                    _rev_score = compute_schedule_score_breakdown(_rev_display)
+                    st.session_state.revision_score = _rev_score
+                    render_schedule_score(
+                        breakdown=_rev_score,
+                        title="🎯 Score del Reparto — Revisión",
+                        caption=(
+                            "Score global del calendario analizado (mismos pesos que el "
+                            "optimizador: cobertura 35 %, carga 25 %, FDS 10 %, puentes 5 %, "
+                            "puestos 15 %, penalización 10 %)."
+                        ),
                     )
 
                     st.markdown("---")
