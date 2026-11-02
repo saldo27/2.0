@@ -1,6 +1,6 @@
 """Tests for saldo27.utilities — DateTimeUtils and helpers."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -117,19 +117,67 @@ def test_is_not_pre_holiday(dtu):
 
 
 def test_identify_bridge_period_thursday_holiday(dtu):
-    # A Thursday holiday should create a bridge on Friday
+    # Thursday holiday: Wednesday prefestivo through Sunday
     holidays = [datetime(2026, 5, 14)]  # Thursday
     bridges = dtu.identify_bridge_periods(holidays, 2026)
     assert len(bridges) >= 1
     bridge = bridges[0]
     assert bridge["holiday"] == datetime(2026, 5, 14)
+    assert bridge["start_date"] == datetime(2026, 5, 13)  # Wednesday prefestivo
+    assert bridge["end_date"] == datetime(2026, 5, 17)
+
+
+def test_friday_holiday_includes_thursday_prefestivo(dtu):
+    holidays = [datetime(2026, 5, 15)]  # Friday
+    bridges = dtu.identify_bridge_periods(holidays, 2026)
+    assert len(bridges) == 1
+    assert bridges[0]["start_date"] == datetime(2026, 5, 14)  # Thursday prefestivo
+    assert bridges[0]["end_date"] == datetime(2026, 5, 17)
+    assert dtu.is_bridge_day(datetime(2026, 5, 14), bridges) is True
+
+
+def test_monday_holiday_prolongs_weekend_from_saturday(dtu):
+    holidays = [datetime(2026, 5, 4)]  # Monday
+    bridges = dtu.identify_bridge_periods(holidays, 2026)
+    assert len(bridges) == 1
+    assert bridges[0]["start_date"] == datetime(2026, 5, 2)  # Saturday
+    assert bridges[0]["end_date"] == datetime(2026, 5, 4)
+    assert dtu.is_bridge_day(datetime(2026, 5, 1), bridges) is False  # Friday out
+
+
+def test_tuesday_holiday_prolongs_weekend_from_saturday(dtu):
+    holidays = [datetime(2026, 5, 5)]  # Tuesday
+    bridges = dtu.identify_bridge_periods(holidays, 2026)
+    assert len(bridges) == 1
+    assert bridges[0]["start_date"] == datetime(2026, 5, 2)  # Saturday
+    assert bridges[0]["end_date"] == datetime(2026, 5, 5)
+
+
+def test_reyes_midweek_cluster_is_not_a_bridge(dtu):
+    """5-7 Jan 2027 (Tue-Thu) sit mid-week with Reyes on Wednesday: no puente."""
+    holidays = [
+        datetime(2027, 1, 5),
+        datetime(2027, 1, 6),
+        datetime(2027, 1, 7),
+    ]
+    bridges = dtu.identify_bridge_periods(holidays, 2027)
+    assert bridges == []
+    for day in (
+        datetime(2027, 1, 4),
+        datetime(2027, 1, 5),
+        datetime(2027, 1, 7),
+        datetime(2027, 1, 8),
+        datetime(2027, 1, 9),
+        datetime(2027, 1, 10),
+    ):
+        assert dtu.is_bridge_day(day, bridges) is False
 
 
 def test_is_bridge_day(dtu):
     holidays = [datetime(2026, 5, 14)]  # Thursday
     bridges = dtu.identify_bridge_periods(holidays, 2026)
-    # The Friday after a Thursday holiday should be a bridge day
-    assert dtu.is_bridge_day(datetime(2026, 5, 15), bridges) is True
+    assert dtu.is_bridge_day(datetime(2026, 5, 13), bridges) is True  # prefestivo
+    assert dtu.is_bridge_day(datetime(2026, 5, 15), bridges) is True  # Friday
 
 
 def test_non_bridge_day(dtu):
@@ -146,10 +194,63 @@ def test_get_bridge_period_for_date(dtu):
 
 
 def test_bridge_periods_include_holidays_after_the_start_year(dtu):
-    # 19-03-2027 is a Friday holiday, so that Friday itself belongs to the bridge.
+    # 19-03-2027 is a Friday holiday; Thursday 18th is its prefestivo.
     holidays = [datetime(2026, 12, 25), datetime(2027, 3, 19)]
     bridges = dtu.identify_bridge_periods_for_span(holidays, datetime(2026, 12, 23), datetime(2027, 6, 30))
+    assert dtu.is_bridge_day(datetime(2027, 3, 18), bridges) is True
     assert dtu.is_bridge_day(datetime(2027, 3, 19), bridges) is True
+
+
+def test_nav26_bridge_days_exclude_reyes_false_bridges(dtu):
+    holidays = [
+        datetime(2026, 12, 24),
+        datetime(2026, 12, 25),
+        datetime(2026, 12, 31),
+        datetime(2027, 1, 1),
+        datetime(2027, 1, 5),
+        datetime(2027, 1, 6),
+        datetime(2027, 1, 7),
+        datetime(2027, 3, 19),
+        datetime(2027, 3, 25),
+        datetime(2027, 3, 26),
+        datetime(2027, 5, 1),
+        datetime(2027, 6, 9),
+    ]
+    bridges = dtu.identify_bridge_periods_for_span(
+        holidays, datetime(2026, 12, 23), datetime(2027, 6, 30)
+    )
+    expected = {
+        # Navidad (23 = prefestivo del 24 jueves)
+        datetime(2026, 12, 23),
+        datetime(2026, 12, 24),
+        datetime(2026, 12, 25),
+        datetime(2026, 12, 26),
+        datetime(2026, 12, 27),
+        # Año Nuevo (30 = prefestivo del 31 jueves)
+        datetime(2026, 12, 30),
+        datetime(2026, 12, 31),
+        datetime(2027, 1, 1),
+        datetime(2027, 1, 2),
+        datetime(2027, 1, 3),
+        # San José (18 = prefestivo del 19 viernes)
+        datetime(2027, 3, 18),
+        datetime(2027, 3, 19),
+        datetime(2027, 3, 20),
+        datetime(2027, 3, 21),
+        # Semana Santa (24 = prefestivo del 25 jueves)
+        datetime(2027, 3, 24),
+        datetime(2027, 3, 25),
+        datetime(2027, 3, 26),
+        datetime(2027, 3, 27),
+        datetime(2027, 3, 28),
+    }
+    got = set()
+    day = datetime(2026, 12, 23)
+    while day <= datetime(2027, 6, 30):
+        if dtu.is_bridge_day(day, bridges):
+            got.add(day)
+        day += timedelta(days=1)
+    assert got == expected
 
 
 def test_no_bridge_period_for_random_date(dtu):

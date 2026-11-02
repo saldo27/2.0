@@ -12,13 +12,20 @@ from saldo27.application.use_cases import (
 
 
 def test_build_scheduler_config_converts_dates(sample_workers_data):
+    gap_periods = [
+        {
+            "start_date": datetime(2026, 12, 23),
+            "end_date": datetime(2027, 1, 9),
+            "gap": 3,
+        }
+    ]
     request = GenerateScheduleRequest(
         start_date=date(2026, 3, 1),
         end_date=date(2026, 3, 3),
         holidays=[],
         variable_shifts=[],
         workers_data=sample_workers_data,
-        config={"num_shifts": 4},
+        config={"num_shifts": 4, "gap_between_shifts": 4, "gap_periods": gap_periods},
     )
 
     config = build_scheduler_config(request)
@@ -26,6 +33,8 @@ def test_build_scheduler_config_converts_dates(sample_workers_data):
     assert isinstance(config["start_date"], datetime)
     assert isinstance(config["end_date"], datetime)
     assert config["workers_data"] is sample_workers_data
+    assert config["gap_between_shifts"] == 4
+    assert config["gap_periods"] is gap_periods
 
 
 def test_check_demo_limitations_detects_worker_limit(sample_workers_data):

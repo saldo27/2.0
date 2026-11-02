@@ -245,3 +245,126 @@ def test_post_rotation_score_penalizes_beyond_20_percent():
         scheduler.schedule[d][post] = "A"
 
     assert metrics._calculate_post_rotation_score() < 100.0
+
+
+def _worker(worker_id: str, **overrides):
+    worker = {
+        "id": worker_id,
+        "name": worker_id,
+        "target_shifts": 10,
+        "_raw_target": 10,
+        "work_percentage": 100,
+        "work_periods": "",
+        "mandatory_days": "",
+        "days_off": "",
+        "incompatible_with": [],
+        "auto_calculate_shifts": True,
+        "has_cadence": False,
+        "no_last_post": False,
+        "only_last_post": False,
+    }
+    worker.update(overrides)
+    return worker
+
+
+def test_workload_score_uses_clique_scaled_target():
+    """Incompat clique capacity caps the scoring target so structural shortfall is neutral."""
+    from saldo27.schedule_builder import ScheduleBuilder
+    from saldo27.structural_score import StructuralScoreBaselines
+
+    workers = [
+        _worker("A", incompatible_with=["B", "C"], target_shifts=20, _raw_target=20),
+        _worker("B", incompatible_with=["A", "C"], target_shifts=20, _raw_target=20),
+        _worker("C", incompatible_with=["A", "B"], target_shifts=20, _raw_target=20),
+    ]
+    scheduler = _build_scheduler(workers, num_shifts=2)
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+    for w in scheduler.workers_data:
+        w["target_shifts"] = 20
+        w["_raw_target"] = 20
+
+    baselines = StructuralScoreBaselines(scheduler)
+    # 10-day March slice in _build_scheduler is full month — capacity large.
+    # Force a short horizon by using only early March days for capacity via end_date...
+    # With full March (~31 days) and targets 20*3=60 > 31, scaled < 20.
+    scaled = {w["id"]: baselines.scoring_shift_target(w) for w in scheduler.workers_data}
+    assert all(v < 20 for v in scaled.values())
+
+    days = list(scheduler._get_date_range(scheduler.start_date, scheduler.end_date))
+    cursor = 0
+    packed = {}
+    for wid, target in scaled.items():
+        n = round(target)
+        packed[wid] = set(days[cursor : cursor + n])
+        cursor += n
+    scheduler.worker_assignments = packed
+
+    assert OptimizationMetrics(scheduler)._calculate_workload_balance_score() == 100.0
+
+
+def test_post_rotation_spillover_rosell_from_no_last_not_penalized():
+    """A free worker taking more Rosell because peers are no_last must not be penalised."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    workers = [
+        _worker("FREE", target_shifts=8, _raw_target=8),
+        _worker("NL1", no_last_post=True, target_shifts=8, _raw_target=8),
+        _worker("NL2", no_last_post=True, target_shifts=8, _raw_target=8),
+    ]
+    scheduler = _build_scheduler(workers, num_shifts=2)
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+    for w in scheduler.workers_data:
+        w["target_shifts"] = 8
+        w["_raw_target"] = 8
+
+    # FREE always on last post; NL1/NL2 on first — structural spillover pattern.
+    days = [datetime(2026, 3, i) for i in range(1, 9)]
+    for i, day in enumerate(days):
+        nl = "NL1" if i % 2 == 0 else "NL2"
+        scheduler.schedule[day] = [nl, "FREE"]
+    scheduler._synchronize_tracking_data()
+
+    assert OptimizationMetrics(scheduler)._calculate_post_rotation_score() == 100.0
+
+
+def test_fill_rate_structural_empty_counts_as_filled():
+    """A hole nobody can take (all no_last on Rosell) must not reduce fill score."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    workers = [
+        _worker("A", no_last_post=True),
+        _worker("B", no_last_post=True),
+    ]
+    scheduler = _build_scheduler(workers, num_shifts=2)
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+
+    day = datetime(2026, 3, 1)
+    # Post 0 filled; last post empty and unfillable (both no_last).
+    scheduler.schedule[day] = ["A", None]
+    scheduler.worker_assignments = {"A": {day}, "B": set()}
+    # B also assigned elsewhere so not available? Actually B could take post 0 only.
+    # Last post: both A (already on day) and B (no_last) cannot → structural.
+
+    metrics = OptimizationMetrics(scheduler)
+    # Only score the one day for clarity: clear other days' empties by removing them.
+    only = {day: scheduler.schedule[day]}
+    scheduler.schedule = only
+    assert metrics._calculate_fill_rate_score() == 100.0
+
+
+def test_fill_rate_fillable_empty_still_penalizes():
+    """An empty slot a free worker could take must still reduce fill score."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    workers = [
+        _worker("A"),
+        _worker("B"),
+    ]
+    scheduler = _build_scheduler(workers, num_shifts=2)
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+
+    day = datetime(2026, 3, 1)
+    scheduler.schedule = {day: ["A", None]}
+    scheduler.worker_assignments = {"A": {day}, "B": set()}
+
+    assert OptimizationMetrics(scheduler)._calculate_fill_rate_score() < 100.0
