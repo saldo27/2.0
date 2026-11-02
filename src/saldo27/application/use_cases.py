@@ -99,6 +99,7 @@ def build_scheduler_config(request: GenerateScheduleRequest) -> dict[str, Any]:
         "holidays": request.holidays,
         "variable_shifts": request.variable_shifts,
         "gap_between_shifts": request.config.get("gap_between_shifts", 3),
+        "gap_periods": request.config.get("gap_periods", []),
         "max_consecutive_weekends": request.config.get("max_consecutive_weekends", 3),
         "enable_proportional_weekends": request.config.get("enable_proportional_weekends", True),
         "weekend_tolerance": request.config.get("weekend_tolerance", 1),

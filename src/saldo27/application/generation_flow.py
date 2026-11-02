@@ -118,20 +118,37 @@ class GenerationFlowResult:
     cancelled: bool = False
 
 
-@dataclass(frozen=True)
+CONSTRAINT_VIOLATION_KEYS: tuple[str, ...] = (
+    "incompatibilidades",
+    "gap_minimo",
+    "patron_7_14",
+    "patron_viernes_lunes",
+    "gap2_fin_semana",
+    "mandatory",
+    "fuera_cadencia",
+    "dias_no_disponibles",
+    "periodos_trabajo",
+    "fines_semana_consecutivos",
+    "ultimo_puesto",
+)
+
+
+@dataclass
 class ConstraintViolations:
-    incompatibilidades: list[str]
-    patron_7_14: list[str]
-    mandatory: list[str]
-    ultimo_puesto: list[str]
+    incompatibilidades: list[str] = field(default_factory=list)
+    gap_minimo: list[str] = field(default_factory=list)
+    patron_7_14: list[str] = field(default_factory=list)
+    patron_viernes_lunes: list[str] = field(default_factory=list)
+    gap2_fin_semana: list[str] = field(default_factory=list)
+    mandatory: list[str] = field(default_factory=list)
+    fuera_cadencia: list[str] = field(default_factory=list)
+    dias_no_disponibles: list[str] = field(default_factory=list)
+    periodos_trabajo: list[str] = field(default_factory=list)
+    fines_semana_consecutivos: list[str] = field(default_factory=list)
+    ultimo_puesto: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, list[str]]:
-        return {
-            "incompatibilidades": list(self.incompatibilidades),
-            "patron_7_14": list(self.patron_7_14),
-            "mandatory": list(self.mandatory),
-            "ultimo_puesto": list(self.ultimo_puesto),
-        }
+        return {key: list(getattr(self, key)) for key in CONSTRAINT_VIOLATION_KEYS}
 
 
 def prepare_generation_workflow(
@@ -346,8 +363,18 @@ def build_generation_summary_log(scheduler: Scheduler) -> str | None:
 
 
 def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
+    """Collect hard-constraint violations for the Verificación UI.
+
+    Maps core checker types onto the UI category keys and adds availability /
+    Rosell-flag / consecutive-weekend scans that the spacing checker does not
+    emit as schedule-wide reports.
+    """
+    from saldo27.utilities import is_date_in_ranges, is_fixed_cadence, worker_flag_enabled
+
     core_violations = scheduler._check_schedule_constraints()
-    violations = ConstraintViolations(incompatibilidades=[], patron_7_14=[], mandatory=[], ultimo_puesto=[])
+    violations = ConstraintViolations()
+    date_utils = scheduler.date_utils
+    holidays = getattr(scheduler, "holidays", None) or []
 
     for violation in core_violations:
         violation_type = violation.get("type")
@@ -355,14 +382,101 @@ def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
             violations.incompatibilidades.append(
                 f"{violation['date'].strftime('%d-%m-%Y')}: {violation['worker_id']} ↔ {violation['incompatible_id']}"
             )
+        elif violation_type == "min_rest_days":
+            violations.gap_minimo.append(
+                f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → "
+                f"{violation['date2'].strftime('%d-%m-%Y')} "
+                f"({violation['days_between']} días, mínimo {violation.get('min_required', '?')})"
+            )
         elif violation_type == "weekly_pattern":
             violations.patron_7_14.append(
-                f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → {violation['date2'].strftime('%d-%m-%Y')} ({violation['days_between']} días)"
+                f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → "
+                f"{violation['date2'].strftime('%d-%m-%Y')} ({violation['days_between']} días)"
+            )
+        elif violation_type == "friday_monday_pattern":
+            violations.patron_viernes_lunes.append(
+                f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → "
+                f"{violation['date2'].strftime('%d-%m-%Y')}"
+            )
+        elif violation_type == "gap2_weekend":
+            violations.gap2_fin_semana.append(
+                f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → "
+                f"{violation['date2'].strftime('%d-%m-%Y')}"
+            )
+        elif violation_type == "outside_cadence":
+            violations.fuera_cadencia.append(
+                f"{violation['worker_id']}: {violation['date'].strftime('%d-%m-%Y')} fuera de cadencia"
             )
         elif violation_type == "consecutive_last_post":
             violations.ultimo_puesto.append(
-                f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → {violation['date2'].strftime('%d-%m-%Y')} ({violation['run_length']} guardias consecutivas)"
+                f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → "
+                f"{violation['date2'].strftime('%d-%m-%Y')} "
+                f"({violation['run_length']} guardias consecutivas)"
             )
+
+    checker = getattr(scheduler, "constraint_checker", None)
+    workers_by_id = {str(w["id"]): w for w in scheduler.workers_data}
+
+    for worker in scheduler.workers_data:
+        worker_id = str(worker["id"])
+        assigned = sorted(scheduler.worker_assignments.get(worker_id, ()) or [])
+
+        # Missing mandatory / cadence dates
+        try:
+            mandatory_dates = date_utils.parse_dates(worker.get("mandatory_days", "") or "")
+        except Exception:
+            mandatory_dates = []
+        for mandatory_date in mandatory_dates:
+            if scheduler.start_date <= mandatory_date <= scheduler.end_date and mandatory_date not in assigned:
+                violations.mandatory.append(f"{worker_id}: falta obligatorio {mandatory_date.strftime('%d-%m-%Y')}")
+
+        for assigned_date in assigned:
+            if worker.get("days_off") and is_date_in_ranges(assigned_date, worker["days_off"]):
+                violations.dias_no_disponibles.append(f"{worker_id}: {assigned_date.strftime('%d-%m-%Y')} en days_off")
+            work_periods = worker.get("work_periods") or ""
+            if work_periods.strip():
+                try:
+                    ranges = date_utils.parse_date_ranges(work_periods)
+                except Exception:
+                    ranges = []
+                if ranges and not any(start <= assigned_date <= end for start, end in ranges):
+                    violations.periodos_trabajo.append(
+                        f"{worker_id}: {assigned_date.strftime('%d-%m-%Y')} fuera de work_periods"
+                    )
+
+            if (
+                checker is not None
+                and not is_fixed_cadence(worker)
+                and date_utils.is_weekend_day(assigned_date, holidays)
+            ):
+                run = checker._consecutive_weekend_run(worker_id, assigned_date, assigned)
+                max_run = getattr(scheduler, "max_consecutive_weekends", None)
+                if max_run is not None and run > max_run:
+                    msg = (
+                        f"{worker_id}: {assigned_date.strftime('%d-%m-%Y')} "
+                        f"({run} fines/festivos consecutivos > {max_run})"
+                    )
+                    if msg not in violations.fines_semana_consecutivos:
+                        violations.fines_semana_consecutivos.append(msg)
+
+    # Rosell flags on the filled schedule
+    for date, shifts in scheduler.schedule.items():
+        if not shifts:
+            continue
+        last_idx = scheduler.last_post_index(date)
+        for post, worker_id in enumerate(shifts):
+            if worker_id is None:
+                continue
+            worker = workers_by_id.get(str(worker_id))
+            if worker is None:
+                continue
+            is_last = post == last_idx
+            if worker_flag_enabled(worker, "no_last_post") and is_last:
+                violations.ultimo_puesto.append(f"{worker_id}: {date.strftime('%d-%m-%Y')} en Rosell con no_last_post")
+            if worker_flag_enabled(worker, "only_last_post") and not is_last:
+                violations.ultimo_puesto.append(
+                    f"{worker_id}: {date.strftime('%d-%m-%Y')} fuera de Rosell con only_last_post"
+                )
 
     return violations.as_dict()
 
