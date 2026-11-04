@@ -5,10 +5,9 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from saldo27.balance_validator import BalanceValidator
-from saldo27.constraint_checker import config_forced_dates
+from saldo27.constraint_checker import config_forced_dates, count_scored_spacing_violations
 from saldo27.optimization_metrics import OptimizationMetrics
 from saldo27.structural_score import StructuralScoreBaselines
-from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
 
 
 class AdaptiveIterationManager:
@@ -482,37 +481,8 @@ class AdaptiveIterationManager:
         return metrics
 
     def _count_gap_violations(self, scheduler_instance) -> int:
-        """Count gap violations, exempting cadence and dual-mandatory pairs (config)."""
-        violations = 0
-        gap_days = getattr(scheduler_instance, "gap_between_shifts", 3)
-        gap_periods = getattr(scheduler_instance, "gap_periods", None) or []
-        workers_data = getattr(scheduler_instance, "workers_data", [])
-        date_utils = getattr(scheduler_instance, "date_utils", None)
-        protected_by_worker = {worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data}
-
-        for worker in workers_data:
-            if is_fixed_cadence(worker):
-                continue
-            worker_id = worker["id"]
-            sorted_dates = sorted(scheduler_instance.worker_assignments.get(worker_id, ()))
-            if len(sorted_dates) < 2:
-                continue
-            protected = protected_by_worker.get(worker_id, set())
-            for i in range(1, len(sorted_dates)):
-                if sorted_dates[i] in protected and sorted_dates[i - 1] in protected:
-                    continue
-                effective_gap = get_effective_min_gap(
-                    worker,
-                    gap_days,
-                    date=sorted_dates[i],
-                    other_date=sorted_dates[i - 1],
-                    gap_periods=gap_periods,
-                )
-                days_between = (sorted_dates[i] - sorted_dates[i - 1]).days
-                if days_between < effective_gap:
-                    violations += 1
-
-        return violations
+        """Count gap / 7–14 / gap-2-weekend violations (period-aware floors)."""
+        return count_scored_spacing_violations(scheduler_instance)
 
     def _count_incompatibility_violations(self, scheduler_instance) -> int:
         """Count real incompatibility violations (dual-mandatory/cadence pairs exempt)."""

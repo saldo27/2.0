@@ -1302,14 +1302,16 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
     end_date = max(schedule)
     session_cfg = st.session_state.get("config") or {}
     # Prefer live gap settings (incl. gap variable / gap_periods) so score penalties match reparto.
+    # Live ``gap_periods`` is always a list after Scheduler init (never None), so an empty
+    # live list must fall back to the sidebar/session periods — otherwise Revisión ignores
+    # gap variable when scoring an uploaded calendar without a matching generation.
     if live_scheduler is not None and getattr(live_scheduler, "gap_between_shifts", None) is not None:
         gap_between_shifts = int(live_scheduler.gap_between_shifts)
     else:
         gap_between_shifts = int(session_cfg.get("gap_between_shifts") or 3)
-    if live_scheduler is not None and getattr(live_scheduler, "gap_periods", None) is not None:
-        gap_periods = list(live_scheduler.gap_periods or [])
-    else:
-        gap_periods = list(session_cfg.get("gap_periods") or [])
+    live_periods = list(getattr(live_scheduler, "gap_periods", None) or []) if live_scheduler is not None else []
+    session_periods = normalize_gap_periods(session_cfg.get("gap_periods") or [])
+    gap_periods = live_periods if live_periods else session_periods
     if live_scheduler is not None and getattr(live_scheduler, "max_consecutive_weekends", None) is not None:
         max_consecutive_weekends = int(live_scheduler.max_consecutive_weekends)
     else:

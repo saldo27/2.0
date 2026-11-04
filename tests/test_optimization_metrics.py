@@ -477,12 +477,69 @@ def test_constraint_penalty_respects_variable_gap_periods():
     scheduler = _build_scheduler(workers)
     scheduler.gap_between_shifts = 4
     scheduler.gap_periods = periods
-    # 2 days apart — illegal under global gap 4, legal under period gap 2.
-    _assign_days(scheduler, "A", [datetime(2026, 3, 5), datetime(2026, 3, 7)])
+    # Mon–Wed (2 days): illegal under global gap 4, legal under period gap 2.
+    # Avoid Thu–Sat so the gap-2 weekend bridge rule is not in play.
+    _assign_days(scheduler, "A", [datetime(2026, 3, 2), datetime(2026, 3, 4)])
 
     assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
 
     scheduler.gap_periods = []
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
+
+
+def test_constraint_penalty_same_spacing_ok_in_one_period_violation_in_another():
+    """Same calendar spacing can be legal in a relaxed period and illegal outside it."""
+    from saldo27.utilities import normalize_gap_periods
+
+    workers = [_worker("A", target_shifts=4, _raw_target=4)]
+    periods = normalize_gap_periods([{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 15), "gap": 2}])
+    scheduler = _build_scheduler(workers)
+    scheduler.gap_between_shifts = 4
+    scheduler.gap_periods = periods
+    # Spacing of 2 days twice: Mar 2–4 inside relaxed period (OK), Mar 20–22 outside (violation).
+    _assign_days(
+        scheduler,
+        "A",
+        [datetime(2026, 3, 2), datetime(2026, 3, 4), datetime(2026, 3, 20), datetime(2026, 3, 22)],
+    )
+
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
+
+    # Without periods both pairs violate the global floor of 4.
+    scheduler.gap_periods = []
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 2.0
+
+
+def test_constraint_penalty_stricter_gap_period_penalises_spacing_allowed_globally():
+    """A period with a higher gap than the global floor must raise the scored threshold."""
+    from saldo27.utilities import normalize_gap_periods
+
+    workers = [_worker("A", target_shifts=2, _raw_target=2)]
+    periods = normalize_gap_periods([{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 31), "gap": 5}])
+    scheduler = _build_scheduler(workers)
+    scheduler.gap_between_shifts = 2
+    scheduler.gap_periods = periods
+    # 3 days apart: OK under global gap 2, illegal under period gap 5.
+    _assign_days(scheduler, "A", [datetime(2026, 3, 2), datetime(2026, 3, 5)])
+
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
+
+    scheduler.gap_periods = []
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
+
+
+def test_constraint_penalty_counts_gap2_weekend_when_period_sets_gap_two():
+    """When gap_periods make the effective floor 2, the gap-2 weekend bridge is scored."""
+    from saldo27.utilities import normalize_gap_periods
+
+    workers = [_worker("A", target_shifts=2, _raw_target=2)]
+    periods = normalize_gap_periods([{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 15), "gap": 2}])
+    scheduler = _build_scheduler(workers)
+    scheduler.gap_between_shifts = 4
+    scheduler.gap_periods = periods
+    # Thu 5 – Sat 7: spacing equals period gap 2 but bridges the weekend.
+    _assign_days(scheduler, "A", [datetime(2026, 3, 5), datetime(2026, 3, 7)])
+
     assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
 
 

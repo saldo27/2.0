@@ -4,9 +4,8 @@ from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
 from saldo27.balance_validator import BalanceValidator
-from saldo27.constraint_checker import config_forced_dates
+from saldo27.constraint_checker import config_forced_dates, count_scored_spacing_violations
 from saldo27.structural_score import StructuralScoreBaselines
-from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
 
 # Snapshot entry: (worker_dict, target_shifts, _raw_target)
 ScoreTargetSnapshot = list[tuple[dict[str, Any], Any, Any]]
@@ -375,50 +374,26 @@ class OptimizationMetrics:
     def _calculate_constraint_violations_penalty(self) -> float:
         """Calcular penalización por violaciones de restricciones.
 
-        Counts minimum-gap / 7–14 pattern violations and incompatibilities.
+        Counts minimum-gap / 7–14 / gap-2-weekend spacing violations and
+        incompatibilities.
 
         Exemptions (configuration, not scored — same rules as repair):
         - Fixed-cadence workers are skipped entirely for spacing.
-        - A gap/7–14 pair whose *both* dates are mandatory is skipped.
+        - A gap/7–14/gap-2 pair whose *both* dates are mandatory is skipped.
         - An incompatibility where *both* workers are mandatory/cadence on that
           date is skipped.
 
-        Gap floors respect ``gap_periods`` (gap variable) via
+        Gap floors (and the gap-2 weekend bridge that only applies when the
+        effective floor is 2) respect ``gap_periods`` via
+        :func:`count_scored_spacing_violations` /
         :func:`get_effective_min_gap` (stricter of the two dates).
         """
         try:
-            violation_count = 0
             scheduler = self.scheduler
-
-            # --- Gap / 7-14 violations (fast: O(total_assignments) per worker) ---
             protected_by_worker = {
                 worker["id"]: config_forced_dates(worker, scheduler.date_utils) for worker in scheduler.workers_data
             }
-            gap_periods = getattr(scheduler, "gap_periods", None) or []
-            default_gap = scheduler.gap_between_shifts
-            for worker in scheduler.workers_data:
-                if is_fixed_cadence(worker):
-                    continue
-                worker_id = worker["id"]
-                assignments = sorted(scheduler.worker_assignments.get(worker_id, set()))
-                if len(assignments) < 2:
-                    continue
-                protected = protected_by_worker[worker_id]
-                for i in range(1, len(assignments)):
-                    if assignments[i] in protected and assignments[i - 1] in protected:
-                        continue
-                    min_days = get_effective_min_gap(
-                        worker,
-                        default_gap,
-                        date=assignments[i],
-                        other_date=assignments[i - 1],
-                        gap_periods=gap_periods,
-                    )
-                    diff = (assignments[i] - assignments[i - 1]).days
-                    if diff < min_days or (
-                        diff in (7, 14) and assignments[i].weekday() == assignments[i - 1].weekday()
-                    ):
-                        violation_count += 1
+            violation_count = count_scored_spacing_violations(scheduler)
 
             # --- Incompatibility violations (fast: O(dates * posts^2)) ---
             checker = getattr(scheduler, "constraint_checker", None)

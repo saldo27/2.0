@@ -1310,7 +1310,9 @@ class IterativeOptimizer:
             gap_between_shifts = getattr(self, "gap_between_shifts", 3)
             scheduler = getattr(self, "scheduler", None)
             gap_periods = getattr(scheduler, "gap_periods", None) or [] if scheduler is not None else []
-            min_days_between = get_effective_min_gap(worker_data, gap_between_shifts)
+            min_days_between = get_effective_min_gap(
+                worker_data, gap_between_shifts, date=shift_date, gap_periods=gap_periods
+            )
             spacing_dates = set(worker_assignments)
             if scheduler is not None and getattr(scheduler, "start_date", None) is not None:
                 cutoff = scheduler.start_date - timedelta(days=90)

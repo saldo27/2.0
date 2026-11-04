@@ -426,7 +426,9 @@ class LiveValidator:
 
         default_gap = self.scheduler.gap_between_shifts
         gap_periods = getattr(self.scheduler, "gap_periods", None) or []
-        min_required_days_between = get_effective_min_gap(worker_data, default_gap)
+        min_required_days_between = get_effective_min_gap(
+            worker_data, default_gap, date=shift_date, gap_periods=gap_periods
+        )
 
         shift_is_mandatory = False
         mandatory_str = worker_data.get("mandatory_days", "")
