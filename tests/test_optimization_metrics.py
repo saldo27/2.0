@@ -466,6 +466,54 @@ def test_constraint_penalty_skips_dual_mandatory_incompatibility():
     scheduler._synchronize_tracking_data()
 
     assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
+    # Verificación must use the same exemption (locked_mandatory may be empty).
+    from saldo27.application.generation_flow import collect_constraint_violations
+
+    assert collect_constraint_violations(scheduler).get("incompatibilidades") == []
+
+
+def test_workload_and_weekend_survive_incomplete_calendar_vs_full_objectives():
+    """Revisión-like: few detected shifts vs full-period live targets must not floor at 0.
+
+    Scale only rescues proportional underfill; keep weekend mass balanced so the
+    fixture asserts the incomplete-calendar path (not genuine imbalance).
+    """
+    workers = [
+        _worker("A", target_shifts=8, _raw_target=8),
+        _worker("B", target_shifts=8, _raw_target=8),
+    ]
+    scheduler = _build_scheduler(workers)
+    # Sparse calendar (~25% of shift objectives); one Sunday each + one weekday each.
+    _assign_days(scheduler, "A", [datetime(2026, 3, 1), datetime(2026, 3, 3)])  # Sun + Tue
+    _assign_days(scheduler, "B", [datetime(2026, 3, 8), datetime(2026, 3, 10)])  # Sun + Tue
+    for worker in scheduler.workers_data:
+        worker["target_shifts"] = 8
+        worker["_raw_target"] = 8
+
+    metrics = OptimizationMetrics(scheduler)
+    workload = metrics._calculate_workload_balance_score()
+    weekend = metrics._calculate_weekend_balance_score()
+    assert workload > 0.0
+    assert weekend > 0.0
+    breakdown = metrics.get_score_breakdown()
+    assert breakdown["components"]["workload_balance"] > 0.0
+    assert breakdown["components"]["weekend_balance"] > 0.0
+
+
+def test_incomplete_calendar_scale_still_exposes_weekend_imbalance():
+    """Underfill scale must not hide real weekend skew between workers."""
+    workers = [
+        _worker("A", target_shifts=8, _raw_target=8),
+        _worker("B", target_shifts=8, _raw_target=8),
+    ]
+    scheduler = _build_scheduler(workers)
+    _assign_days(scheduler, "A", [datetime(2026, 3, 1), datetime(2026, 3, 8)])  # both Sundays
+    _assign_days(scheduler, "B", [datetime(2026, 3, 2), datetime(2026, 3, 9)])  # weekdays
+    for worker in scheduler.workers_data:
+        worker["target_shifts"] = 8
+        worker["_raw_target"] = 8
+
+    assert OptimizationMetrics(scheduler)._calculate_weekend_balance_score() == 0.0
 
 
 def test_constraint_penalty_respects_variable_gap_periods():

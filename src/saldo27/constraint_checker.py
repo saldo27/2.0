@@ -958,10 +958,16 @@ class ConstraintChecker:
                             }
                         )
 
-        # Incompatibility violations
-        mandatory_pairs: set[tuple] = set()
+        # Incompatibility violations. Dual-mandatory/cadence pairs are configuration
+        # (same exemption as OptimizationMetrics): prefer ``mandatory_days`` /
+        # cadence dates over ``get_locked_mandatory()``, which is empty on Revisión
+        # display schedulers that never ran generation locking.
+        locked_pairs: set[tuple] = set()
         if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
-            mandatory_pairs = self.scheduler.get_locked_mandatory()
+            locked_pairs = self.scheduler.get_locked_mandatory()
+        protected_by_worker = {
+            worker["id"]: config_forced_dates(worker, self.date_utils) for worker in self.workers_data
+        }
 
         for date, shifts in self.scheduler.schedule.items():
             workers_on_date = [w for w in shifts if w is not None]
@@ -971,23 +977,24 @@ class ConstraintChecker:
                     continue
                 incompatible_with = worker["incompatible_with"]
                 for incompatible_id in incompatible_with:
-                    if incompatible_id in workers_on_date:
-                        both_mandatory = (worker_id, date) in mandatory_pairs and (
-                            incompatible_id,
-                            date,
-                        ) in mandatory_pairs
-                        if both_mandatory:
-                            logging.info(
-                                f"Incompatible workers {worker_id} and {incompatible_id} on {date} — both MANDATORY, skipping violation"
-                            )
-                            continue
-                        violations.append(
-                            {
-                                "type": "incompatibility",
-                                "worker_id": worker_id,
-                                "incompatible_id": incompatible_id,
-                                "date": date,
-                            }
+                    if incompatible_id not in workers_on_date:
+                        continue
+                    both_locked = (worker_id, date) in locked_pairs and (incompatible_id, date) in locked_pairs
+                    both_forced = date in protected_by_worker.get(worker_id, ()) and date in protected_by_worker.get(
+                        incompatible_id, ()
+                    )
+                    if both_locked or both_forced:
+                        logging.info(
+                            f"Incompatible workers {worker_id} and {incompatible_id} on {date} — both MANDATORY, skipping violation"
                         )
+                        continue
+                    violations.append(
+                        {
+                            "type": "incompatibility",
+                            "worker_id": worker_id,
+                            "incompatible_id": incompatible_id,
+                            "date": date,
+                        }
+                    )
 
         return violations

@@ -217,6 +217,21 @@ class OptimizationMetrics:
             logging.error(f"Error calculating fill rate score: {e}")
             return 0.0
 
+    @staticmethod
+    def _incomplete_calendar_scale(total_actual: float, total_objective: float) -> float:
+        """Scale absolute objectives when the calendar is clearly under-filled.
+
+        Revisión often overlays full-period live targets onto a partially detected
+        calendar; without scaling, workload/weekend floor at 0 and look "lost".
+        Mild underfill (e.g. 7/10) still uses scale 1 so absolute balance tests hold.
+        """
+        if total_objective <= 0:
+            return 1.0
+        fill_ratio = total_actual / total_objective
+        if fill_ratio < 0.5:
+            return max(fill_ratio, 1e-9)
+        return 1.0
+
     def _calculate_workload_balance_score(self) -> float:
         """Workload balance vs clique-scaled ``scoring_shift_target`` (±10% deadzone).
 
@@ -229,18 +244,21 @@ class OptimizationMetrics:
 
             baselines = self._structural_baselines()
             date_utils = getattr(self.scheduler, "date_utils", None)
-            deviations = []
+            rows: list[tuple[float, float]] = []
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
-                target = baselines.scoring_shift_target(worker)
+                target = float(baselines.scoring_shift_target(worker))
                 assignments = self.scheduler.worker_assignments.get(worker_id, set())
                 # target_shifts excludes mandatory shifts, so compare against non-mandatory only.
                 _, count = BalanceValidator.compute_non_mandatory_assigned(worker, assignments, date_utils)
                 if target > 0:
-                    deviations.append(abs(count - target) / target)
+                    rows.append((float(count), target))
 
-            if not deviations:
+            if not rows:
                 return 100.0
+
+            scale = self._incomplete_calendar_scale(sum(c for c, _ in rows), sum(t for _, t in rows))
+            deviations = [abs(count - target * scale) / (target * scale) for count, target in rows]
 
             deadzone = 0.10
             effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
@@ -260,7 +278,7 @@ class OptimizationMetrics:
             baselines = self._structural_baselines()
             holidays = getattr(self.scheduler, "holidays", set())
 
-            deviations = []
+            rows: list[tuple[float, float]] = []
             for worker in self.scheduler.workers_data:
                 assignments = self.scheduler.worker_assignments.get(worker["id"], set())
                 actual_wknd = sum(
@@ -268,12 +286,15 @@ class OptimizationMetrics:
                     for date in assignments
                     if hasattr(date, "weekday") and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
-                expected_wknd = baselines.scoring_weekend_objective(worker)
+                expected_wknd = float(baselines.scoring_weekend_objective(worker))
                 if expected_wknd > 0:
-                    deviations.append(abs(actual_wknd - expected_wknd) / expected_wknd)
+                    rows.append((float(actual_wknd), expected_wknd))
 
-            if not deviations:
+            if not rows:
                 return 100.0
+
+            scale = self._incomplete_calendar_scale(sum(a for a, _ in rows), sum(e for _, e in rows))
+            deviations = [abs(actual - expected * scale) / (expected * scale) for actual, expected in rows]
 
             deadzone = 0.15
             effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]

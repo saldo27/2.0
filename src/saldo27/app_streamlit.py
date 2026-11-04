@@ -1758,10 +1758,23 @@ def render_assignment_statistics(
 
 
 def check_violations(scheduler: Scheduler | None = None):
-    """Verificar violaciones de restricciones usando el motor central"""
+    """Verificar violaciones de restricciones usando el motor central.
+
+    Ensures ``gap_periods`` / ``gap_between_shifts`` from the sidebar reach the
+    checker used by "Días mínimos entre guardias" when the active scheduler was
+    built without gap variable (empty live list).
+    """
     active = scheduler if scheduler is not None else st.session_state.scheduler
     if active is None:
         return {}
+
+    session_cfg = st.session_state.get("config") or {}
+    session_periods = normalize_gap_periods(session_cfg.get("gap_periods") or [])
+    active_periods = list(getattr(active, "gap_periods", None) or [])
+    if not active_periods and session_periods:
+        active.gap_periods = session_periods
+    if session_cfg.get("gap_between_shifts") is not None and getattr(active, "gap_between_shifts", None) is None:
+        active.gap_between_shifts = int(session_cfg["gap_between_shifts"])
 
     return collect_constraint_violations(active)
 
@@ -1866,6 +1879,11 @@ def compute_schedule_score_breakdown(
         return None
     snapshot = None
     try:
+        # Keep gap variable on the scored scheduler (same rule as check_violations).
+        session_cfg = st.session_state.get("config") or {}
+        session_periods = normalize_gap_periods(session_cfg.get("gap_periods") or [])
+        if not (getattr(scheduler, "gap_periods", None) or []) and session_periods:
+            scheduler.gap_periods = session_periods
         # Prefer explicit source; otherwise apply stamped _score_* fields.
         source = scoring_workers
         if source is None and any("_score_target_shifts" in (w or {}) for w in (scheduler.workers_data or [])):

@@ -109,6 +109,28 @@ def test_gap_periods_relax_inside_the_interval_and_keep_the_stricter_side(sample
     assert scheduler.constraint_checker._check_gap_constraint("DOC001", datetime(2026, 3, 13)) is False
 
 
+def test_dias_minimos_verificacion_respects_gap_periods(sample_workers_data):
+    """UI category gap_minimo (Días mínimos) must use per-period floors, not only global gap."""
+    from saldo27.application.generation_flow import collect_constraint_violations
+
+    scheduler = _gap_period_scheduler(
+        sample_workers_data,
+        [{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 15), "gap": 2}],
+    )
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+    # Mon–Wed inside relaxed period (OK) and Mon–Wed outside (violation under global 4).
+    for day in (datetime(2026, 3, 2), datetime(2026, 3, 4), datetime(2026, 3, 16), datetime(2026, 3, 18)):
+        scheduler.schedule[day][0] = "DOC001"
+    scheduler._synchronize_tracking_data()
+
+    result = collect_constraint_violations(scheduler)
+    assert result["gap_minimo"] == ["DOC001: 16-03-2026 → 18-03-2026 (2 días, mínimo 4)"]
+
+    scheduler.gap_periods = []
+    result_global = collect_constraint_violations(scheduler)
+    assert len(result_global["gap_minimo"]) == 2
+
+
 def test_builder_and_checker_share_the_friday_monday_decision(sample_workers_data):
     scheduler = Scheduler(
         {
