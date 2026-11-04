@@ -490,7 +490,7 @@ def test_workload_and_weekend_survive_incomplete_calendar_vs_full_objectives():
         worker["target_shifts"] = 8
         worker["_raw_target"] = 8
 
-    metrics = OptimizationMetrics(scheduler)
+    metrics = OptimizationMetrics(scheduler, scale_incomplete_objectives=True)
     workload = metrics._calculate_workload_balance_score()
     weekend = metrics._calculate_weekend_balance_score()
     assert workload > 0.0
@@ -498,6 +498,27 @@ def test_workload_and_weekend_survive_incomplete_calendar_vs_full_objectives():
     breakdown = metrics.get_score_breakdown()
     assert breakdown["components"]["workload_balance"] > 0.0
     assert breakdown["components"]["weekend_balance"] > 0.0
+
+
+def test_incomplete_calendar_scale_rescues_sixty_percent_proportional_fill():
+    """#33's 50% cliff still zeroed ~60% proportional calendars; Revisión scale must not."""
+    workers = [
+        _worker("A", target_shifts=10, _raw_target=10),
+        _worker("B", target_shifts=10, _raw_target=10),
+    ]
+    scheduler = _build_scheduler(workers)
+    _assign_days(scheduler, "A", [datetime(2026, 3, d) for d in (1, 5, 9, 13, 17, 21)])
+    _assign_days(scheduler, "B", [datetime(2026, 3, d) for d in (2, 6, 10, 14, 18, 22)])
+    for worker in scheduler.workers_data:
+        worker["target_shifts"] = 10
+        worker["_raw_target"] = 10
+
+    # Generation path (no scale) still sees absolute underfill as bad.
+    assert OptimizationMetrics(scheduler)._calculate_workload_balance_score() == 0.0
+
+    scaled = OptimizationMetrics(scheduler, scale_incomplete_objectives=True)
+    assert scaled._calculate_workload_balance_score() == 100.0
+    assert scaled._calculate_weekend_balance_score() > 0.0
 
 
 def test_incomplete_calendar_scale_still_exposes_weekend_imbalance():
@@ -513,7 +534,7 @@ def test_incomplete_calendar_scale_still_exposes_weekend_imbalance():
         worker["target_shifts"] = 8
         worker["_raw_target"] = 8
 
-    assert OptimizationMetrics(scheduler)._calculate_weekend_balance_score() == 0.0
+    assert OptimizationMetrics(scheduler, scale_incomplete_objectives=True)._calculate_weekend_balance_score() == 0.0
 
 
 def test_constraint_penalty_respects_variable_gap_periods():

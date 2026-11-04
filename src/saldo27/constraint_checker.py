@@ -56,21 +56,61 @@ _REJECTION_TO_VIOLATION = {
 }
 
 
+def _normalize_day(value: object) -> datetime | None:
+    """Midnight-naive datetime for set membership across schedule/config dates."""
+    if isinstance(value, datetime):
+        return datetime(value.year, value.month, value.day)
+    if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+        try:
+            return datetime(int(value.year), int(value.month), int(value.day))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def config_forced_dates(worker: dict | None, date_utils: Any) -> set[datetime]:
     """Dates a worker must keep: ``mandatory_days``, including cadence dates.
 
     A clash is left in place, and kept out of the score, only when the worker is
     on cadence or both dates are in this set. One mandatory date still loses
     the other, non-mandatory day.
+
+    Accepts a ``DD-MM-YYYY`` string, ISO strings via ``coerce_datetime``, or a
+    list of date/datetime/string values (JSON imports).
     """
     if not worker or date_utils is None:
         return set()
     raw = worker.get("mandatory_days") or ""
     if not raw:
         return set()
+    forced: set[datetime] = set()
     try:
-        return set(date_utils.parse_dates(raw))
-    except (TypeError, ValueError):
+        if isinstance(raw, (list, tuple, set)):
+            from saldo27.utilities import coerce_datetime
+
+            for item in raw:
+                parsed = coerce_datetime(item)
+                day = _normalize_day(parsed) if parsed is not None else _normalize_day(item)
+                if day is not None:
+                    forced.add(day)
+            return forced
+        if not isinstance(raw, str):
+            raw = str(raw)
+        for parsed in date_utils.parse_dates(raw):
+            day = _normalize_day(parsed)
+            if day is not None:
+                forced.add(day)
+        # ISO / alternate formats silently skipped by parse_dates — retry parts.
+        if not forced and raw.strip():
+            from saldo27.utilities import coerce_datetime
+
+            for part in raw.replace(",", ";").split(";"):
+                parsed = coerce_datetime(part.strip())
+                day = _normalize_day(parsed)
+                if day is not None:
+                    forced.add(day)
+        return forced
+    except (TypeError, ValueError, AttributeError):
         return set()
 
 
@@ -970,6 +1010,7 @@ class ConstraintChecker:
         }
 
         for date, shifts in self.scheduler.schedule.items():
+            day = _normalize_day(date) or date
             workers_on_date = [w for w in shifts if w is not None]
             for worker_id in workers_on_date:
                 worker = self._worker_lookup_cache.get(worker_id)
@@ -980,7 +1021,7 @@ class ConstraintChecker:
                     if incompatible_id not in workers_on_date:
                         continue
                     both_locked = (worker_id, date) in locked_pairs and (incompatible_id, date) in locked_pairs
-                    both_forced = date in protected_by_worker.get(worker_id, ()) and date in protected_by_worker.get(
+                    both_forced = day in protected_by_worker.get(worker_id, ()) and day in protected_by_worker.get(
                         incompatible_id, ()
                     )
                     if both_locked or both_forced:

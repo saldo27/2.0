@@ -28,9 +28,36 @@ def index_workers_for_scoring(source_workers: list[dict[str, Any]] | None) -> di
     return indexed
 
 
+def resolve_scoring_source_worker(
+    worker: dict[str, Any],
+    indexed: dict[str, dict[str, Any]],
+    *,
+    name_mapping: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Match a display/calendar worker to a plantilla/live source record."""
+    if not indexed:
+        return None
+    candidates: list[str] = []
+    for key in (worker.get("id"), worker.get("name")):
+        if key is None or key == "":
+            continue
+        candidates.append(str(key))
+        mapping = name_mapping or {}
+        mapped = mapping.get(str(key)) or mapping.get(str(key).upper()) or mapping.get(str(key).casefold())
+        if mapped:
+            candidates.append(str(mapped))
+    for candidate in candidates:
+        source = indexed.get(_norm_worker_match_key(candidate))
+        if source is not None:
+            return source
+    return None
+
+
 def apply_scoring_objectives(
     scheduler,
     source_workers: list[dict[str, Any]] | None,
+    *,
+    name_mapping: dict[str, str] | None = None,
 ) -> ScoreTargetSnapshot:
     """Overlay ``target_shifts`` / ``_raw_target`` from ``source_workers`` onto ``scheduler``.
 
@@ -42,11 +69,7 @@ def apply_scoring_objectives(
     indexed = index_workers_for_scoring(source_workers)
     for worker in getattr(scheduler, "workers_data", []) or []:
         snapshot.append((worker, worker.get("target_shifts"), worker.get("_raw_target")))
-        source = None
-        if indexed:
-            source = indexed.get(_norm_worker_match_key(worker.get("id", "")))
-            if source is None and worker.get("name"):
-                source = indexed.get(_norm_worker_match_key(worker.get("name")))
+        source = resolve_scoring_source_worker(worker, indexed, name_mapping=name_mapping)
         if source is not None:
             if "target_shifts" in source:
                 worker["target_shifts"] = source.get("target_shifts")
@@ -70,13 +93,101 @@ def restore_scoring_objectives(snapshot: ScoreTargetSnapshot) -> None:
         worker["_raw_target"] = raw_target
 
 
+def sync_worker_constraint_fields(
+    scheduler,
+    source_workers: list[dict[str, Any]] | None,
+    *,
+    name_mapping: dict[str, str] | None = None,
+) -> None:
+    """Copy mandatory/cadence/incompat from plantilla/live onto a display scheduler.
+
+    Revisión calendar keys are often short names while plantilla uses IDs. When
+    ``build_revision_display_scheduler`` could not match a worker, mandatory and
+    incompat lists stay empty and dual-mandatory clashes are falsely penalised.
+    Call this before score/Verificación so exemptions see the real config.
+    """
+    workers = list(getattr(scheduler, "workers_data", None) or [])
+    if not workers:
+        return
+    indexed = index_workers_for_scoring(source_workers)
+    if not indexed:
+        return
+
+    display_ids = {str(w.get("id")) for w in workers if w.get("id") is not None}
+    key_to_display: dict[str, str] = {}
+    resolved: dict[str, dict[str, Any]] = {}
+
+    for worker in workers:
+        wid = str(worker.get("id", ""))
+        key_to_display[_norm_worker_match_key(wid)] = wid
+        if worker.get("name"):
+            key_to_display.setdefault(_norm_worker_match_key(worker["name"]), wid)
+        source = resolve_scoring_source_worker(worker, indexed, name_mapping=name_mapping)
+        if source is None:
+            continue
+        resolved[wid] = source
+        key_to_display[_norm_worker_match_key(source.get("id", ""))] = wid
+        if source.get("name"):
+            key_to_display.setdefault(_norm_worker_match_key(source["name"]), wid)
+        for short, long in (name_mapping or {}).items():
+            long_key = _norm_worker_match_key(long)
+            if long_key in {
+                _norm_worker_match_key(source.get("id", "")),
+                _norm_worker_match_key(source.get("name", "")),
+            }:
+                key_to_display[_norm_worker_match_key(short)] = wid
+
+    for worker in workers:
+        wid = str(worker.get("id", ""))
+        source = resolved.get(wid)
+        if source is None:
+            continue
+        mandatory = source.get("mandatory_days")
+        if mandatory not in (None, ""):
+            if isinstance(mandatory, (list, tuple, set)):
+                from saldo27.utilities import coerce_datetime
+
+                parts: list[str] = []
+                for item in mandatory:
+                    parsed = coerce_datetime(item)
+                    if parsed is not None:
+                        parts.append(parsed.strftime("%d-%m-%Y"))
+                    elif isinstance(item, str) and item.strip():
+                        parts.append(item.strip())
+                worker["mandatory_days"] = ";".join(parts)
+            else:
+                worker["mandatory_days"] = str(mandatory)
+        for field in ("has_cadence", "cadence_days", "cadence_start_date", "days_off", "work_periods"):
+            if source.get(field) not in (None, ""):
+                worker[field] = source.get(field)
+        raw_incomp = source.get("incompatible_with") or []
+        if isinstance(raw_incomp, str):
+            raw_incomp = [raw_incomp] if raw_incomp.strip() else []
+        remapped: list[str] = []
+        for other in raw_incomp:
+            mapped = key_to_display.get(_norm_worker_match_key(other))
+            if mapped and mapped in display_ids:
+                remapped.append(mapped)
+        worker["incompatible_with"] = remapped
+        if "is_incompatible" in source:
+            worker["is_incompatible"] = bool(source.get("is_incompatible"))
+
+    checker = getattr(scheduler, "constraint_checker", None)
+    if checker is not None and hasattr(checker, "clear_caches"):
+        checker.clear_caches()
+
+
 class OptimizationMetrics:
     """
     Clase para evaluar la calidad de las mejoras y métricas de optimización
     """
 
-    def __init__(self, scheduler):
+    def __init__(self, scheduler, *, scale_incomplete_objectives: bool = False):
         self.scheduler = scheduler
+        # Revisión overlays full-period live targets onto a partial calendar.
+        # When True, workload/weekend scale objectives by aggregate fill so
+        # proportional underfill does not floor Balance/FS at 0.
+        self.scale_incomplete_objectives = bool(scale_incomplete_objectives)
         self.schedule_hash = None
         self.cached_metrics = {}
         self.iteration_history = []
@@ -217,20 +328,25 @@ class OptimizationMetrics:
             logging.error(f"Error calculating fill rate score: {e}")
             return 0.0
 
-    @staticmethod
-    def _incomplete_calendar_scale(total_actual: float, total_objective: float) -> float:
-        """Scale absolute objectives when the calendar is clearly under-filled.
+    def _incomplete_calendar_scale(self, total_actual: float, total_objective: float) -> float | None:
+        """Scale absolute objectives when Revisión underlays a partial calendar.
 
-        Revisión often overlays full-period live targets onto a partially detected
-        calendar; without scaling, workload/weekend floor at 0 and look "lost".
-        Mild underfill (e.g. 7/10) still uses scale 1 so absolute balance tests hold.
+        Generation keeps absolute scoring (scale 1). Revisión
+        (``scale_incomplete_objectives=True``) scales whenever aggregate fill
+        is below 95% so proportional underfill vs full-period live targets does
+        not floor Balance/FS at 0 (the previous 50% cliff still zeroed ~60%
+        calendars). Returns ``None`` when there is no assignment mass to judge.
         """
+        if not self.scale_incomplete_objectives:
+            return 1.0
         if total_objective <= 0:
             return 1.0
         fill_ratio = total_actual / total_objective
-        if fill_ratio < 0.5:
-            return max(fill_ratio, 1e-9)
-        return 1.0
+        if fill_ratio >= 0.95:
+            return 1.0
+        if fill_ratio <= 0:
+            return None
+        return fill_ratio
 
     def _calculate_workload_balance_score(self) -> float:
         """Workload balance vs clique-scaled ``scoring_shift_target`` (±10% deadzone).
@@ -258,6 +374,8 @@ class OptimizationMetrics:
                 return 100.0
 
             scale = self._incomplete_calendar_scale(sum(c for c, _ in rows), sum(t for _, t in rows))
+            if scale is None:
+                return 100.0
             deviations = [abs(count - target * scale) / (target * scale) for count, target in rows]
 
             deadzone = 0.10
@@ -294,6 +412,8 @@ class OptimizationMetrics:
                 return 100.0
 
             scale = self._incomplete_calendar_scale(sum(a for a, _ in rows), sum(e for _, e in rows))
+            if scale is None:
+                return 100.0
             deviations = [abs(actual - expected * scale) / (expected * scale) for actual, expected in rows]
 
             deadzone = 0.15
@@ -417,15 +537,18 @@ class OptimizationMetrics:
             violation_count = count_scored_spacing_violations(scheduler)
 
             # --- Incompatibility violations (fast: O(dates * posts^2)) ---
+            from saldo27.constraint_checker import _normalize_day
+
             checker = getattr(scheduler, "constraint_checker", None)
             if checker is not None:
                 for date, workers in scheduler.schedule.items():
+                    day = _normalize_day(date) or date
                     assigned = [w for w in workers if w is not None]
                     for i in range(len(assigned)):
                         for j in range(i + 1, len(assigned)):
                             if not checker._are_workers_incompatible(assigned[i], assigned[j]):
                                 continue
-                            if date in protected_by_worker.get(assigned[i], ()) and date in protected_by_worker.get(
+                            if day in protected_by_worker.get(assigned[i], ()) and day in protected_by_worker.get(
                                 assigned[j], ()
                             ):
                                 continue
