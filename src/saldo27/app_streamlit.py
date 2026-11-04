@@ -233,6 +233,9 @@ if "fa_pending_result" not in st.session_state:
 if "schedule_pre_fa" not in st.session_state:
     st.session_state.schedule_pre_fa = None
 
+if "fa_score" not in st.session_state:
+    st.session_state.fa_score = None
+
 if "license_checked" not in st.session_state:
     st.session_state.license_checked = True
     can_use, message, remaining = license_manager.can_use()
@@ -478,6 +481,7 @@ def load_schedule_from_json(uploaded_file):
                     # A freshly imported schedule invalidates any Ajuste Final
                     # result computed against the previous one.
                     st.session_state.fa_pending_result = None
+                    st.session_state.fa_score = None
                     st.session_state.schedule_pre_fa = copy.deepcopy(schedule)
 
                     return True, "✅ Calendario y configuración importados correctamente"
@@ -575,6 +579,7 @@ def generate_schedule_internal(start_date, end_date, holidays, variable_shifts):
             # A freshly generated schedule invalidates any Ajuste Final
             # result computed against the previous one.
             st.session_state.fa_pending_result = None
+            st.session_state.fa_score = None
             st.session_state.schedule_pre_fa = copy.deepcopy(scheduler.schedule)
             return True, result.message
 
@@ -2183,8 +2188,9 @@ def compute_schedule_score_breakdown(
     reparto. When omitted, workers may still carry ``_score_target_shifts`` /
     ``_score_raw_target`` stamped by :func:`build_revision_display_scheduler`.
 
-    Always enables incomplete-calendar scaling: this helper is the Revisión /
-    UI score path, where live objectives often dwarf a partial uploaded calendar.
+    Always enables incomplete-calendar scaling: this helper is the shared UI
+    score path (Estadísticas / Ajuste Final / Revisión), where live objectives
+    can dwarf a partial uploaded calendar.
     """
     if scheduler is None:
         return None
@@ -2215,7 +2221,11 @@ def render_schedule_score(
     title: str = "🎯 Score del Reparto",
     caption: str | None = None,
 ) -> None:
-    """Render the overall schedule score and weighted component breakdown."""
+    """Render the overall schedule score and weighted component breakdown.
+
+    Shared by Estadísticas (reparto generado / pre-FA), Ajuste Final (post-FA)
+    and Revisión — pass a precomputed ``breakdown`` or a ``scheduler`` to score.
+    """
     st.header(title)
     if breakdown is None:
         breakdown = compute_schedule_score_breakdown(
@@ -3754,6 +3764,17 @@ with tab2:
 with tab3:
     _pre_fa = st.session_state.get("schedule_pre_fa")
     _fa_done = st.session_state.get("fa_pending_result") is not None
+    _stats_score_caption = (
+        "Mismo score que el optimizador (cobertura 35 %, carga 25 %, FDS 10 %, "
+        "puentes 5 %, puestos 15 %, penalización 10 %). Refleja el reparto "
+        "**generado** (antes del Ajuste Final)."
+        if _fa_done
+        else (
+            "Mismo score que el optimizador (cobertura 35 %, carga 25 %, FDS 10 %, "
+            "puentes 5 %, puestos 15 %, penalización 10 %). Refleja el calendario "
+            "actual del reparto generado."
+        )
+    )
     if st.session_state.scheduler is None:
         st.header("📊 Estadísticas de Asignación")
         st.info("ℹ️ No hay calendario generado. Use el botón '🚀 Generar Reparto' en la barra lateral.")
@@ -3763,11 +3784,24 @@ with tab3:
                 caption="📌 Datos del reparto **antes** de ejecutar el Ajuste Final.",
                 key_prefix="stats_pre_fa",
             )
+            st.markdown("---")
+            render_schedule_score(
+                scheduler=st.session_state.scheduler,
+                title="🎯 Score del Reparto — Estadísticas",
+                caption=_stats_score_caption,
+            )
     else:
         render_assignment_statistics(
             caption="📌 Aún no se ha ejecutado el Ajuste Final: estas cifras coinciden con el calendario actual.",
             key_prefix="stats_current",
         )
+        if st.session_state.scheduler is not None:
+            st.markdown("---")
+            render_schedule_score(
+                scheduler=st.session_state.scheduler,
+                title="🎯 Score del Reparto — Estadísticas",
+                caption=_stats_score_caption,
+            )
 
 # ==================== TAB 4: AJUSTE FINAL ====================
 with tab4:
@@ -3857,6 +3891,20 @@ with tab4:
             title_suffix="tras Ajuste Final",
             caption="📌 Datos del reparto **después** del Ajuste Final (calendario activo).",
             key_prefix="stats_post_fa",
+        )
+        st.markdown("---")
+        # Score of the active (post-FA) schedule — recomputed each rerun so it
+        # always matches the calendar after FinalAdjustmentEngine finishes.
+        _fa_score = compute_schedule_score_breakdown(st.session_state.scheduler)
+        st.session_state.fa_score = _fa_score
+        render_schedule_score(
+            breakdown=_fa_score,
+            title="🎯 Score del Reparto — Ajuste Final",
+            caption=(
+                "Mismo score que el optimizador (cobertura 35 %, carga 25 %, FDS 10 %, "
+                "puentes 5 %, puestos 15 %, penalización 10 %). Refleja el calendario "
+                "**después** del Ajuste Final."
+            ),
         )
 
 # ==================== TAB 5: VERIFICACIÓN ====================
