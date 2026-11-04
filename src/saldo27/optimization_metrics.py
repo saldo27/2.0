@@ -8,6 +8,68 @@ from saldo27.constraint_checker import config_forced_dates
 from saldo27.structural_score import StructuralScoreBaselines
 from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
 
+# Snapshot entry: (worker_dict, target_shifts, _raw_target)
+ScoreTargetSnapshot = list[tuple[dict[str, Any], Any, Any]]
+
+
+def _norm_worker_match_key(value: object) -> str:
+    return " ".join(str(value).strip().casefold().split())
+
+
+def index_workers_for_scoring(source_workers: list[dict[str, Any]] | None) -> dict[str, dict[str, Any]]:
+    """Index workers by normalized id and name for resilient objective overlay."""
+    indexed: dict[str, dict[str, Any]] = {}
+    for worker in source_workers or []:
+        if not isinstance(worker, dict) or worker.get("id") is None:
+            continue
+        indexed[_norm_worker_match_key(worker["id"])] = worker
+        name = worker.get("name")
+        if name:
+            indexed.setdefault(_norm_worker_match_key(name), worker)
+    return indexed
+
+
+def apply_scoring_objectives(
+    scheduler,
+    source_workers: list[dict[str, Any]] | None,
+) -> ScoreTargetSnapshot:
+    """Overlay ``target_shifts`` / ``_raw_target`` from ``source_workers`` onto ``scheduler``.
+
+    Used so Revisión can keep display targets (= detected counts for Estadísticas)
+    while scoring with the same objectives the generator used. Returns a snapshot
+    suitable for :func:`restore_scoring_objectives`.
+    """
+    snapshot: ScoreTargetSnapshot = []
+    indexed = index_workers_for_scoring(source_workers)
+    for worker in getattr(scheduler, "workers_data", []) or []:
+        snapshot.append((worker, worker.get("target_shifts"), worker.get("_raw_target")))
+        source = None
+        if indexed:
+            source = indexed.get(_norm_worker_match_key(worker.get("id", "")))
+            if source is None and worker.get("name"):
+                source = indexed.get(_norm_worker_match_key(worker.get("name")))
+        if source is not None:
+            if "target_shifts" in source:
+                worker["target_shifts"] = source.get("target_shifts")
+            if "_raw_target" in source:
+                worker["_raw_target"] = source.get("_raw_target")
+            elif "target_shifts" in source:
+                worker["_raw_target"] = source.get("target_shifts")
+            continue
+        # Fallback: explicit revision fields stamped at display-build time.
+        if "_score_target_shifts" in worker:
+            worker["target_shifts"] = worker["_score_target_shifts"]
+        if "_score_raw_target" in worker:
+            worker["_raw_target"] = worker["_score_raw_target"]
+    return snapshot
+
+
+def restore_scoring_objectives(snapshot: ScoreTargetSnapshot) -> None:
+    """Restore targets saved by :func:`apply_scoring_objectives`."""
+    for worker, target_shifts, raw_target in snapshot:
+        worker["target_shifts"] = target_shifts
+        worker["_raw_target"] = raw_target
+
 
 class OptimizationMetrics:
     """
@@ -313,21 +375,27 @@ class OptimizationMetrics:
     def _calculate_constraint_violations_penalty(self) -> float:
         """Calcular penalización por violaciones de restricciones.
 
-        Efficiently counts gap violations by iterating sorted assignments per
-        worker, and incompatibility violations by checking each date's assigned
-        worker pairs.
+        Counts minimum-gap / 7–14 pattern violations and incompatibilities.
+
+        Exemptions (configuration, not scored — same rules as repair):
+        - Fixed-cadence workers are skipped entirely for spacing.
+        - A gap/7–14 pair whose *both* dates are mandatory is skipped.
+        - An incompatibility where *both* workers are mandatory/cadence on that
+          date is skipped.
+
+        Gap floors respect ``gap_periods`` (gap variable) via
+        :func:`get_effective_min_gap` (stricter of the two dates).
         """
         try:
             violation_count = 0
             scheduler = self.scheduler
 
-            # --- Gap violations (fast: O(total_assignments) per worker) ---
-            # Cadence workers, and a pair whose two dates are both mandatory, are
-            # configuration: not repaired and not scored. One mandatory date does
-            # not excuse the pair; repair moves the other day.
+            # --- Gap / 7-14 violations (fast: O(total_assignments) per worker) ---
             protected_by_worker = {
                 worker["id"]: config_forced_dates(worker, scheduler.date_utils) for worker in scheduler.workers_data
             }
+            gap_periods = getattr(scheduler, "gap_periods", None) or []
+            default_gap = scheduler.gap_between_shifts
             for worker in scheduler.workers_data:
                 if is_fixed_cadence(worker):
                     continue
@@ -336,13 +404,12 @@ class OptimizationMetrics:
                 if len(assignments) < 2:
                     continue
                 protected = protected_by_worker[worker_id]
-                gap_periods = getattr(scheduler, "gap_periods", None) or []
                 for i in range(1, len(assignments)):
                     if assignments[i] in protected and assignments[i - 1] in protected:
                         continue
                     min_days = get_effective_min_gap(
                         worker,
-                        scheduler.gap_between_shifts,
+                        default_gap,
                         date=assignments[i],
                         other_date=assignments[i - 1],
                         gap_periods=gap_periods,
@@ -354,7 +421,6 @@ class OptimizationMetrics:
                         violation_count += 1
 
             # --- Incompatibility violations (fast: O(dates * posts^2)) ---
-            # Both sides mandatory or cadence: configuration conflict, no penalty.
             checker = getattr(scheduler, "constraint_checker", None)
             if checker is not None:
                 for date, workers in scheduler.schedule.items():

@@ -390,3 +390,180 @@ def test_get_score_breakdown_matches_overall_score():
     assert set(breakdown["weights"]) == set(OptimizationMetrics.SCORE_WEIGHTS)
     assert 0.0 <= breakdown["overall"] <= 100.0
     assert breakdown["overall"] == metrics.calculate_overall_schedule_score()
+
+
+def _assign_days(scheduler, worker_id: str, days: list[datetime], post: int = 0) -> None:
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    if getattr(scheduler, "schedule_builder", None) is None:
+        scheduler.schedule_builder = ScheduleBuilder(scheduler)
+    for day in list(scheduler.schedule):
+        slots = list(scheduler.schedule[day])
+        while len(slots) < scheduler.num_shifts:
+            slots.append(None)
+        scheduler.schedule[day] = slots
+    for day in days:
+        slots = list(scheduler.schedule.get(day) or [None] * scheduler.num_shifts)
+        slots[post] = worker_id
+        scheduler.schedule[day] = slots
+    scheduler._synchronize_tracking_data()
+
+
+def test_constraint_penalty_skips_dual_mandatory_gap_and_pattern():
+    """Gap and 7/14 pairs forced by two mandatory dates must not penalise the score."""
+    workers = [
+        _worker(
+            "A",
+            mandatory_days="01-03-2026;02-03-2026;08-03-2026",
+            target_shifts=0,
+            _raw_target=3,
+        )
+    ]
+    scheduler = _build_scheduler(workers)
+    scheduler.gap_between_shifts = 3
+    _assign_days(
+        scheduler,
+        "A",
+        [datetime(2026, 3, 1), datetime(2026, 3, 2), datetime(2026, 3, 8)],
+    )
+
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
+
+
+def test_constraint_penalty_skips_fixed_cadence_spacing():
+    """Fixed-cadence workers are outside spacing limits for scoring."""
+    workers = [
+        _worker(
+            "A",
+            has_cadence=True,
+            cadence_days=2,
+            cadence_start_date="01-03-2026",
+            target_shifts=0,
+            _raw_target=5,
+        )
+    ]
+    scheduler = _build_scheduler(workers, num_shifts=2)
+    # Init expands cadence into mandatory_days; assign those dates.
+    cadence_days = list(scheduler.date_utils.parse_dates(scheduler.workers_data[0]["mandatory_days"]))
+    assert len(cadence_days) >= 2
+    _assign_days(scheduler, "A", cadence_days[:4])
+
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
+
+
+def test_constraint_penalty_skips_dual_mandatory_incompatibility():
+    """Incompatible workers both mandatory on the same day: configuration, no penalty."""
+    from saldo27.schedule_builder import ScheduleBuilder
+
+    workers = [
+        _worker("A", mandatory_days="01-03-2026", incompatible_with=["B"], target_shifts=0, _raw_target=1),
+        _worker("B", mandatory_days="01-03-2026", incompatible_with=["A"], target_shifts=0, _raw_target=1),
+    ]
+    scheduler = _build_scheduler(workers)
+    scheduler.schedule_builder = ScheduleBuilder(scheduler)
+    day = datetime(2026, 3, 1)
+    scheduler.schedule[day] = ["A", "B"]
+    scheduler._synchronize_tracking_data()
+
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
+
+
+def test_constraint_penalty_respects_variable_gap_periods():
+    """Pairs inside a relaxed gap_periods window must not be scored as gap violations."""
+    from saldo27.utilities import normalize_gap_periods
+
+    workers = [_worker("A", target_shifts=2, _raw_target=2)]
+    periods = normalize_gap_periods([{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 15), "gap": 2}])
+    scheduler = _build_scheduler(workers)
+    scheduler.gap_between_shifts = 4
+    scheduler.gap_periods = periods
+    # 2 days apart — illegal under global gap 4, legal under period gap 2.
+    _assign_days(scheduler, "A", [datetime(2026, 3, 5), datetime(2026, 3, 7)])
+
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
+
+    scheduler.gap_periods = []
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
+
+
+def test_constraint_penalty_counts_repairable_single_mandatory_gap():
+    """One mandatory + one free day that violate gap still penalise (repair moves the free day)."""
+    workers = [_worker("A", mandatory_days="01-03-2026", target_shifts=1, _raw_target=2)]
+    scheduler = _build_scheduler(workers)
+    scheduler.gap_between_shifts = 3
+    _assign_days(scheduler, "A", [datetime(2026, 3, 1), datetime(2026, 3, 2)])
+
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
+
+
+def test_apply_scoring_objectives_aligns_revision_display_with_generation():
+    """Display targets (= detected counts) must not change the scored workload vs generation."""
+    from saldo27.optimization_metrics import apply_scoring_objectives, restore_scoring_objectives
+
+    gen_workers = [_worker("A", name="Ana", mandatory_days="01-03-2026;15-03-2026", target_shifts=4, _raw_target=6)]
+    gen = _build_scheduler(gen_workers)
+    days = [datetime(2026, 3, d) for d in (1, 8, 15, 22, 25, 28)]
+    _assign_days(gen, "A", days)
+    gen.workers_data[0]["target_shifts"] = 4
+    gen.workers_data[0]["_raw_target"] = 6
+    gen_score = OptimizationMetrics(gen).get_score_breakdown()
+
+    # Simulate Revisión display: calendar id = name, targets overwritten to counts.
+    rev_workers = [
+        _worker(
+            "Ana",
+            name="Ana",
+            mandatory_days="01-03-2026;15-03-2026",
+            target_shifts=6,
+            _raw_target=6,
+            _score_target_shifts=4,
+            _score_raw_target=6,
+        )
+    ]
+    rev = _build_scheduler(rev_workers)
+    _assign_days(rev, "Ana", days)
+    rev.workers_data[0]["target_shifts"] = 6
+    rev.workers_data[0]["_raw_target"] = 6
+    rev.workers_data[0]["_score_target_shifts"] = 4
+    rev.workers_data[0]["_score_raw_target"] = 6
+
+    naive = OptimizationMetrics(rev).get_score_breakdown()
+    assert naive["components"]["workload_balance"] != gen_score["components"]["workload_balance"]
+
+    snapshot = apply_scoring_objectives(rev, gen.workers_data)
+    aligned = OptimizationMetrics(rev).get_score_breakdown()
+    restore_scoring_objectives(snapshot)
+
+    assert aligned["components"]["workload_balance"] == gen_score["components"]["workload_balance"]
+    assert aligned["overall"] == gen_score["overall"]
+    # Display targets restored for Estadísticas.
+    assert rev.workers_data[0]["target_shifts"] == 6
+
+
+def test_apply_scoring_objectives_uses_stamped_score_fields_without_source():
+    """When no live workers are passed, ``_score_*`` stamps still drive scoring."""
+    from saldo27.optimization_metrics import apply_scoring_objectives, restore_scoring_objectives
+
+    workers = [
+        _worker(
+            "A",
+            target_shifts=6,
+            _raw_target=6,
+            _score_target_shifts=4,
+            _score_raw_target=6,
+            mandatory_days="01-03-2026;15-03-2026",
+        )
+    ]
+    scheduler = _build_scheduler(workers)
+    days = [datetime(2026, 3, d) for d in (1, 8, 15, 22, 25, 28)]
+    _assign_days(scheduler, "A", days)
+    scheduler.workers_data[0]["target_shifts"] = 6
+    scheduler.workers_data[0]["_raw_target"] = 6
+    scheduler.workers_data[0]["_score_target_shifts"] = 4
+    scheduler.workers_data[0]["_score_raw_target"] = 6
+
+    snapshot = apply_scoring_objectives(scheduler, [])
+    assert scheduler.workers_data[0]["target_shifts"] == 4
+    assert scheduler.workers_data[0]["_raw_target"] == 6
+    restore_scoring_objectives(snapshot)
+    assert scheduler.workers_data[0]["target_shifts"] == 6
