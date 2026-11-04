@@ -732,9 +732,7 @@ def _plantilla_forced_days_index(
             except (TypeError, ValueError):
                 cadence_start = coerce_datetime(start_raw)
             if cadence_days >= 1 and cadence_start is not None:
-                for raw_day in date_utils.compute_cadence_dates(
-                    cadence_start, cadence_days, period_start, period_end
-                ):
+                for raw_day in date_utils.compute_cadence_dates(cadence_start, cadence_days, period_start, period_end):
                     day = raw_day.replace(hour=0, minute=0, second=0, microsecond=0)
                     work_periods = (worker.get("work_periods") or "").strip()
                     days_off = (worker.get("days_off") or "").strip()

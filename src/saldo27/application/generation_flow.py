@@ -419,12 +419,7 @@ def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
 
     from saldo27.constraint_checker import _normalize_day, config_forced_dates
 
-    schedule_days = {
-        day
-        for key in scheduler.schedule
-        for day in (_normalize_day(key),)
-        if day is not None
-    }
+    schedule_days = {day for key in scheduler.schedule for day in (_normalize_day(key),) if day is not None}
 
     for worker in scheduler.workers_data:
         worker_id = str(worker["id"])

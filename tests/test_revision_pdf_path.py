@@ -90,9 +90,7 @@ def test_pdf_revision_gap_periods_from_session_adjust_dias_minimos():
     """Sidebar gap_periods covering the PDF must change Días mínimos floors."""
     plantilla = _load_plantilla()
     analyzer = _analyzer_from_pdf()
-    periods = normalize_gap_periods(
-        [{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 6, 30), "gap": 2}]
-    )
+    periods = normalize_gap_periods([{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 6, 30), "gap": 2}])
     session = _Session(
         scheduler=None,
         config={"gap_between_shifts": 4, "gap_periods": periods, "max_consecutive_weekends": 3},
@@ -121,9 +119,7 @@ def test_reparto_dual_mandatory_incompat_not_penalised_on_revision():
     for ds, posts in data["schedule"].items():
         day = datetime.strptime(ds, "%Y-%m-%d").date()  # PDF analyzer uses date
         positioned = [(name, i) for i, name in enumerate(posts) if name]
-        calendar_data.append(
-            {"date": day, "workers": [n for n, _ in positioned], "workers_with_position": positioned}
-        )
+        calendar_data.append({"date": day, "workers": [n for n, _ in positioned], "workers_with_position": positioned})
 
     class _Analyzer:
         shifts_per_day = 4

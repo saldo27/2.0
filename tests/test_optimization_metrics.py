@@ -535,10 +535,7 @@ def test_incomplete_calendar_scale_rescues_proportional_overfill():
         worker["_raw_target"] = 4
 
     assert OptimizationMetrics(scheduler)._calculate_workload_balance_score() == 0.0
-    assert (
-        OptimizationMetrics(scheduler, scale_incomplete_objectives=True)._calculate_workload_balance_score()
-        == 100.0
-    )
+    assert OptimizationMetrics(scheduler, scale_incomplete_objectives=True)._calculate_workload_balance_score() == 100.0
 
 
 def test_incomplete_calendar_scale_still_exposes_weekend_imbalance():
