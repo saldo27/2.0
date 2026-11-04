@@ -1568,7 +1568,14 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
     session_cfg = st.session_state.get("config") or {}
     # Prefer sidebar gap variable when set so Revisión/Verificación track the UI,
     # even if a prior generation left a different (or empty) list on the live scheduler.
-    session_periods = normalize_gap_periods(session_cfg.get("gap_periods") or [])
+    # Parse the text widget first — it can be filled while config["gap_periods"] is still [].
+    periods_from_text: list[dict[str, Any]] = []
+    raw_gap_text = st.session_state.get("gap_periods_text")
+    if isinstance(raw_gap_text, str) and raw_gap_text.strip():
+        periods_from_text, _gap_warns = parse_gap_periods_text(raw_gap_text)
+    session_periods = normalize_gap_periods(periods_from_text or session_cfg.get("gap_periods") or [])
+    if session_periods and isinstance(session_cfg, dict):
+        session_cfg["gap_periods"] = session_periods
     live_periods = list(getattr(live_scheduler, "gap_periods", None) or []) if live_scheduler is not None else []
     gap_periods = session_periods if session_periods else live_periods
     if session_cfg.get("gap_between_shifts") is not None:
@@ -2025,14 +2032,23 @@ def render_assignment_statistics(
 def sync_scheduler_gap_settings(scheduler: Scheduler, session_cfg: dict[str, Any] | None = None) -> None:
     """Prefer sidebar gap settings for Verificación / Revisión scoring.
 
-    Session ``gap_periods`` always wins when non-empty so editing the gap
-    variable after generation still adjusts "Días mínimos entre guardias".
-    Falls back to the scheduler's existing periods only when the sidebar is empty.
+    The sidebar text area (``gap_periods_text``) is the source of truth when set:
+    Streamlit can leave ``config["gap_periods"]`` empty while the widget still
+    holds the user's intervals, which previously made early-period pairs with
+    diff==gap (e.g. 27-12→30-12 under gap 3) look like ``mínimo 4`` violations.
+    Falls back to ``config["gap_periods"]``, then leaves the scheduler unchanged.
     """
     cfg = session_cfg if session_cfg is not None else (st.session_state.get("config") or {})
-    session_periods = normalize_gap_periods(cfg.get("gap_periods") or [])
+    periods_from_text: list[dict[str, Any]] = []
+    raw_text = st.session_state.get("gap_periods_text")
+    if isinstance(raw_text, str) and raw_text.strip():
+        periods_from_text, _warnings = parse_gap_periods_text(raw_text)
+    session_periods = normalize_gap_periods(periods_from_text or cfg.get("gap_periods") or [])
     if session_periods:
         scheduler.gap_periods = session_periods
+        # Keep config aligned with the widget so later rebuilds see the same periods.
+        if isinstance(cfg, dict):
+            cfg["gap_periods"] = session_periods
     if cfg.get("gap_between_shifts") is not None:
         scheduler.gap_between_shifts = int(cfg["gap_between_shifts"])
 

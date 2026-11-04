@@ -136,8 +136,10 @@ def get_effective_min_gap(
 ) -> int:
     """Return the minimum number of calendar days between two shifts of a worker.
 
-    Two shifts are valid when their dates differ by at least this many days:
+    Two shifts are valid when their dates differ by at least this many days
+    (``days_between >= gap``; only ``days_between < gap`` is a violation):
     with gap 4, Monday-Friday (4 days) is valid and Monday-Thursday (3) is not.
+    With gap 3, a span of exactly 3 days (e.g. 27-12→30-12) is valid.
     Workers below 60 % ``work_percentage`` need one extra day (gap + 1).
 
     ``gap_periods`` are inclusive date intervals that replace the global gap.
@@ -145,11 +147,12 @@ def get_effective_min_gap(
     of the two dates (the higher gap). A date outside every interval keeps the
     global value. Without dates, the global gap is used, as before.
     """
+    periods = normalize_gap_periods(gap_periods) if gap_periods else []
     base = int(gap_between_shifts)
     if date is not None:
-        base = base_gap_for_date(date, base, gap_periods)
+        base = base_gap_for_date(date, base, periods)
         if other_date is not None:
-            base = max(base, base_gap_for_date(other_date, int(gap_between_shifts), gap_periods))
+            base = max(base, base_gap_for_date(other_date, int(gap_between_shifts), periods))
 
     if not worker_data:
         return base

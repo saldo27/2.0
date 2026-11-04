@@ -544,9 +544,9 @@ class OptimizationMetrics:
         Counts minimum-gap / 7–14 / gap-2-weekend spacing violations and
         incompatibilities.
 
-        Exemptions (configuration, not scored — same rules as repair):
+        Exemptions (configuration, not scored):
         - Fixed-cadence workers are skipped entirely for spacing.
-        - A gap/7–14/gap-2 pair whose *both* dates are mandatory is skipped.
+        - A gap/7–14/gap-2 pair where *either* date is mandatory/cadence is skipped.
         - An incompatibility where *both* workers are mandatory/cadence on that
           date is skipped.
 
@@ -557,18 +557,26 @@ class OptimizationMetrics:
         """
         try:
             scheduler = self.scheduler
+            from saldo27.constraint_checker import _normalize_day
+
             protected_by_worker = {
-                worker["id"]: config_forced_dates(worker, scheduler.date_utils) for worker in scheduler.workers_data
+                worker["id"]: {
+                    day
+                    for raw in config_forced_dates(worker, scheduler.date_utils)
+                    for day in (_normalize_day(raw),)
+                    if day
+                }
+                for worker in scheduler.workers_data
             }
             violation_count = count_scored_spacing_violations(scheduler)
 
             # --- Incompatibility violations (fast: O(dates * posts^2)) ---
-            from saldo27.constraint_checker import _normalize_day
-
             checker = getattr(scheduler, "constraint_checker", None)
             if checker is not None:
                 for date, workers in scheduler.schedule.items():
-                    day = _normalize_day(date) or date
+                    day = _normalize_day(date)
+                    if day is None:
+                        continue
                     assigned = [w for w in workers if w is not None]
                     for i in range(len(assigned)):
                         for j in range(i + 1, len(assigned)):

@@ -103,13 +103,21 @@ def test_luis_tripletes_revision_end_to_end():
     assert components["weekend_balance"] > 0.0
 
     incompat = violations.get("incompatibilidades") or []
-    # Dual-mandatory Christmas pair (KIKO+VALLE) must not be listed.
+    # Dual-mandatory Christmas pair (KIKO+VALLE) must not be listed or penalised.
     assert not any("25-12-2026" in item for item in incompat)
+    assert components["constraint_penalty"] >= 0.0
     # Plantilla is_incompatible clique must still surface non-mandatory clashes
     # (sync used to wipe empty incompatible_with → zero incompat forever).
     assert any("CHEMA" in item and "VALLE" in item for item in incompat)
 
     gaps = violations.get("gap_minimo") or []
+    # Luis exact early pairs: diff==3 under period gap 3 must NOT be violations.
+    for needle in (
+        "27-12-2026 → 30-12-2026",
+        "02-01-2027 → 05-01-2027",
+        "05-01-2027 → 08-01-2027",
+    ):
+        assert not any(needle in item for item in gaps), gaps
     # Late window floor is 4 (part-time may report 5).
     assert any("mínimo 4" in item or "mínimo 5" in item for item in gaps)
     # Early window uses floor 3: CHEMA 23-12→26-12 (3 days) must not be flagged
@@ -137,3 +145,57 @@ def test_luis_tripletes_revision_end_to_end():
     dec24 = display.schedule.get(datetime(2026, 12, 24)) or []
     assert "MARINA" in dec24
     assert "MARNA" not in dec24
+
+
+def test_luis_gap_periods_text_applies_when_config_list_empty():
+    """Sidebar text area must drive Días mínimos even if config['gap_periods'] is []."""
+    plantilla = _load_plantilla()
+    session = _Session(
+        scheduler=None,
+        config={
+            "gap_between_shifts": 4,
+            "gap_periods": [],  # stale / unsynced
+            "max_consecutive_weekends": 3,
+        },
+        workers_data=plantilla,
+        schedule=None,
+        revision_name_mapping={},
+        gap_periods_text=("23-12-2026 / 09-01-2027: 3\n10-01-2027 / 30-06-2027: 4"),
+    )
+    with patch.object(st, "session_state", session):
+        display = build_revision_display_scheduler(_analyzer(), workers_config=plantilla)
+        violations = check_violations(display)
+
+    gaps = violations.get("gap_minimo") or []
+    for needle in (
+        "27-12-2026 → 30-12-2026",
+        "02-01-2027 → 05-01-2027",
+        "05-01-2027 → 08-01-2027",
+    ):
+        assert not any(needle in item for item in gaps), (needle, gaps)
+
+
+def test_luis_dual_mandatory_christmas_not_in_incompat_or_penalty():
+    """KIKO+VALLE both mandatory on 25-12 must not appear in incompat or raise penalty alone."""
+    plantilla = _load_plantilla()
+    periods = _luis_gap_periods()
+    session = _Session(
+        scheduler=None,
+        config={"gap_between_shifts": 4, "gap_periods": periods, "max_consecutive_weekends": 3},
+        workers_data=plantilla,
+        schedule=None,
+        revision_name_mapping={},
+    )
+    with patch.object(st, "session_state", session):
+        display = build_revision_display_scheduler(_analyzer(), workers_config=plantilla)
+        # Isolate Dec 25: clear other days so only dual-mandatory clash remains.
+        only = {datetime(2026, 12, 25): list(display.schedule[datetime(2026, 12, 25)])}
+        display.schedule = only
+        display._synchronize_tracking_data()
+        violations = check_violations(display)
+        breakdown = compute_schedule_score_breakdown(display, scoring_workers=None)
+
+    assert display.schedule[datetime(2026, 12, 25)] == ["JULIA", "KIKO", "VALLE", "BEA"]
+    assert violations.get("incompatibilidades") == []
+    assert breakdown is not None
+    assert breakdown["components"]["constraint_penalty"] == 0.0

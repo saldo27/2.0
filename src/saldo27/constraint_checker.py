@@ -124,8 +124,9 @@ def count_scored_spacing_violations(scheduler: "Scheduler") -> int:
     """Count gap / 7–14 / gap-2-weekend violations for scoring.
 
     Each consecutive assignment pair uses :func:`get_effective_min_gap` with
-    ``gap_periods`` (stricter of the two dates). Fixed-cadence workers and
-    dual-mandatory pairs are exempt (configuration, not scored).
+    ``gap_periods`` (stricter of the two dates). Fixed-cadence workers are
+    skipped. A pair is exempt when *either* date is mandatory/cadence
+    (violation produced by forced dates — not scored).
     """
     workers_data = getattr(scheduler, "workers_data", None) or []
     date_utils = getattr(scheduler, "date_utils", None)
@@ -133,21 +134,30 @@ def count_scored_spacing_violations(scheduler: "Scheduler") -> int:
     gap_periods = getattr(scheduler, "gap_periods", None) or []
     default_gap = int(getattr(scheduler, "gap_between_shifts", 3) or 3)
 
-    protected_by_worker = {worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data}
+    protected_by_worker = {
+        worker["id"]: {_normalize_day(d) for d in config_forced_dates(worker, date_utils) if _normalize_day(d)}
+        for worker in workers_data
+    }
     violation_count = 0
 
     for worker in workers_data:
         if is_fixed_cadence(worker):
             continue
         worker_id = worker["id"]
-        assignments = sorted(assignments_by_worker.get(worker_id, ()) or ())
+        assignments = sorted(
+            day
+            for value in (assignments_by_worker.get(worker_id, ()) or ())
+            for day in (_normalize_day(value),)
+            if day is not None
+        )
         if len(assignments) < 2:
             continue
         protected = protected_by_worker.get(worker_id, set())
         for i in range(1, len(assignments)):
             earlier = assignments[i - 1]
             later = assignments[i]
-            if earlier in protected and later in protected:
+            # Mandatory/cadence on either side ⇒ configuration, not scored.
+            if earlier in protected or later in protected:
                 continue
             pair_gap = get_effective_min_gap(
                 worker,
@@ -214,6 +224,7 @@ def candidate_spacing_rejection(
             pair_gap = min_gap
             block_bridge = block_gap2_weekend_pairs
 
+        # Valid when days_between >= pair_gap (e.g. gap 3 allows 27-12→30-12).
         if days_between < pair_gap:
             return SpacingRejection("gap", prev_date, days_between, pair_gap)
 
@@ -1013,7 +1024,10 @@ class ConstraintChecker:
         if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
             locked_pairs = self.scheduler.get_locked_mandatory()
         protected_by_worker = {
-            worker["id"]: config_forced_dates(worker, self.date_utils) for worker in self.workers_data
+            worker["id"]: {
+                day for raw in config_forced_dates(worker, self.date_utils) for day in (_normalize_day(raw),) if day
+            }
+            for worker in self.workers_data
         }
 
         for date, shifts in self.scheduler.schedule.items():
@@ -1022,7 +1036,16 @@ class ConstraintChecker:
             for worker_id in workers_on_date:
                 worker = self._worker_lookup_cache.get(worker_id)
                 if not worker:
-                    continue
+                    # Cache should be warm after clear_caches(); rebuild one entry if not.
+                    raw_worker = next((w for w in self.workers_data if w.get("id") == worker_id), None)
+                    if raw_worker is None:
+                        continue
+                    worker = {
+                        "data": raw_worker,
+                        "incompatible_with": set(raw_worker.get("incompatible_with", [])),
+                        "work_percentage": raw_worker.get("work_percentage", 100),
+                    }
+                    self._worker_lookup_cache[worker_id] = worker
                 incompatible_with = worker["incompatible_with"]
                 for incompatible_id in incompatible_with:
                     if incompatible_id not in workers_on_date:
