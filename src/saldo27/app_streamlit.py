@@ -655,6 +655,154 @@ def _norm_worker_key(value: object) -> str:
     return " ".join(str(value).strip().casefold().split())
 
 
+def _edit_distance(left: str, right: str) -> int:
+    """Small Levenshtein distance (capped) for OCR calendar-name repair."""
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > 2:
+        return 99
+    prev = list(range(len(right) + 1))
+    for i, ca in enumerate(left, 1):
+        cur = [i]
+        for j, cb in enumerate(right, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _unique_prefix_name_aliases(
+    calendar_names: list[str] | set[str],
+    plantilla_labels: list[str] | set[str],
+    *,
+    min_len: int = 4,
+) -> dict[str, str]:
+    """Map OCR-truncated calendar names onto a unique plantilla id/name.
+
+    Requires ``min_len`` so short tokens like ``MAR`` (a real worker) stay put.
+    Typo tokens that are not prefixes (e.g. ``MARNA`` vs ``MARINA``) are handled
+    separately via :func:`_fuzzy_forced_day_alias`.
+    """
+    labels = [str(label) for label in plantilla_labels if label]
+    by_norm: dict[str, str] = {}
+    for label in labels:
+        by_norm.setdefault(_norm_worker_key(label), label)
+    plantilla_norms = set(by_norm)
+    aliases: dict[str, str] = {}
+    for raw in calendar_names:
+        if not raw:
+            continue
+        name = str(raw)
+        norm = _norm_worker_key(name)
+        if norm in plantilla_norms or len(norm) < min_len:
+            continue
+        matches = {
+            target_norm: label
+            for target_norm, label in by_norm.items()
+            if target_norm.startswith(norm) and target_norm != norm
+        }
+        if len(matches) == 1:
+            aliases[name] = next(iter(matches.values()))
+    return aliases
+
+
+def _plantilla_forced_days_index(
+    plantilla_workers: list[dict[str, Any]],
+    *,
+    period_start: datetime,
+    period_end: datetime,
+) -> dict[str, set[datetime]]:
+    """Normalize plantilla id/name → forced (mandatory/cadence) calendar days."""
+    from saldo27.utilities import DateTimeUtils, coerce_datetime, is_date_in_ranges
+
+    date_utils = DateTimeUtils()
+    forced_by_norm: dict[str, set[datetime]] = {}
+
+    for worker in plantilla_workers:
+        if not isinstance(worker, dict) or worker.get("id") is None:
+            continue
+        days: set[datetime] = set()
+        if worker.get("has_cadence"):
+            try:
+                cadence_days = int(worker.get("cadence_days") or 0)
+            except (TypeError, ValueError):
+                cadence_days = 0
+            start_raw = worker.get("cadence_start_date") or ""
+            try:
+                cadence_start = datetime.strptime(str(start_raw), "%d-%m-%Y") if start_raw else None
+            except (TypeError, ValueError):
+                cadence_start = coerce_datetime(start_raw)
+            if cadence_days >= 1 and cadence_start is not None:
+                for raw_day in date_utils.compute_cadence_dates(
+                    cadence_start, cadence_days, period_start, period_end
+                ):
+                    day = raw_day.replace(hour=0, minute=0, second=0, microsecond=0)
+                    work_periods = (worker.get("work_periods") or "").strip()
+                    days_off = (worker.get("days_off") or "").strip()
+                    if work_periods and not is_date_in_ranges(day, work_periods):
+                        continue
+                    if days_off and is_date_in_ranges(day, days_off):
+                        continue
+                    days.add(day)
+        raw_mandatory = worker.get("mandatory_days") or ""
+        if raw_mandatory:
+            try:
+                if isinstance(raw_mandatory, (list, tuple, set)):
+                    parsed_list = []
+                    for item in raw_mandatory:
+                        parsed = coerce_datetime(item)
+                        if parsed is not None:
+                            parsed_list.append(parsed)
+                    for parsed in parsed_list:
+                        days.add(parsed.replace(hour=0, minute=0, second=0, microsecond=0))
+                else:
+                    for parsed in date_utils.parse_dates(str(raw_mandatory)):
+                        days.add(parsed.replace(hour=0, minute=0, second=0, microsecond=0))
+            except (TypeError, ValueError, AttributeError):
+                pass
+        if not days:
+            continue
+        for key in (worker.get("id"), worker.get("name")):
+            if key is None or key == "":
+                continue
+            forced_by_norm.setdefault(_norm_worker_key(key), set()).update(days)
+    return forced_by_norm
+
+
+def _fuzzy_forced_day_alias(
+    calendar_name: str,
+    day: datetime,
+    *,
+    plantilla_by_norm: dict[str, dict[str, Any]],
+    forced_by_norm: dict[str, set[datetime]],
+    occupied_norms: set[str],
+) -> str | None:
+    """Map an unknown PDF token to the unique near plantilla id forced on ``day``.
+
+    ``MARNA`` is edit-distance 1 from both ``MARIA`` and ``MARINA``; only MARINA is
+    cadence-forced on 24-12-2026, so the alias is unambiguous on that day.
+    """
+    norm = _norm_worker_key(calendar_name)
+    if not norm or norm in plantilla_by_norm:
+        return None
+    day_key = day.replace(hour=0, minute=0, second=0, microsecond=0)
+    matches: list[str] = []
+    for pnorm, worker in plantilla_by_norm.items():
+        if pnorm in occupied_norms:
+            continue
+        forced = forced_by_norm.get(pnorm) or set()
+        if day_key not in forced:
+            continue
+        labels = {_norm_worker_key(worker.get("id", ""))}
+        if worker.get("name"):
+            labels.add(_norm_worker_key(worker["name"]))
+        if min((_edit_distance(norm, label) for label in labels), default=99) <= 1:
+            matches.append(str(worker["id"]))
+    uniq = list(dict.fromkeys(matches))
+    if len(uniq) == 1:
+        return uniq[0]
+    return None
+
+
 def _plantilla_workers_by_id(
     workers_config: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
@@ -1158,32 +1306,6 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
     configured plantilla when available, so Obj. Rosell stays 0 / 100%.
     """
     num_shifts = int(getattr(analyzer, "shifts_per_day", 4) or 4)
-    schedule: dict[datetime, list] = {}
-    assignment_counts: dict[str, int] = {}
-
-    for day_data in getattr(analyzer, "calendar_data", []) or []:
-        day = day_data.get("date")
-        if day is None:
-            continue
-        if not isinstance(day, datetime):
-            day = datetime.combine(day, datetime.min.time())
-        slots: list = [None] * num_shifts
-        positioned = day_data.get("workers_with_position") or []
-        if positioned:
-            for worker_name, pos in positioned:
-                if worker_name and 0 <= int(pos) < num_shifts:
-                    slots[int(pos)] = worker_name
-        else:
-            for idx, worker_name in enumerate(day_data.get("workers") or []):
-                if worker_name and idx < num_shifts:
-                    slots[idx] = worker_name
-        schedule[day] = slots
-        for worker_name in slots:
-            if worker_name:
-                assignment_counts[worker_name] = assignment_counts.get(worker_name, 0) + 1
-
-    if not schedule:
-        raise ValueError("El analizador no tiene días parseados para mostrar estadísticas.")
 
     if workers_config is None:
         workers_config = collect_rosell_flag_sources()
@@ -1196,14 +1318,127 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
     if live_scheduler is not None and getattr(live_scheduler, "workers_data", None):
         live_by_id = _plantilla_workers_by_id(list(live_scheduler.workers_data))
 
-    # Short calendar names → plantilla names via Revisión name_mapping.
+    # Short calendar names → plantilla names via Revisión name_mapping, plus
+    # unique OCR-prefix aliases (MARNA→MARINA) so cadence mandatory matches the PDF.
     name_mapping = dict(st.session_state.get("revision_name_mapping") or {})
+    calendar_names: list[str] = []
+    for day_data in getattr(analyzer, "calendar_data", []) or []:
+        positioned = day_data.get("workers_with_position") or []
+        if positioned:
+            calendar_names.extend(str(name) for name, _pos in positioned if name)
+        else:
+            calendar_names.extend(str(name) for name in (day_data.get("workers") or []) if name)
+    plantilla_labels: list[str] = []
+    for cfg in list(workers_config or []):
+        if cfg.get("id") is not None:
+            plantilla_labels.append(str(cfg["id"]))
+        if cfg.get("name"):
+            plantilla_labels.append(str(cfg["name"]))
+    for cfg in live_by_id.values():
+        if cfg.get("id") is not None:
+            plantilla_labels.append(str(cfg["id"]))
+        if cfg.get("name"):
+            plantilla_labels.append(str(cfg["name"]))
+    auto_aliases = _unique_prefix_name_aliases(calendar_names, plantilla_labels)
+    # Explicit UI mapping wins over auto OCR aliases.
+    resolved_aliases = {**auto_aliases, **{str(k): str(v) for k, v in name_mapping.items() if k and v}}
+
+    plantilla_by_norm: dict[str, dict[str, Any]] = {}
+    for cfg in list(workers_config or []):
+        if not isinstance(cfg, dict) or cfg.get("id") is None:
+            continue
+        plantilla_by_norm[_norm_worker_key(cfg["id"])] = cfg
+        if cfg.get("name"):
+            plantilla_by_norm.setdefault(_norm_worker_key(cfg["name"]), cfg)
+    for cfg in live_by_id.values():
+        if not isinstance(cfg, dict) or cfg.get("id") is None:
+            continue
+        plantilla_by_norm.setdefault(_norm_worker_key(cfg["id"]), cfg)
+        if cfg.get("name"):
+            plantilla_by_norm.setdefault(_norm_worker_key(cfg["name"]), cfg)
+
+    calendar_days: list[datetime] = []
+    for day_data in getattr(analyzer, "calendar_data", []) or []:
+        raw_day = day_data.get("date")
+        if raw_day is None:
+            continue
+        if not isinstance(raw_day, datetime):
+            raw_day = datetime.combine(raw_day, datetime.min.time())
+        calendar_days.append(raw_day)
+    period_start = min(calendar_days) if calendar_days else datetime.now()
+    period_end = max(calendar_days) if calendar_days else period_start
+    forced_by_norm = _plantilla_forced_days_index(
+        list(workers_config or []) + [w for w in live_by_id.values()],
+        period_start=period_start,
+        period_end=period_end,
+    )
+
+    def _alias_calendar_name(raw: object, day: datetime, occupied_norms: set[str]) -> str | None:
+        if not raw:
+            return None
+        name = str(raw)
+        mapped = resolved_aliases.get(name) or resolved_aliases.get(name.upper())
+        if mapped:
+            return str(mapped)
+        fuzzy = _fuzzy_forced_day_alias(
+            name,
+            day,
+            plantilla_by_norm=plantilla_by_norm,
+            forced_by_norm=forced_by_norm,
+            occupied_norms=occupied_norms,
+        )
+        return str(fuzzy) if fuzzy else name
+
+    schedule: dict[datetime, list] = {}
+    assignment_counts: dict[str, int] = {}
+
+    for day_data in getattr(analyzer, "calendar_data", []) or []:
+        day = day_data.get("date")
+        if day is None:
+            continue
+        if not isinstance(day, datetime):
+            day = datetime.combine(day, datetime.min.time())
+        slots: list = [None] * num_shifts
+        raw_entries: list[tuple[object, int]] = []
+        positioned = day_data.get("workers_with_position") or []
+        if positioned:
+            for worker_name, pos in positioned:
+                if worker_name and 0 <= int(pos) < num_shifts:
+                    raw_entries.append((worker_name, int(pos)))
+        else:
+            for idx, worker_name in enumerate(day_data.get("workers") or []):
+                if worker_name and idx < num_shifts:
+                    raw_entries.append((worker_name, idx))
+        # First pass: names already known in plantilla occupy slots for fuzzy disambiguation.
+        occupied_norms: set[str] = set()
+        for worker_name, _pos in raw_entries:
+            known = resolved_aliases.get(str(worker_name)) or resolved_aliases.get(str(worker_name).upper())
+            candidate = str(known) if known else str(worker_name)
+            if _norm_worker_key(candidate) in plantilla_by_norm:
+                occupied_norms.add(_norm_worker_key(candidate))
+        for worker_name, pos in raw_entries:
+            aliased = _alias_calendar_name(worker_name, day, occupied_norms)
+            if aliased:
+                slots[pos] = aliased
+                occupied_norms.add(_norm_worker_key(aliased))
+        schedule[day] = slots
+        for worker_name in slots:
+            if worker_name:
+                assignment_counts[worker_name] = assignment_counts.get(worker_name, 0) + 1
+
+    if not schedule:
+        raise ValueError("El analizador no tiene días parseados para mostrar estadísticas.")
 
     def _lookup_cfg(calendar_id: str, index: dict[str, dict[str, Any]]) -> dict[str, Any]:
         cfg = index.get(_norm_worker_key(calendar_id), {})
         if cfg:
             return cfg
-        mapped = name_mapping.get(calendar_id) or name_mapping.get(str(calendar_id).upper())
+        mapped = (
+            resolved_aliases.get(calendar_id)
+            or resolved_aliases.get(str(calendar_id).upper())
+            or name_mapping.get(calendar_id)
+            or name_mapping.get(str(calendar_id).upper())
+        )
         if mapped:
             return index.get(_norm_worker_key(mapped), {})
         return {}
@@ -1213,7 +1448,7 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
     for calendar_id in assignment_counts:
         cfg = _lookup_cfg(calendar_id, configured_by_id) or _lookup_cfg(calendar_id, live_by_id)
         plantilla_key_to_calendar[_norm_worker_key(calendar_id)] = calendar_id
-        for short, long in name_mapping.items():
+        for short, long in resolved_aliases.items():
             if _norm_worker_key(long) == _norm_worker_key(calendar_id) or (
                 cfg
                 and _norm_worker_key(long)

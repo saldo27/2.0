@@ -139,5 +139,7 @@ simple_*.py
 
 # Generated output files
 *.pdf
+# Keep pinned Revisión regression PDFs under tests/fixtures/
+!tests/fixtures/**/*.pdf
 schedule_data_*.json
 historical_data/*.json

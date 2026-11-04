@@ -93,6 +93,28 @@ def restore_scoring_objectives(snapshot: ScoreTargetSnapshot) -> None:
         worker["_raw_target"] = raw_target
 
 
+def expand_is_incompatible_clique(workers: list[dict[str, Any]] | None) -> None:
+    """Fill empty ``incompatible_with`` from the mutual ``is_incompatible`` clique.
+
+    Matches :meth:`SchedulerInitializer.initialize_incompatibilities`: plantilla
+    JSON often sets ``is_incompatible=True`` with an empty list; generation expands
+    it, but Revisión sync from that same plantilla would otherwise wipe the clique
+    and hide real same-day clashes (while dual-mandatory pairs stay exempt).
+    """
+    workers = list(workers or [])
+    incompatible_ids = {str(worker["id"]) for worker in workers if worker.get("is_incompatible")}
+    if not incompatible_ids:
+        return
+    for worker in workers:
+        raw = worker.get("incompatible_with") or []
+        if isinstance(raw, str):
+            raw = [raw] if raw.strip() else []
+        if raw:
+            continue
+        if worker.get("is_incompatible"):
+            worker["incompatible_with"] = list(incompatible_ids - {str(worker["id"])})
+
+
 def sync_worker_constraint_fields(
     scheduler,
     source_workers: list[dict[str, Any]] | None,
@@ -171,6 +193,10 @@ def sync_worker_constraint_fields(
         worker["incompatible_with"] = remapped
         if "is_incompatible" in source:
             worker["is_incompatible"] = bool(source.get("is_incompatible"))
+
+    # Plantilla often has is_incompatible=True with []. Rebuild the clique with
+    # *display* ids so Verificación/score see the same mutual group as generation.
+    expand_is_incompatible_clique(workers)
 
     checker = getattr(scheduler, "constraint_checker", None)
     if checker is not None and hasattr(checker, "clear_caches"):
