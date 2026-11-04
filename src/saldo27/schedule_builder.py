@@ -682,7 +682,8 @@ class ScheduleBuilder:
                 return hard
             return max(preferred, hard)
 
-        hard_floor = get_effective_min_gap(worker, configured_gap)
+        # Period-aware hard floor for this candidate date (gap_for_other refines per neighbour).
+        hard_floor = get_effective_min_gap(worker, configured_gap, date=date, gap_periods=gap_periods)
         if min_gap is None:
             min_gap = hard_floor
         if assignments is None:

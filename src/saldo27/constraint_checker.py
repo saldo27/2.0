@@ -74,6 +74,61 @@ def config_forced_dates(worker: dict | None, date_utils: Any) -> set[datetime]:
         return set()
 
 
+# Spacing reasons that feed OptimizationMetrics / adaptive gap compliance.
+# Includes gap2_weekend because that rule only fires when the *effective*
+# pair floor is 2 — which varies with ``gap_periods``.
+_SCORED_SPACING_REASONS: frozenset[str] = frozenset({"gap", "pattern_714", "gap2_weekend"})
+
+
+def count_scored_spacing_violations(scheduler: "Scheduler") -> int:
+    """Count gap / 7–14 / gap-2-weekend violations for scoring.
+
+    Each consecutive assignment pair uses :func:`get_effective_min_gap` with
+    ``gap_periods`` (stricter of the two dates). Fixed-cadence workers and
+    dual-mandatory pairs are exempt (configuration, not scored).
+    """
+    workers_data = getattr(scheduler, "workers_data", None) or []
+    date_utils = getattr(scheduler, "date_utils", None)
+    assignments_by_worker = getattr(scheduler, "worker_assignments", None) or {}
+    gap_periods = getattr(scheduler, "gap_periods", None) or []
+    default_gap = int(getattr(scheduler, "gap_between_shifts", 3) or 3)
+
+    protected_by_worker = {worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data}
+    violation_count = 0
+
+    for worker in workers_data:
+        if is_fixed_cadence(worker):
+            continue
+        worker_id = worker["id"]
+        assignments = sorted(assignments_by_worker.get(worker_id, ()) or ())
+        if len(assignments) < 2:
+            continue
+        protected = protected_by_worker.get(worker_id, set())
+        for i in range(1, len(assignments)):
+            earlier = assignments[i - 1]
+            later = assignments[i]
+            if earlier in protected and later in protected:
+                continue
+            pair_gap = get_effective_min_gap(
+                worker,
+                default_gap,
+                date=later,
+                other_date=earlier,
+                gap_periods=gap_periods,
+            )
+            rejection = candidate_spacing_rejection(
+                later,
+                (earlier,),
+                min_gap=pair_gap,
+                date_is_mandatory=False,
+                block_gap2_weekend_pairs=(pair_gap == 2),
+            )
+            if rejection is not None and rejection.reason in _SCORED_SPACING_REASONS:
+                violation_count += 1
+
+    return violation_count
+
+
 @dataclass(frozen=True)
 class SpacingRejection:
     """Why a candidate date cannot sit next to one existing assignment."""
@@ -323,7 +378,8 @@ class ConstraintChecker:
             return True  # cadence dates are fixed; availability rejects any other date
         default_gap = self.scheduler.gap_between_shifts
         gap_periods = getattr(self.scheduler, "gap_periods", None) or []
-        min_required_days_between = get_effective_min_gap(worker, default_gap)
+        # Period-aware floor for this candidate date (gap_for_other refines per neighbour).
+        min_required_days_between = get_effective_min_gap(worker, default_gap, date=date, gap_periods=gap_periods)
 
         assignments = (
             self.scheduler._get_effective_assignments(worker_id)
@@ -902,10 +958,16 @@ class ConstraintChecker:
                             }
                         )
 
-        # Incompatibility violations
-        mandatory_pairs: set[tuple] = set()
+        # Incompatibility violations. Dual-mandatory/cadence pairs are configuration
+        # (same exemption as OptimizationMetrics): prefer ``mandatory_days`` /
+        # cadence dates over ``get_locked_mandatory()``, which is empty on Revisión
+        # display schedulers that never ran generation locking.
+        locked_pairs: set[tuple] = set()
         if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
-            mandatory_pairs = self.scheduler.get_locked_mandatory()
+            locked_pairs = self.scheduler.get_locked_mandatory()
+        protected_by_worker = {
+            worker["id"]: config_forced_dates(worker, self.date_utils) for worker in self.workers_data
+        }
 
         for date, shifts in self.scheduler.schedule.items():
             workers_on_date = [w for w in shifts if w is not None]
@@ -915,23 +977,24 @@ class ConstraintChecker:
                     continue
                 incompatible_with = worker["incompatible_with"]
                 for incompatible_id in incompatible_with:
-                    if incompatible_id in workers_on_date:
-                        both_mandatory = (worker_id, date) in mandatory_pairs and (
-                            incompatible_id,
-                            date,
-                        ) in mandatory_pairs
-                        if both_mandatory:
-                            logging.info(
-                                f"Incompatible workers {worker_id} and {incompatible_id} on {date} — both MANDATORY, skipping violation"
-                            )
-                            continue
-                        violations.append(
-                            {
-                                "type": "incompatibility",
-                                "worker_id": worker_id,
-                                "incompatible_id": incompatible_id,
-                                "date": date,
-                            }
+                    if incompatible_id not in workers_on_date:
+                        continue
+                    both_locked = (worker_id, date) in locked_pairs and (incompatible_id, date) in locked_pairs
+                    both_forced = date in protected_by_worker.get(worker_id, ()) and date in protected_by_worker.get(
+                        incompatible_id, ()
+                    )
+                    if both_locked or both_forced:
+                        logging.info(
+                            f"Incompatible workers {worker_id} and {incompatible_id} on {date} — both MANDATORY, skipping violation"
                         )
+                        continue
+                    violations.append(
+                        {
+                            "type": "incompatibility",
+                            "worker_id": worker_id,
+                            "incompatible_id": incompatible_id,
+                            "date": date,
+                        }
+                    )
 
         return violations

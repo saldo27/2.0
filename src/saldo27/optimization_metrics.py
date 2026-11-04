@@ -4,9 +4,8 @@ from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
 from saldo27.balance_validator import BalanceValidator
-from saldo27.constraint_checker import config_forced_dates
+from saldo27.constraint_checker import config_forced_dates, count_scored_spacing_violations
 from saldo27.structural_score import StructuralScoreBaselines
-from saldo27.utilities import get_effective_min_gap, is_fixed_cadence
 
 # Snapshot entry: (worker_dict, target_shifts, _raw_target)
 ScoreTargetSnapshot = list[tuple[dict[str, Any], Any, Any]]
@@ -218,6 +217,21 @@ class OptimizationMetrics:
             logging.error(f"Error calculating fill rate score: {e}")
             return 0.0
 
+    @staticmethod
+    def _incomplete_calendar_scale(total_actual: float, total_objective: float) -> float:
+        """Scale absolute objectives when the calendar is clearly under-filled.
+
+        Revisión often overlays full-period live targets onto a partially detected
+        calendar; without scaling, workload/weekend floor at 0 and look "lost".
+        Mild underfill (e.g. 7/10) still uses scale 1 so absolute balance tests hold.
+        """
+        if total_objective <= 0:
+            return 1.0
+        fill_ratio = total_actual / total_objective
+        if fill_ratio < 0.5:
+            return max(fill_ratio, 1e-9)
+        return 1.0
+
     def _calculate_workload_balance_score(self) -> float:
         """Workload balance vs clique-scaled ``scoring_shift_target`` (±10% deadzone).
 
@@ -230,18 +244,21 @@ class OptimizationMetrics:
 
             baselines = self._structural_baselines()
             date_utils = getattr(self.scheduler, "date_utils", None)
-            deviations = []
+            rows: list[tuple[float, float]] = []
             for worker in self.scheduler.workers_data:
                 worker_id = worker["id"]
-                target = baselines.scoring_shift_target(worker)
+                target = float(baselines.scoring_shift_target(worker))
                 assignments = self.scheduler.worker_assignments.get(worker_id, set())
                 # target_shifts excludes mandatory shifts, so compare against non-mandatory only.
                 _, count = BalanceValidator.compute_non_mandatory_assigned(worker, assignments, date_utils)
                 if target > 0:
-                    deviations.append(abs(count - target) / target)
+                    rows.append((float(count), target))
 
-            if not deviations:
+            if not rows:
                 return 100.0
+
+            scale = self._incomplete_calendar_scale(sum(c for c, _ in rows), sum(t for _, t in rows))
+            deviations = [abs(count - target * scale) / (target * scale) for count, target in rows]
 
             deadzone = 0.10
             effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
@@ -261,7 +278,7 @@ class OptimizationMetrics:
             baselines = self._structural_baselines()
             holidays = getattr(self.scheduler, "holidays", set())
 
-            deviations = []
+            rows: list[tuple[float, float]] = []
             for worker in self.scheduler.workers_data:
                 assignments = self.scheduler.worker_assignments.get(worker["id"], set())
                 actual_wknd = sum(
@@ -269,12 +286,15 @@ class OptimizationMetrics:
                     for date in assignments
                     if hasattr(date, "weekday") and self.scheduler.date_utils.is_weekend_day(date, holidays)
                 )
-                expected_wknd = baselines.scoring_weekend_objective(worker)
+                expected_wknd = float(baselines.scoring_weekend_objective(worker))
                 if expected_wknd > 0:
-                    deviations.append(abs(actual_wknd - expected_wknd) / expected_wknd)
+                    rows.append((float(actual_wknd), expected_wknd))
 
-            if not deviations:
+            if not rows:
                 return 100.0
+
+            scale = self._incomplete_calendar_scale(sum(a for a, _ in rows), sum(e for _, e in rows))
+            deviations = [abs(actual - expected * scale) / (expected * scale) for actual, expected in rows]
 
             deadzone = 0.15
             effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
@@ -375,50 +395,26 @@ class OptimizationMetrics:
     def _calculate_constraint_violations_penalty(self) -> float:
         """Calcular penalización por violaciones de restricciones.
 
-        Counts minimum-gap / 7–14 pattern violations and incompatibilities.
+        Counts minimum-gap / 7–14 / gap-2-weekend spacing violations and
+        incompatibilities.
 
         Exemptions (configuration, not scored — same rules as repair):
         - Fixed-cadence workers are skipped entirely for spacing.
-        - A gap/7–14 pair whose *both* dates are mandatory is skipped.
+        - A gap/7–14/gap-2 pair whose *both* dates are mandatory is skipped.
         - An incompatibility where *both* workers are mandatory/cadence on that
           date is skipped.
 
-        Gap floors respect ``gap_periods`` (gap variable) via
+        Gap floors (and the gap-2 weekend bridge that only applies when the
+        effective floor is 2) respect ``gap_periods`` via
+        :func:`count_scored_spacing_violations` /
         :func:`get_effective_min_gap` (stricter of the two dates).
         """
         try:
-            violation_count = 0
             scheduler = self.scheduler
-
-            # --- Gap / 7-14 violations (fast: O(total_assignments) per worker) ---
             protected_by_worker = {
                 worker["id"]: config_forced_dates(worker, scheduler.date_utils) for worker in scheduler.workers_data
             }
-            gap_periods = getattr(scheduler, "gap_periods", None) or []
-            default_gap = scheduler.gap_between_shifts
-            for worker in scheduler.workers_data:
-                if is_fixed_cadence(worker):
-                    continue
-                worker_id = worker["id"]
-                assignments = sorted(scheduler.worker_assignments.get(worker_id, set()))
-                if len(assignments) < 2:
-                    continue
-                protected = protected_by_worker[worker_id]
-                for i in range(1, len(assignments)):
-                    if assignments[i] in protected and assignments[i - 1] in protected:
-                        continue
-                    min_days = get_effective_min_gap(
-                        worker,
-                        default_gap,
-                        date=assignments[i],
-                        other_date=assignments[i - 1],
-                        gap_periods=gap_periods,
-                    )
-                    diff = (assignments[i] - assignments[i - 1]).days
-                    if diff < min_days or (
-                        diff in (7, 14) and assignments[i].weekday() == assignments[i - 1].weekday()
-                    ):
-                        violation_count += 1
+            violation_count = count_scored_spacing_violations(scheduler)
 
             # --- Incompatibility violations (fast: O(dates * posts^2)) ---
             checker = getattr(scheduler, "constraint_checker", None)

@@ -466,6 +466,54 @@ def test_constraint_penalty_skips_dual_mandatory_incompatibility():
     scheduler._synchronize_tracking_data()
 
     assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
+    # Verificación must use the same exemption (locked_mandatory may be empty).
+    from saldo27.application.generation_flow import collect_constraint_violations
+
+    assert collect_constraint_violations(scheduler).get("incompatibilidades") == []
+
+
+def test_workload_and_weekend_survive_incomplete_calendar_vs_full_objectives():
+    """Revisión-like: few detected shifts vs full-period live targets must not floor at 0.
+
+    Scale only rescues proportional underfill; keep weekend mass balanced so the
+    fixture asserts the incomplete-calendar path (not genuine imbalance).
+    """
+    workers = [
+        _worker("A", target_shifts=8, _raw_target=8),
+        _worker("B", target_shifts=8, _raw_target=8),
+    ]
+    scheduler = _build_scheduler(workers)
+    # Sparse calendar (~25% of shift objectives); one Sunday each + one weekday each.
+    _assign_days(scheduler, "A", [datetime(2026, 3, 1), datetime(2026, 3, 3)])  # Sun + Tue
+    _assign_days(scheduler, "B", [datetime(2026, 3, 8), datetime(2026, 3, 10)])  # Sun + Tue
+    for worker in scheduler.workers_data:
+        worker["target_shifts"] = 8
+        worker["_raw_target"] = 8
+
+    metrics = OptimizationMetrics(scheduler)
+    workload = metrics._calculate_workload_balance_score()
+    weekend = metrics._calculate_weekend_balance_score()
+    assert workload > 0.0
+    assert weekend > 0.0
+    breakdown = metrics.get_score_breakdown()
+    assert breakdown["components"]["workload_balance"] > 0.0
+    assert breakdown["components"]["weekend_balance"] > 0.0
+
+
+def test_incomplete_calendar_scale_still_exposes_weekend_imbalance():
+    """Underfill scale must not hide real weekend skew between workers."""
+    workers = [
+        _worker("A", target_shifts=8, _raw_target=8),
+        _worker("B", target_shifts=8, _raw_target=8),
+    ]
+    scheduler = _build_scheduler(workers)
+    _assign_days(scheduler, "A", [datetime(2026, 3, 1), datetime(2026, 3, 8)])  # both Sundays
+    _assign_days(scheduler, "B", [datetime(2026, 3, 2), datetime(2026, 3, 9)])  # weekdays
+    for worker in scheduler.workers_data:
+        worker["target_shifts"] = 8
+        worker["_raw_target"] = 8
+
+    assert OptimizationMetrics(scheduler)._calculate_weekend_balance_score() == 0.0
 
 
 def test_constraint_penalty_respects_variable_gap_periods():
@@ -477,12 +525,69 @@ def test_constraint_penalty_respects_variable_gap_periods():
     scheduler = _build_scheduler(workers)
     scheduler.gap_between_shifts = 4
     scheduler.gap_periods = periods
-    # 2 days apart — illegal under global gap 4, legal under period gap 2.
-    _assign_days(scheduler, "A", [datetime(2026, 3, 5), datetime(2026, 3, 7)])
+    # Mon–Wed (2 days): illegal under global gap 4, legal under period gap 2.
+    # Avoid Thu–Sat so the gap-2 weekend bridge rule is not in play.
+    _assign_days(scheduler, "A", [datetime(2026, 3, 2), datetime(2026, 3, 4)])
 
     assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
 
     scheduler.gap_periods = []
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
+
+
+def test_constraint_penalty_same_spacing_ok_in_one_period_violation_in_another():
+    """Same calendar spacing can be legal in a relaxed period and illegal outside it."""
+    from saldo27.utilities import normalize_gap_periods
+
+    workers = [_worker("A", target_shifts=4, _raw_target=4)]
+    periods = normalize_gap_periods([{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 15), "gap": 2}])
+    scheduler = _build_scheduler(workers)
+    scheduler.gap_between_shifts = 4
+    scheduler.gap_periods = periods
+    # Spacing of 2 days twice: Mar 2–4 inside relaxed period (OK), Mar 20–22 outside (violation).
+    _assign_days(
+        scheduler,
+        "A",
+        [datetime(2026, 3, 2), datetime(2026, 3, 4), datetime(2026, 3, 20), datetime(2026, 3, 22)],
+    )
+
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
+
+    # Without periods both pairs violate the global floor of 4.
+    scheduler.gap_periods = []
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 2.0
+
+
+def test_constraint_penalty_stricter_gap_period_penalises_spacing_allowed_globally():
+    """A period with a higher gap than the global floor must raise the scored threshold."""
+    from saldo27.utilities import normalize_gap_periods
+
+    workers = [_worker("A", target_shifts=2, _raw_target=2)]
+    periods = normalize_gap_periods([{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 31), "gap": 5}])
+    scheduler = _build_scheduler(workers)
+    scheduler.gap_between_shifts = 2
+    scheduler.gap_periods = periods
+    # 3 days apart: OK under global gap 2, illegal under period gap 5.
+    _assign_days(scheduler, "A", [datetime(2026, 3, 2), datetime(2026, 3, 5)])
+
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
+
+    scheduler.gap_periods = []
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
+
+
+def test_constraint_penalty_counts_gap2_weekend_when_period_sets_gap_two():
+    """When gap_periods make the effective floor 2, the gap-2 weekend bridge is scored."""
+    from saldo27.utilities import normalize_gap_periods
+
+    workers = [_worker("A", target_shifts=2, _raw_target=2)]
+    periods = normalize_gap_periods([{"start_date": datetime(2026, 3, 1), "end_date": datetime(2026, 3, 15), "gap": 2}])
+    scheduler = _build_scheduler(workers)
+    scheduler.gap_between_shifts = 4
+    scheduler.gap_periods = periods
+    # Thu 5 – Sat 7: spacing equals period gap 2 but bridges the weekend.
+    _assign_days(scheduler, "A", [datetime(2026, 3, 5), datetime(2026, 3, 7)])
+
     assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
 
 
