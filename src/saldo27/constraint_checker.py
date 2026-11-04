@@ -56,21 +56,61 @@ _REJECTION_TO_VIOLATION = {
 }
 
 
+def _normalize_day(value: object) -> datetime | None:
+    """Midnight-naive datetime for set membership across schedule/config dates."""
+    if isinstance(value, datetime):
+        return datetime(value.year, value.month, value.day)
+    if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+        try:
+            return datetime(int(value.year), int(value.month), int(value.day))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def config_forced_dates(worker: dict | None, date_utils: Any) -> set[datetime]:
     """Dates a worker must keep: ``mandatory_days``, including cadence dates.
 
     A clash is left in place, and kept out of the score, only when the worker is
     on cadence or both dates are in this set. One mandatory date still loses
     the other, non-mandatory day.
+
+    Accepts a ``DD-MM-YYYY`` string, ISO strings via ``coerce_datetime``, or a
+    list of date/datetime/string values (JSON imports).
     """
     if not worker or date_utils is None:
         return set()
     raw = worker.get("mandatory_days") or ""
     if not raw:
         return set()
+    forced: set[datetime] = set()
     try:
-        return set(date_utils.parse_dates(raw))
-    except (TypeError, ValueError):
+        if isinstance(raw, (list, tuple, set)):
+            from saldo27.utilities import coerce_datetime
+
+            for item in raw:
+                parsed = coerce_datetime(item)
+                day = _normalize_day(parsed) if parsed is not None else _normalize_day(item)
+                if day is not None:
+                    forced.add(day)
+            return forced
+        if not isinstance(raw, str):
+            raw = str(raw)
+        for parsed in date_utils.parse_dates(raw):
+            day = _normalize_day(parsed)
+            if day is not None:
+                forced.add(day)
+        # ISO / alternate formats silently skipped by parse_dates — retry parts.
+        if not forced and raw.strip():
+            from saldo27.utilities import coerce_datetime
+
+            for part in raw.replace(",", ";").split(";"):
+                parsed = coerce_datetime(part.strip())
+                day = _normalize_day(parsed)
+                if day is not None:
+                    forced.add(day)
+        return forced
+    except (TypeError, ValueError, AttributeError):
         return set()
 
 
@@ -84,8 +124,9 @@ def count_scored_spacing_violations(scheduler: "Scheduler") -> int:
     """Count gap / 7–14 / gap-2-weekend violations for scoring.
 
     Each consecutive assignment pair uses :func:`get_effective_min_gap` with
-    ``gap_periods`` (stricter of the two dates). Fixed-cadence workers and
-    dual-mandatory pairs are exempt (configuration, not scored).
+    ``gap_periods`` (stricter of the two dates). Fixed-cadence workers are
+    skipped. A pair is exempt when *either* date is mandatory/cadence
+    (violation produced by forced dates — not scored).
     """
     workers_data = getattr(scheduler, "workers_data", None) or []
     date_utils = getattr(scheduler, "date_utils", None)
@@ -93,21 +134,30 @@ def count_scored_spacing_violations(scheduler: "Scheduler") -> int:
     gap_periods = getattr(scheduler, "gap_periods", None) or []
     default_gap = int(getattr(scheduler, "gap_between_shifts", 3) or 3)
 
-    protected_by_worker = {worker["id"]: config_forced_dates(worker, date_utils) for worker in workers_data}
+    protected_by_worker = {
+        worker["id"]: {_normalize_day(d) for d in config_forced_dates(worker, date_utils) if _normalize_day(d)}
+        for worker in workers_data
+    }
     violation_count = 0
 
     for worker in workers_data:
         if is_fixed_cadence(worker):
             continue
         worker_id = worker["id"]
-        assignments = sorted(assignments_by_worker.get(worker_id, ()) or ())
+        assignments = sorted(
+            day
+            for value in (assignments_by_worker.get(worker_id, ()) or ())
+            for day in (_normalize_day(value),)
+            if day is not None
+        )
         if len(assignments) < 2:
             continue
         protected = protected_by_worker.get(worker_id, set())
         for i in range(1, len(assignments)):
             earlier = assignments[i - 1]
             later = assignments[i]
-            if earlier in protected and later in protected:
+            # Mandatory/cadence on either side ⇒ configuration, not scored.
+            if earlier in protected or later in protected:
                 continue
             pair_gap = get_effective_min_gap(
                 worker,
@@ -174,6 +224,7 @@ def candidate_spacing_rejection(
             pair_gap = min_gap
             block_bridge = block_gap2_weekend_pairs
 
+        # Valid when days_between >= pair_gap (e.g. gap 3 allows 27-12→30-12).
         if days_between < pair_gap:
             return SpacingRejection("gap", prev_date, days_between, pair_gap)
 
@@ -871,7 +922,14 @@ class ConstraintChecker:
             if worker_id not in worker_assignments:
                 continue
 
-            assigned_dates = sorted(worker_assignments[worker_id])
+            raw_assigned = worker_assignments[worker_id]
+            # Revisión / PDF imports can mix date and datetime; normalize before sort.
+            assigned_dates = sorted(
+                normalized
+                for value in raw_assigned
+                for normalized in (_normalize_day(value),)
+                if normalized is not None
+            )
             default_gap = self.scheduler.gap_between_shifts
             gap_periods = getattr(self.scheduler, "gap_periods", None) or []
             # Cadence workers are outside spacing and Rosell limits; only exclusivity applies
@@ -966,21 +1024,34 @@ class ConstraintChecker:
         if hasattr(self.scheduler, "schedule_builder") and self.scheduler.schedule_builder is not None:
             locked_pairs = self.scheduler.get_locked_mandatory()
         protected_by_worker = {
-            worker["id"]: config_forced_dates(worker, self.date_utils) for worker in self.workers_data
+            worker["id"]: {
+                day for raw in config_forced_dates(worker, self.date_utils) for day in (_normalize_day(raw),) if day
+            }
+            for worker in self.workers_data
         }
 
         for date, shifts in self.scheduler.schedule.items():
+            day = _normalize_day(date) or date
             workers_on_date = [w for w in shifts if w is not None]
             for worker_id in workers_on_date:
                 worker = self._worker_lookup_cache.get(worker_id)
                 if not worker:
-                    continue
+                    # Cache should be warm after clear_caches(); rebuild one entry if not.
+                    raw_worker = next((w for w in self.workers_data if w.get("id") == worker_id), None)
+                    if raw_worker is None:
+                        continue
+                    worker = {
+                        "data": raw_worker,
+                        "incompatible_with": set(raw_worker.get("incompatible_with", [])),
+                        "work_percentage": raw_worker.get("work_percentage", 100),
+                    }
+                    self._worker_lookup_cache[worker_id] = worker
                 incompatible_with = worker["incompatible_with"]
                 for incompatible_id in incompatible_with:
                     if incompatible_id not in workers_on_date:
                         continue
                     both_locked = (worker_id, date) in locked_pairs and (incompatible_id, date) in locked_pairs
-                    both_forced = date in protected_by_worker.get(worker_id, ()) and date in protected_by_worker.get(
+                    both_forced = day in protected_by_worker.get(worker_id, ()) and day in protected_by_worker.get(
                         incompatible_id, ()
                     )
                     if both_locked or both_forced:

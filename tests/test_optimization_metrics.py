@@ -490,7 +490,7 @@ def test_workload_and_weekend_survive_incomplete_calendar_vs_full_objectives():
         worker["target_shifts"] = 8
         worker["_raw_target"] = 8
 
-    metrics = OptimizationMetrics(scheduler)
+    metrics = OptimizationMetrics(scheduler, scale_incomplete_objectives=True)
     workload = metrics._calculate_workload_balance_score()
     weekend = metrics._calculate_weekend_balance_score()
     assert workload > 0.0
@@ -498,6 +498,44 @@ def test_workload_and_weekend_survive_incomplete_calendar_vs_full_objectives():
     breakdown = metrics.get_score_breakdown()
     assert breakdown["components"]["workload_balance"] > 0.0
     assert breakdown["components"]["weekend_balance"] > 0.0
+
+
+def test_incomplete_calendar_scale_rescues_sixty_percent_proportional_fill():
+    """#33's 50% cliff still zeroed ~60% proportional calendars; Revisión scale must not."""
+    workers = [
+        _worker("A", target_shifts=10, _raw_target=10),
+        _worker("B", target_shifts=10, _raw_target=10),
+    ]
+    scheduler = _build_scheduler(workers)
+    _assign_days(scheduler, "A", [datetime(2026, 3, d) for d in (1, 5, 9, 13, 17, 21)])
+    _assign_days(scheduler, "B", [datetime(2026, 3, d) for d in (2, 6, 10, 14, 18, 22)])
+    for worker in scheduler.workers_data:
+        worker["target_shifts"] = 10
+        worker["_raw_target"] = 10
+
+    # Generation path (no scale) still sees absolute underfill as bad.
+    assert OptimizationMetrics(scheduler)._calculate_workload_balance_score() == 0.0
+
+    scaled = OptimizationMetrics(scheduler, scale_incomplete_objectives=True)
+    assert scaled._calculate_workload_balance_score() == 100.0
+    assert scaled._calculate_weekend_balance_score() > 0.0
+
+
+def test_incomplete_calendar_scale_rescues_proportional_overfill():
+    """Plantilla period targets below PDF counts (overfill) must not floor Balance at 0."""
+    workers = [
+        _worker("A", target_shifts=4, _raw_target=4),
+        _worker("B", target_shifts=4, _raw_target=4),
+    ]
+    scheduler = _build_scheduler(workers)
+    _assign_days(scheduler, "A", [datetime(2026, 3, d) for d in (1, 5, 9, 13, 17, 21, 25, 29)])
+    _assign_days(scheduler, "B", [datetime(2026, 3, d) for d in (2, 6, 10, 14, 18, 22, 26, 30)])
+    for worker in scheduler.workers_data:
+        worker["target_shifts"] = 4
+        worker["_raw_target"] = 4
+
+    assert OptimizationMetrics(scheduler)._calculate_workload_balance_score() == 0.0
+    assert OptimizationMetrics(scheduler, scale_incomplete_objectives=True)._calculate_workload_balance_score() == 100.0
 
 
 def test_incomplete_calendar_scale_still_exposes_weekend_imbalance():
@@ -513,7 +551,7 @@ def test_incomplete_calendar_scale_still_exposes_weekend_imbalance():
         worker["target_shifts"] = 8
         worker["_raw_target"] = 8
 
-    assert OptimizationMetrics(scheduler)._calculate_weekend_balance_score() == 0.0
+    assert OptimizationMetrics(scheduler, scale_incomplete_objectives=True)._calculate_weekend_balance_score() == 0.0
 
 
 def test_constraint_penalty_respects_variable_gap_periods():
@@ -591,14 +629,18 @@ def test_constraint_penalty_counts_gap2_weekend_when_period_sets_gap_two():
     assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
 
 
-def test_constraint_penalty_counts_repairable_single_mandatory_gap():
-    """One mandatory + one free day that violate gap still penalise (repair moves the free day)."""
+def test_constraint_penalty_skips_single_mandatory_gap():
+    """Gap touching a mandatory/cadence date is configuration — no score penalty.
+
+    Repair may still move the free day; Verificación/score must not penalise
+    violations produced by mandatory_days (Luis Revisión rule).
+    """
     workers = [_worker("A", mandatory_days="01-03-2026", target_shifts=1, _raw_target=2)]
     scheduler = _build_scheduler(workers)
     scheduler.gap_between_shifts = 3
     _assign_days(scheduler, "A", [datetime(2026, 3, 1), datetime(2026, 3, 2)])
 
-    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 1.0
+    assert OptimizationMetrics(scheduler)._calculate_constraint_violations_penalty() == 0.0
 
 
 def test_apply_scoring_objectives_aligns_revision_display_with_generation():

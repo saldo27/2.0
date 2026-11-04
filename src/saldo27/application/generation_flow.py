@@ -369,36 +369,68 @@ def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
     Rosell-flag / consecutive-weekend scans that the spacing checker does not
     emit as schedule-wide reports.
     """
+    from saldo27.constraint_checker import _normalize_day, config_forced_dates
     from saldo27.utilities import is_date_in_ranges, is_fixed_cadence, worker_flag_enabled
 
     core_violations = scheduler._check_schedule_constraints()
     violations = ConstraintViolations()
     date_utils = scheduler.date_utils
     holidays = getattr(scheduler, "holidays", None) or []
+    workers_by_id = {str(w["id"]): w for w in scheduler.workers_data}
+    protected_by_worker = {
+        wid: {day for raw in config_forced_dates(worker, date_utils) for day in (_normalize_day(raw),) if day}
+        for wid, worker in workers_by_id.items()
+    }
+
+    def _spacing_forced(worker_id: object, date1: object, date2: object) -> bool:
+        """True when either end is mandatory/cadence — UI must not list it as a gap/pattern hit."""
+        protected = protected_by_worker.get(str(worker_id), set())
+        d1 = _normalize_day(date1)
+        d2 = _normalize_day(date2)
+        return (d1 is not None and d1 in protected) or (d2 is not None and d2 in protected)
 
     for violation in core_violations:
         violation_type = violation.get("type")
         if violation_type == "incompatibility":
+            # Dual-mandatory already skipped in the core checker; keep a date-safe
+            # belt-and-suspenders filter so Revisión never lists Christmas-style clashes.
+            day = _normalize_day(violation.get("date"))
+            wid = str(violation.get("worker_id", ""))
+            other = str(violation.get("incompatible_id", ""))
+            if (
+                day is not None
+                and day in protected_by_worker.get(wid, ())
+                and day in protected_by_worker.get(other, ())
+            ):
+                continue
             violations.incompatibilidades.append(
                 f"{violation['date'].strftime('%d-%m-%Y')}: {violation['worker_id']} ↔ {violation['incompatible_id']}"
             )
         elif violation_type == "min_rest_days":
+            if _spacing_forced(violation.get("worker_id"), violation.get("date1"), violation.get("date2")):
+                continue
             violations.gap_minimo.append(
                 f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → "
                 f"{violation['date2'].strftime('%d-%m-%Y')} "
                 f"({violation['days_between']} días, mínimo {violation.get('min_required', '?')})"
             )
         elif violation_type == "weekly_pattern":
+            if _spacing_forced(violation.get("worker_id"), violation.get("date1"), violation.get("date2")):
+                continue
             violations.patron_7_14.append(
                 f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → "
                 f"{violation['date2'].strftime('%d-%m-%Y')} ({violation['days_between']} días)"
             )
         elif violation_type == "friday_monday_pattern":
+            if _spacing_forced(violation.get("worker_id"), violation.get("date1"), violation.get("date2")):
+                continue
             violations.patron_viernes_lunes.append(
                 f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → "
                 f"{violation['date2'].strftime('%d-%m-%Y')}"
             )
         elif violation_type == "gap2_weekend":
+            if _spacing_forced(violation.get("worker_id"), violation.get("date1"), violation.get("date2")):
+                continue
             violations.gap2_fin_semana.append(
                 f"{violation['worker_id']}: {violation['date1'].strftime('%d-%m-%Y')} → "
                 f"{violation['date2'].strftime('%d-%m-%Y')}"
@@ -415,22 +447,44 @@ def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
             )
 
     checker = getattr(scheduler, "constraint_checker", None)
-    workers_by_id = {str(w["id"]): w for w in scheduler.workers_data}
+
+    schedule_days = {day for key in scheduler.schedule for day in (_normalize_day(key),) if day is not None}
 
     for worker in scheduler.workers_data:
         worker_id = str(worker["id"])
-        assigned = sorted(scheduler.worker_assignments.get(worker_id, ()) or [])
+        assigned_days = sorted(
+            {
+                day
+                for value in (scheduler.worker_assignments.get(worker_id, ()) or [])
+                for day in (_normalize_day(value),)
+                if day is not None
+            }
+        )
 
-        # Missing mandatory / cadence dates
+        # Missing mandatory / cadence dates — only for days present in the
+        # imported/generated calendar (Revisión PDFs often omit leading empty
+        # weekdays). Compare by calendar day so date vs datetime cannot false-flag.
         try:
-            mandatory_dates = date_utils.parse_dates(worker.get("mandatory_days", "") or "")
+            mandatory_dates = config_forced_dates(worker, date_utils)
         except Exception:
-            mandatory_dates = []
-        for mandatory_date in mandatory_dates:
-            if scheduler.start_date <= mandatory_date <= scheduler.end_date and mandatory_date not in assigned:
-                violations.mandatory.append(f"{worker_id}: falta obligatorio {mandatory_date.strftime('%d-%m-%Y')}")
+            mandatory_dates = set()
+        start_day = _normalize_day(scheduler.start_date)
+        end_day = _normalize_day(scheduler.end_date)
+        for mandatory_date in sorted(mandatory_dates):
+            day = _normalize_day(mandatory_date)
+            if day is None:
+                continue
+            if day not in schedule_days:
+                continue
+            in_range = True
+            if start_day is not None and day < start_day:
+                in_range = False
+            if end_day is not None and day > end_day:
+                in_range = False
+            if in_range and day not in assigned_days:
+                violations.mandatory.append(f"{worker_id}: falta obligatorio {day.strftime('%d-%m-%Y')}")
 
-        for assigned_date in assigned:
+        for assigned_date in assigned_days:
             if worker.get("days_off") and is_date_in_ranges(assigned_date, worker["days_off"]):
                 violations.dias_no_disponibles.append(f"{worker_id}: {assigned_date.strftime('%d-%m-%Y')} en days_off")
             work_periods = worker.get("work_periods") or ""
@@ -449,7 +503,7 @@ def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
                 and not is_fixed_cadence(worker)
                 and date_utils.is_weekend_day(assigned_date, holidays)
             ):
-                run = checker._consecutive_weekend_run(worker_id, assigned_date, assigned)
+                run = checker._consecutive_weekend_run(worker_id, assigned_date, assigned_days)
                 max_run = getattr(scheduler, "max_consecutive_weekends", None)
                 if max_run is not None and run > max_run:
                     msg = (
