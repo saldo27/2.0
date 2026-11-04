@@ -521,6 +521,26 @@ def test_incomplete_calendar_scale_rescues_sixty_percent_proportional_fill():
     assert scaled._calculate_weekend_balance_score() > 0.0
 
 
+def test_incomplete_calendar_scale_rescues_proportional_overfill():
+    """Plantilla period targets below PDF counts (overfill) must not floor Balance at 0."""
+    workers = [
+        _worker("A", target_shifts=4, _raw_target=4),
+        _worker("B", target_shifts=4, _raw_target=4),
+    ]
+    scheduler = _build_scheduler(workers)
+    _assign_days(scheduler, "A", [datetime(2026, 3, d) for d in (1, 5, 9, 13, 17, 21, 25, 29)])
+    _assign_days(scheduler, "B", [datetime(2026, 3, d) for d in (2, 6, 10, 14, 18, 22, 26, 30)])
+    for worker in scheduler.workers_data:
+        worker["target_shifts"] = 4
+        worker["_raw_target"] = 4
+
+    assert OptimizationMetrics(scheduler)._calculate_workload_balance_score() == 0.0
+    assert (
+        OptimizationMetrics(scheduler, scale_incomplete_objectives=True)._calculate_workload_balance_score()
+        == 100.0
+    )
+
+
 def test_incomplete_calendar_scale_still_exposes_weekend_imbalance():
     """Underfill scale must not hide real weekend skew between workers."""
     workers = [

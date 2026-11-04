@@ -911,7 +911,16 @@ class ConstraintChecker:
             if worker_id not in worker_assignments:
                 continue
 
-            assigned_dates = sorted(worker_assignments[worker_id])
+            raw_assigned = worker_assignments[worker_id]
+            # Revisión / PDF imports can mix date and datetime; normalize before sort.
+            assigned_dates = sorted(
+
+                    normalized
+                    for value in raw_assigned
+                    for normalized in (_normalize_day(value),)
+                    if normalized is not None
+
+            )
             default_gap = self.scheduler.gap_between_shifts
             gap_periods = getattr(self.scheduler, "gap_periods", None) or []
             # Cadence workers are outside spacing and Rosell limits; only exclusivity applies

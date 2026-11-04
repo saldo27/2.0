@@ -417,20 +417,50 @@ def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
     checker = getattr(scheduler, "constraint_checker", None)
     workers_by_id = {str(w["id"]): w for w in scheduler.workers_data}
 
+    from saldo27.constraint_checker import _normalize_day, config_forced_dates
+
+    schedule_days = {
+        day
+        for key in scheduler.schedule
+        for day in (_normalize_day(key),)
+        if day is not None
+    }
+
     for worker in scheduler.workers_data:
         worker_id = str(worker["id"])
-        assigned = sorted(scheduler.worker_assignments.get(worker_id, ()) or [])
+        assigned_days = sorted(
+            {
+                day
+                for value in (scheduler.worker_assignments.get(worker_id, ()) or [])
+                for day in (_normalize_day(value),)
+                if day is not None
+            }
+        )
 
-        # Missing mandatory / cadence dates
+        # Missing mandatory / cadence dates — only for days present in the
+        # imported/generated calendar (Revisión PDFs often omit leading empty
+        # weekdays). Compare by calendar day so date vs datetime cannot false-flag.
         try:
-            mandatory_dates = date_utils.parse_dates(worker.get("mandatory_days", "") or "")
+            mandatory_dates = config_forced_dates(worker, date_utils)
         except Exception:
-            mandatory_dates = []
-        for mandatory_date in mandatory_dates:
-            if scheduler.start_date <= mandatory_date <= scheduler.end_date and mandatory_date not in assigned:
-                violations.mandatory.append(f"{worker_id}: falta obligatorio {mandatory_date.strftime('%d-%m-%Y')}")
+            mandatory_dates = set()
+        start_day = _normalize_day(scheduler.start_date)
+        end_day = _normalize_day(scheduler.end_date)
+        for mandatory_date in sorted(mandatory_dates):
+            day = _normalize_day(mandatory_date)
+            if day is None:
+                continue
+            if day not in schedule_days:
+                continue
+            in_range = True
+            if start_day is not None and day < start_day:
+                in_range = False
+            if end_day is not None and day > end_day:
+                in_range = False
+            if in_range and day not in assigned_days:
+                violations.mandatory.append(f"{worker_id}: falta obligatorio {day.strftime('%d-%m-%Y')}")
 
-        for assigned_date in assigned:
+        for assigned_date in assigned_days:
             if worker.get("days_off") and is_date_in_ranges(assigned_date, worker["days_off"]):
                 violations.dias_no_disponibles.append(f"{worker_id}: {assigned_date.strftime('%d-%m-%Y')} en days_off")
             work_periods = worker.get("work_periods") or ""
@@ -449,7 +479,7 @@ def collect_constraint_violations(scheduler: Scheduler) -> dict[str, list[str]]:
                 and not is_fixed_cadence(worker)
                 and date_utils.is_weekend_day(assigned_date, holidays)
             ):
-                run = checker._consecutive_weekend_run(worker_id, assigned_date, assigned)
+                run = checker._consecutive_weekend_run(worker_id, assigned_date, assigned_days)
                 max_run = getattr(scheduler, "max_consecutive_weekends", None)
                 if max_run is not None and run > max_run:
                     msg = (

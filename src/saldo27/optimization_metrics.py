@@ -329,20 +329,20 @@ class OptimizationMetrics:
             return 0.0
 
     def _incomplete_calendar_scale(self, total_actual: float, total_objective: float) -> float | None:
-        """Scale absolute objectives when Revisión underlays a partial calendar.
+        """Scale absolute objectives when Revisión overlays a mismatched calendar.
 
         Generation keeps absolute scoring (scale 1). Revisión
         (``scale_incomplete_objectives=True``) scales whenever aggregate fill
-        is below 95% so proportional underfill vs full-period live targets does
-        not floor Balance/FS at 0 (the previous 50% cliff still zeroed ~60%
-        calendars). Returns ``None`` when there is no assignment mass to judge.
+        is outside ±5% of objectives — both underfill (partial PDF vs full-period
+        live targets) and overfill (plantilla period targets vs denser PDF slice).
+        Returns ``None`` when there is no assignment mass to judge.
         """
         if not self.scale_incomplete_objectives:
             return 1.0
         if total_objective <= 0:
             return 1.0
         fill_ratio = total_actual / total_objective
-        if fill_ratio >= 0.95:
+        if 0.95 <= fill_ratio <= 1.05:
             return 1.0
         if fill_ratio <= 0:
             return None

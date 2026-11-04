@@ -1248,6 +1248,11 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
                 raw_i = int(raw) if raw is not None else count
             except (TypeError, ValueError):
                 raw_i = count
+            # Cadence length from a different period must not dwarf/underfill the PDF slice.
+            if not live_cfg and count > 0 and raw_i > 0:
+                ratio = count / raw_i
+                if ratio < 0.5 or ratio > 1.5:
+                    return 0, count
             return 0, raw_i
         try:
             target = int(source.get("target_shifts", 0) or 0)
@@ -1261,6 +1266,14 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
         # Plantilla auto workers often still have 0/0 before generation — keep counts.
         if not live_cfg and target == 0 and raw_i == 0:
             return count, count
+        # Without a live generation scheduler, plantilla targets belong to the
+        # configured generation period. A Revisión PDF often covers another
+        # slice (e.g. Mar–Jun PDF + Nav–Jun plantilla with manual target=4 vs
+        # 18 detected) — overlaying those objectives floors Balance/FS at 0.
+        if not live_cfg and count > 0 and target > 0:
+            ratio = count / target
+            if ratio < 0.5 or ratio > 1.5:
+                return count, count
         return target, raw_i
 
     workers_data = []
