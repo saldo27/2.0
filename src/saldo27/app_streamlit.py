@@ -41,7 +41,11 @@ from saldo27.application.use_cases import (
     run_simulation,
 )
 from saldo27.license_manager import license_manager
-from saldo27.optimization_metrics import OptimizationMetrics
+from saldo27.optimization_metrics import (
+    OptimizationMetrics,
+    apply_scoring_objectives,
+    restore_scoring_objectives,
+)
 from saldo27.scheduler import Scheduler
 from saldo27.scheduler_config import SchedulerConfig, setup_logging
 from saldo27.utilities import (
@@ -1185,31 +1189,105 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
         workers_config = collect_rosell_flag_sources()
     configured_by_id = _plantilla_workers_by_id(workers_config)
 
+    # Prefer the live generation scheduler for scoring objectives and gap settings —
+    # those are what produced the "Score final" during reparto.
+    live_scheduler = st.session_state.get("scheduler")
+    live_by_id: dict[str, dict[str, Any]] = {}
+    if live_scheduler is not None and getattr(live_scheduler, "workers_data", None):
+        live_by_id = _plantilla_workers_by_id(list(live_scheduler.workers_data))
+
+    # Remap plantilla incompatible_with IDs → calendar worker keys (often names).
+    plantilla_key_to_calendar: dict[str, str] = {}
+    for calendar_id in assignment_counts:
+        cfg = configured_by_id.get(_norm_worker_key(calendar_id), {})
+        plantilla_key_to_calendar[_norm_worker_key(calendar_id)] = calendar_id
+        if cfg:
+            plantilla_key_to_calendar[_norm_worker_key(cfg.get("id", ""))] = calendar_id
+            if cfg.get("name"):
+                plantilla_key_to_calendar[_norm_worker_key(cfg["name"])] = calendar_id
+
+    def _remap_incompatible_with(raw: list | str | None) -> list[str]:
+        if isinstance(raw, str):
+            items = [raw] if raw.strip() else []
+        else:
+            items = list(raw or [])
+        remapped: list[str] = []
+        for other in items:
+            mapped = plantilla_key_to_calendar.get(_norm_worker_key(other))
+            if mapped:
+                remapped.append(mapped)
+        return remapped
+
+    def _scoring_targets(cfg: dict[str, Any], live_cfg: dict[str, Any], count: int) -> tuple[int, int]:
+        """Objectives for OptimizationMetrics (not the display "objetivo = detectadas")."""
+        source = live_cfg or cfg
+        if not source:
+            return count, count
+        if bool(source.get("has_cadence")):
+            raw = source.get("_raw_target")
+            try:
+                raw_i = int(raw) if raw is not None else count
+            except (TypeError, ValueError):
+                raw_i = count
+            return 0, raw_i
+        try:
+            target = int(source.get("target_shifts", 0) or 0)
+        except (TypeError, ValueError):
+            target = 0
+        try:
+            raw = source.get("_raw_target")
+            raw_i = int(raw) if raw is not None else target
+        except (TypeError, ValueError):
+            raw_i = target
+        # Plantilla auto workers often still have 0/0 before generation — keep counts.
+        if not live_cfg and target == 0 and raw_i == 0:
+            return count, count
+        return target, raw_i
+
     workers_data = []
     for worker_id in sorted(assignment_counts):
         count = assignment_counts[worker_id]
         cfg = configured_by_id.get(_norm_worker_key(worker_id), {})
-        no_last = worker_flag_enabled(cfg, "no_last_post")
-        only_last = (not no_last) and worker_flag_enabled(cfg, "only_last_post")
+        live_cfg = live_by_id.get(_norm_worker_key(worker_id), {})
+        if not live_cfg and cfg.get("id") is not None:
+            live_cfg = live_by_id.get(_norm_worker_key(cfg["id"]), {})
+        if not live_cfg and cfg.get("name"):
+            live_cfg = live_by_id.get(_norm_worker_key(cfg["name"]), {})
+        no_last = worker_flag_enabled(cfg, "no_last_post") or worker_flag_enabled(live_cfg, "no_last_post")
+        only_last = (not no_last) and (
+            worker_flag_enabled(cfg, "only_last_post") or worker_flag_enabled(live_cfg, "only_last_post")
+        )
+        score_target, score_raw = _scoring_targets(cfg, live_cfg, count)
+        # Prefer live mandatory/cadence (post TargetCalculator / cadence expand).
+        source_flags = live_cfg or cfg
         workers_data.append(
             {
                 "id": worker_id,
-                "name": str(cfg.get("name") or worker_id),
+                "name": str(cfg.get("name") or live_cfg.get("name") or worker_id),
                 "target_shifts": count,
                 "_raw_target": count,
-                "work_percentage": float(cfg.get("work_percentage", 100) or 100),
-                # Plantilla fields needed for Verificación de Restricciones
-                "work_periods": str(cfg.get("work_periods", "") or ""),
-                "mandatory_days": str(cfg.get("mandatory_days", "") or ""),
-                "days_off": str(cfg.get("days_off", "") or ""),
-                "incompatible_with": list(cfg.get("incompatible_with") or []),
-                "is_incompatible": bool(cfg.get("is_incompatible", False)),
-                "auto_calculate_shifts": bool(cfg.get("auto_calculate_shifts", True)),
+                # Stashed for score overlay so Revisión matches reparto score.
+                "_score_target_shifts": score_target,
+                "_score_raw_target": score_raw,
+                "work_percentage": float(source_flags.get("work_percentage", cfg.get("work_percentage", 100)) or 100),
+                # Plantilla fields needed for Verificación de Restricciones / score exemptions
+                "work_periods": str(source_flags.get("work_periods", cfg.get("work_periods", "")) or ""),
+                "mandatory_days": str(source_flags.get("mandatory_days", cfg.get("mandatory_days", "")) or ""),
+                "days_off": str(source_flags.get("days_off", cfg.get("days_off", "")) or ""),
+                "incompatible_with": _remap_incompatible_with(
+                    source_flags.get("incompatible_with", cfg.get("incompatible_with"))
+                ),
+                "is_incompatible": bool(source_flags.get("is_incompatible", cfg.get("is_incompatible", False))),
+                "auto_calculate_shifts": bool(
+                    source_flags.get("auto_calculate_shifts", cfg.get("auto_calculate_shifts", True))
+                ),
                 "no_last_post": no_last,
                 "only_last_post": only_last,
-                "has_cadence": bool(cfg.get("has_cadence", False)),
-                "cadence_days": int(cfg.get("cadence_days", 0) or 0),
-                "cadence_start_date": str(cfg.get("cadence_start_date", "") or ""),
+                "has_cadence": bool(source_flags.get("has_cadence", cfg.get("has_cadence", False))),
+                "cadence_days": int(source_flags.get("cadence_days", cfg.get("cadence_days", 0)) or 0),
+                "cadence_start_date": str(
+                    source_flags.get("cadence_start_date", cfg.get("cadence_start_date", "")) or ""
+                ),
             }
         )
 
@@ -1223,6 +1301,20 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
     start_date = min(schedule)
     end_date = max(schedule)
     session_cfg = st.session_state.get("config") or {}
+    # Prefer live gap settings (incl. gap variable / gap_periods) so score penalties match reparto.
+    if live_scheduler is not None and getattr(live_scheduler, "gap_between_shifts", None) is not None:
+        gap_between_shifts = int(live_scheduler.gap_between_shifts)
+    else:
+        gap_between_shifts = int(session_cfg.get("gap_between_shifts") or 3)
+    if live_scheduler is not None and getattr(live_scheduler, "gap_periods", None) is not None:
+        gap_periods = list(live_scheduler.gap_periods or [])
+    else:
+        gap_periods = list(session_cfg.get("gap_periods") or [])
+    if live_scheduler is not None and getattr(live_scheduler, "max_consecutive_weekends", None) is not None:
+        max_consecutive_weekends = int(live_scheduler.max_consecutive_weekends)
+    else:
+        max_consecutive_weekends = int(session_cfg.get("max_consecutive_weekends") or 3)
+
     display = Scheduler(
         {
             "start_date": start_date,
@@ -1230,17 +1322,29 @@ def build_revision_display_scheduler(analyzer, workers_config: list[dict[str, An
             "num_shifts": num_shifts,
             "workers_data": workers_data,
             "holidays": holidays,
-            "variable_shifts": list(session_cfg.get("variable_shifts") or []),
-            "gap_between_shifts": int(session_cfg.get("gap_between_shifts") or 3),
-            "gap_periods": list(session_cfg.get("gap_periods") or []),
-            "max_consecutive_weekends": int(session_cfg.get("max_consecutive_weekends") or 3),
+            "variable_shifts": list(
+                getattr(live_scheduler, "variable_shifts", None) or session_cfg.get("variable_shifts") or []
+            ),
+            "gap_between_shifts": gap_between_shifts,
+            "gap_periods": gap_periods,
+            "max_consecutive_weekends": max_consecutive_weekends,
         }
     )
-    # TargetCalculator overwrites targets on init; restore actual counts for display.
+    # TargetCalculator overwrites targets on init; restore actual counts for display stats,
+    # and re-stamp scoring objectives (cadence expand may have rewritten mandatory_days).
     for worker in display.workers_data:
         count = assignment_counts.get(worker["id"], 0)
+        score_target = worker.get("_score_target_shifts", count)
+        score_raw = worker.get("_score_raw_target", count)
+        # Preserve plantilla/live mandatory_days if cadence expand wiped a pre-expanded list
+        # that was already stamped from the live scheduler.
+        preserved_mandatory = worker.get("mandatory_days", "")
         worker["target_shifts"] = count
         worker["_raw_target"] = count
+        worker["_score_target_shifts"] = score_target
+        worker["_score_raw_target"] = score_raw
+        if preserved_mandatory:
+            worker["mandatory_days"] = preserved_mandatory
 
     display.schedule = schedule
     display.schedule_builder = getattr(display, "schedule_builder", None)
@@ -1744,15 +1848,35 @@ _SCORE_COMPONENT_LABELS: dict[str, str] = {
 }
 
 
-def compute_schedule_score_breakdown(scheduler: Scheduler | None) -> dict[str, Any] | None:
-    """Compute the overall schedule score breakdown for a display/active scheduler."""
+def compute_schedule_score_breakdown(
+    scheduler: Scheduler | None,
+    *,
+    scoring_workers: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Compute the overall schedule score breakdown for a display/active scheduler.
+
+    ``scoring_workers`` (typically the live generation ``workers_data``) overlays
+    ``target_shifts`` / ``_raw_target`` so Revisión uses the same objectives as
+    reparto. When omitted, workers may still carry ``_score_target_shifts`` /
+    ``_score_raw_target`` stamped by :func:`build_revision_display_scheduler`.
+    """
     if scheduler is None:
         return None
+    snapshot = None
     try:
+        # Prefer explicit source; otherwise apply stamped _score_* fields.
+        source = scoring_workers
+        if source is None and any("_score_target_shifts" in (w or {}) for w in (scheduler.workers_data or [])):
+            source = []
+        if source is not None:
+            snapshot = apply_scoring_objectives(scheduler, source)
         return OptimizationMetrics(scheduler).get_score_breakdown()
     except Exception as exc:
         logging.warning("No se pudo calcular el score del reparto: %s", exc)
         return None
+    finally:
+        if snapshot is not None:
+            restore_scoring_objectives(snapshot)
 
 
 def render_schedule_score(
@@ -4074,15 +4198,20 @@ with tab7:
                     st.session_state.revision_stats_ui = get_worker_statistics(workers_config=_flag_source)
 
                     st.markdown("---")
-                    _rev_score = compute_schedule_score_breakdown(_rev_display)
+                    # Score with generation objectives (not display "detectadas" targets).
+                    _rev_score = compute_schedule_score_breakdown(
+                        _rev_display,
+                        scoring_workers=_gen_workers if _gen_workers else None,
+                    )
                     st.session_state.revision_score = _rev_score
                     render_schedule_score(
                         breakdown=_rev_score,
                         title="🎯 Score del Reparto — Revisión",
                         caption=(
-                            "Score global del calendario analizado (mismos pesos que el "
-                            "optimizador: cobertura 35 %, carga 25 %, FDS 10 %, puentes 5 %, "
-                            "puestos 15 %, penalización 10 %)."
+                            "Mismo score que el reparto (cobertura 35 %, carga 25 %, FDS 10 %, "
+                            "puentes 5 %, puestos 15 %, penalización 10 %). Objetivos de scoring "
+                            "desde plantilla/reparto activo; violaciones por mandatory/cadencia "
+                            "y gaps dentro de períodos variables no penalizan."
                         ),
                     )
 
