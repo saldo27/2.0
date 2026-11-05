@@ -40,12 +40,13 @@ Saldo27 permite:
 - Objetivo mensual fijo garantizado para trabajadores con número fijo de guardias/mes, incluso tras la corrección final de restricciones
 - Prorrateo automático del objetivo mensual (manual y automático) según días disponibles por `work_periods` y `days_off` (vacaciones/permisos)
 - Aviso de posible conflicto cuando un día obligatorio (`mandatory_days`) cae dentro de un período de vacaciones o fuera del período de trabajo configurado
-- Score de calidad con zonas sin penalización (carga ±10%, fines de semana ±15%, puentes ±0.5, rotación ±20%), **neutral ante desbalances estructurales** de config (`no_last_post`, `only_last_post`, cliques de incompatibilidad, cadencia, mandatory, huecos no rellenables); recalculado tras el Ajuste Final
+- Score de calidad con zonas sin penalización (carga ±10%, fines de semana ±15%, puentes ±0.5, rotación ±20%), **neutral ante desbalances estructurales** de config (`no_last_post`, `only_last_post`, cliques de incompatibilidad, cadencia, mandatory, huecos no rellenables); las violaciones causadas por mandatory/cadencia no penalizan; gaps por `gap_periods`
+- **Score del Reparto** (mismo desglose) en Revisión, Estadísticas (calendario generado; snapshot pre-FA si hubo Ajuste Final) y Ajuste Final (post-FA); en Revisión el score se alinea con el de generación
 
 ### Análisis y exportación
 
 - Exportación de calendarios a JSON, CSV y PDF
-- Análisis de horarios externos en PDF, Excel y CSV
+- Análisis de horarios externos en PDF, Excel y CSV (Revisión: score/Verificación alineados con generación; aliases OCR; sync de gaps del sidebar)
 - Estadísticas por trabajador y globales
 - Visualizaciones y reportes para revisión
 
@@ -158,15 +159,19 @@ uv run pytest
 - El proyecto usa rutas relativas al directorio de trabajo para archivos generados por el usuario.
 - OR-Tools es opcional a nivel de arquitectura, pero está declarado como dependencia del proyecto.
 - El sistema admite continuidad entre períodos mediante importación de un JSON exportado previamente.
-- El score mide calidad del motor **dado** el condicionamiento del reparto: no castiga techos impuestos por incompatibilidad + `no_last_post`, spillover de Rosell hacia quien sí puede, ni huecos que nadie puede cubrir.
+- El score mide calidad del motor **dado** el condicionamiento del reparto: no castiga techos impuestos por incompatibilidad + `no_last_post`, spillover de Rosell hacia quien sí puede, ni huecos que nadie puede cubrir; tampoco penaliza violaciones producidas por días mandatory/cadencia.
+- En Revisión, el score y la Verificación usan los mismos objetivos y `gap_periods` que la generación (preferencia live / sidebar sincronizado).
 
 ## Cambios recientes (v3.6)
 
 - **Score estructural**: `structural_score.py` alimenta `OptimizationMetrics` y `AdaptiveIterationManager.overall_quality` con baselines factibles (cliques de incompat, Rosell estructural, fill solo de huecos rellenables).
+- **Revisión = score de generación**: mismos objetivos/penalizaciones; mandatory/cadencia no penalizan gap ni incompat dual-mandatory; gaps por `gap_periods` (sync sidebar/sesión).
+- **Revisión PDF+plantilla**: Balance/FS en calendarios incompletos; clique incompat + exenciones mandatory; aliases OCR día-conscientes; sin falsos “mandatory no asignado”.
+- **Score del Reparto** también en **Estadísticas** (pre-FA si hubo FA) y **Ajuste Final** (post-FA).
 - **Rosell consecutivos**: la reparación ya no deja puestos vacíos sin intentar swap/relleno.
 - **Ajuste Final / balance WE**: intercambios laborable↔finde y optimizadores de carga no empeoran el balance de fines de semana; swap de puesto el mismo día sin error de sincronización de tracking.
 - **Cadencia y puentes**: el objetivo de puentes de trabajadores con cadencia usa el objetivo de turnos real (`_raw_target`), no `target_shifts=0`.
-- **`gap_periods`**: los intervalos de mínimo distintos configurados en la UI se pasan al `Scheduler` en la generación.
+- **`gap_periods`**: los intervalos de mínimo distintos configurados en la UI se pasan al `Scheduler` en la generación y al score/Verificación.
 - **CI e2e**: job Playwright fijado a `ubuntu-24.04` por compatibilidad de browsers.
 
 ## Estado del proyecto

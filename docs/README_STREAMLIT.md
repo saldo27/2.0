@@ -50,12 +50,14 @@ uv run streamlit run src/saldo27/app_streamlit.py --server.port 8501
 - ✅ Estadísticas de turnos en puente
 - ✅ Gráficos de asignación y desviación de puentes
 - ✅ Tabla resumen con objetivo vs asignado de puentes
+- ✅ **Score del Reparto — Estadísticas** (mismo desglose que Revisión; calendario generado; snapshot pre-FA si se ejecutó Ajuste Final)
 - ✅ Columnas de ancho fijo (72px) para mejor legibilidad
 
 ### 4. **Verificación de Restricciones** ⚠️
-- ✅ Verificación de incompatibilidades
+- ✅ Verificación de incompatibilidades (exentas si ambas guardias son mandatory/cadencia)
 - ✅ Verificación del patrón 7/14 días
 - ✅ Verificación de turnos obligatorios
+- ✅ Días mínimos con `gap_periods` (mínimo por intervalo; sync desde sidebar/sesión)
 - ✅ Contador de violaciones
 - ✅ Detalles expandibles de cada violación
 - ✅ Recomendaciones automáticas
@@ -70,6 +72,9 @@ uv run streamlit run src/saldo27/app_streamlit.py --server.port 8501
 ### 6. **Revisión de Calendario** 🔍
 - ✅ Carga de archivos PDF, Excel o CSV de horarios existentes
 - ✅ Análisis automático del archivo cargado
+- ✅ **Score del Reparto — Revisión**: mismo criterio que generación (objetivos plantilla/live; mandatory/cadencia no penalizan)
+- ✅ Gaps por período (`gap_periods`) sincronizados con sidebar/sesión; texto de gaps alineado
+- ✅ Path PDF+plantilla: Balance/FS en calendarios incompletos, clique incompat, aliases OCR (evita falsos “mandatory no asignado”)
 - ✅ Detección de alertas y anomalías
 - ✅ Exportación del análisis a Excel
 
@@ -185,18 +190,18 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 
 1. **👥 Gestión de Médicos** — Formulario de alta/edición, carga/descarga JSON, lista de trabajadores
 2. **📅 Calendario Generado** — Métricas, tabla del calendario, descarga CSV/PDF/JSON
-3. **📊 Estadísticas** — Asignaciones, gráficos y puentes del reparto **antes** del Ajuste Final
-4. **⚖️ Ajuste Final** — Ejecución del reequilibrio, cambios, calendario actualizado y estadísticas **después** del ajuste
+3. **📊 Estadísticas** — Asignaciones, gráficos y puentes del reparto **antes** del Ajuste Final; **Score del Reparto** (pre-FA si hubo FA)
+4. **⚖️ Ajuste Final** — Ejecución del reequilibrio, cambios, calendario actualizado, estadísticas **después** del ajuste y **Score del Reparto** post-FA
 5. **⚠️ Verificación de Restricciones** — Resumen de violaciones, detalles y recomendaciones
 6. **🔮 Predictive Analytics** — Insights, gráficos de demanda, recomendaciones
-7. **🔍 Revisión** — Carga y análisis de archivos PDF/Excel/CSV externos
+7. **🔍 Revisión** — Carga y análisis de archivos PDF/Excel/CSV externos; score/Verificación alineados con generación
 
 ## 🐛 Restricciones Verificadas
 
 - ✅ **Turnos Obligatorios**: Protegidos durante toda la generación
-- ✅ **Incompatibilidades**: Trabajadores incompatibles no en mismo día
+- ✅ **Incompatibilidades**: Trabajadores incompatibles no en mismo día; si ambas asignaciones son mandatory/cadencia, no se listan ni penalizan
 - ✅ **Patrón 7/14 Días**: Mismo día de semana a 7 o 14 días — nunca se relaja
-- ✅ **Gap entre Turnos**: Días mínimos de descanso, global o del intervalo de cada fecha; si las dos fechas piden mínimos distintos, se exige el mayor (relajable solo si ≥3 turnos pendientes)
+- ✅ **Gap entre Turnos**: Días mínimos de descanso, global o del intervalo de cada fecha (`gap_periods`); si las dos fechas piden mínimos distintos, se exige el mayor (relajable solo si ≥3 turnos pendientes); spacing que toca mandatory/cadencia no penaliza
 - ✅ **Balance de Fines de Semana**: Distribución proporcional; el Ajuste Final no la empeora con intercambios laborable↔finde
 - ✅ **Balance de Puentes**: Distribución equitativa de turnos en días puente (tolerancia ±0.5); objetivos de cadencia coherentes
 - ✅ **Rosell consecutivos**: como máximo un último puesto seguido en la secuencia del trabajador; reparación por swap el mismo día o desasignación con relleno
@@ -210,21 +215,28 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 El score mide la calidad del **motor** respecto a lo factible bajo la configuración; no castiga desbalances impuestos por el propio condicionamiento del reparto.
 
 - **Fill / cobertura**: los huecos que nadie puede cubrir (restricciones duras) cuentan como cubiertos a efectos de score
-- **Balance de carga (workload)**: ±10% respecto al objetivo de scoring (techo por capacidad de cliques de incompatibilidad)
-- **Balance de fines de semana**: ±15% respecto al objetivo de scoring (misma lógica de techo estructural)
+- **Balance de carga (workload)**: ±10% respecto al objetivo de scoring (techo por capacidad de cliques de incompatibilidad); en calendarios incompletos (p. ej. Revisión parcial) se escala el objetivo para no aplastar Balance/FS a 0
+- **Balance de fines de semana**: ±15% respecto al objetivo de scoring (misma lógica de techo estructural / escala incompleta)
 - **Balance de puentes**: tolerancia absoluta ±0.5 turnos sobre objetivos escalados por capacidad estructural
 - **Rotación de puestos**: ±20%; `no_last_post` / `only_last_post` / cadencia exentos; con restricciones de puesto, el spillover de Rosell hacia quien sí puede no se penaliza
+- **Penalización por violaciones**: gaps con suelos por `gap_periods`; cadencia fija y pares dual-mandatory (gap/7–14/incompat) no penalizan
 - **`overall_quality` (AdaptiveIterationManager)**: usa las mismas baselines estructurales que `OptimizationMetrics`
 - El **Score Final** del sidebar se recalcula tras **Ajuste Final**
+- **Dónde se muestra el desglose completo** (`render_schedule_score` / `compute_schedule_score_breakdown`):
+  - **Revisión** — Score del Reparto alineado con generación (objetivos plantilla/live, no conteos detectados)
+  - **Estadísticas** — calendario generado; si hubo Ajuste Final, snapshot `schedule_pre_fa`
+  - **Ajuste Final** — score del calendario post-FA
 
 ## 🆕 Historial de Versiones
 
 ### v3.6 (Noviembre 2026)
 - **Score estructural** (`structural_score.py`): baselines compartidas por `OptimizationMetrics` y `AdaptiveIterationManager.overall_quality`. Incompatibilidades en clique, `no_last_post` / `only_last_post`, cadencia, mandatory y huecos no rellenables ya no bajan el score ni por spillover sobre el resto de la plantilla
+- **Revisión alineada con generación** (PRs #32–#34): mismos objetivos de scoring; mandatory/cadencia no penalizan; `gap_periods` en score y Verificación (sync sidebar/sesión/texto); Balance/FS en calendarios incompletos; clique `is_incompatible`; aliases OCR día-conscientes (sin falsos “mandatory no asignado”)
+- **Score del Reparto en más tabs** (PR #35): mismo componente en **Estadísticas** (pre-FA si hubo FA) y **Ajuste Final** (post-FA); Revisión sin cambios de API
 - **Reparación de 2 Rosell seguidos**: prioriza intercambio de puesto el mismo día; si no es posible, desasigna y rellena el hueco (antes a veces dejaba el puesto vacío)
 - **Ajuste Final / StrictBalance**: protege el balance de fines de semana en intercambios entre laborable y finde; corrección del error de sincronización (FA-6) en swaps de puesto el mismo día
 - **Cadencia y puentes**: el objetivo de puentes de un trabajador con cadencia usa `_raw_target` (su ritmo real), no `target_shifts=0`
-- **`gap_periods` end-to-end**: los períodos de días mínimos distintos del sidebar se propagan a la generación (`build_scheduler_config` / casos de uso)
+- **`gap_periods` end-to-end**: los períodos de días mínimos distintos del sidebar se propagan a la generación (`build_scheduler_config` / casos de uso) y al score/Verificación
 - **CI e2e**: Playwright fijado a `ubuntu-24.04` para evitar roturas con imágenes rolling
 
 ### v3.5 (Septiembre 2026)
@@ -269,11 +281,11 @@ El score mide la calidad del **motor** respecto a lo factible bajo la configurac
 5. **Prior schedule**: Carga el JSON del mes anterior para respetar gaps en el cambio de mes
 6. **Gaps por intervalo**: en Navidad u otros tramos densos, define períodos con mínimo distinto; asegúrate de guardarlos antes de generar
 7. **Grupos incompatibles + `no_last_post`**: el score ya no penaliza el techo estructural; revisa igual la cobertura y los huecos en estadísticas
-8. **Revisión**: Usa la tab 🔍 para analizar horarios existentes en PDF o Excel
+8. **Revisión**: Usa la tab 🔍 para analizar horarios existentes en PDF o Excel; carga también la plantilla para score/Verificación coherentes; revisa gaps del sidebar si el PDF no trae períodos
 9. **Generación**: Puede tomar 2-5 minutos dependiendo de la complejidad
 10. **PDFs**: Se generan automáticamente durante la generación
-11. **Estadísticas**: Usa los gráficos de puentes para verificar el balance equitativo
-12. **Ajuste Final**: tras ejecutarlo, el Score Final del sidebar refleja el calendario ya corregido (incluye protección de fines de semana)
+11. **Estadísticas**: Usa los gráficos de puentes y el **Score del Reparto** (pre-FA) para verificar el balance equitativo
+12. **Ajuste Final**: tras ejecutarlo, el Score Final del sidebar y el **Score del Reparto — Ajuste Final** reflejan el calendario ya corregido (incluye protección de fines de semana)
 
 ## 🚀 Próximos Pasos
 
