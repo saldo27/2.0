@@ -46,7 +46,7 @@ class Scheduler:
     _cache_enabled: bool
     _scheduler_core: SchedulerCore | None
     _weekend_slot_ratio_cache: float | None
-    _availability_slot_cache: dict[tuple[Any, ...], tuple[int, int, int]]
+    _availability_slot_cache: dict[tuple[Any, ...], tuple[int, int, int, int]]
     _weekend_objectives_cache: tuple[tuple[Any, ...], dict[str, float]] | None
 
     # Configuration (set by SchedulerInitializer.apply_config)
@@ -428,21 +428,64 @@ class Scheduler:
         shared by shift objective × the share of the worker's own available slots
         that fall on bridge days.
         """
-        bridge_dates = self._scheduled_bridge_dates()
+        return self._filled_day_objectives_for(objectives, self._scheduled_bridge_dates(), share_index=1)
+
+    def _filled_day_objectives_for(
+        self, objectives: Mapping[str, float], dates: set[datetime], share_index: int, filled_only: bool = True
+    ) -> dict[str, float]:
+        """Share the filled slots on ``dates`` (minus cadence workers' own) among ``objectives``.
+
+        Weight = shift objective × the worker's ``_availability_shares()[share_index]``.
+        With ``filled_only=False`` every slot counts, which is what a schedule still
+        being built will end up sharing.
+        """
         shares = self._availability_shares()
-        weights = {wid: objective * shares[wid][1] for wid, objective in objectives.items() if wid in shares}
+        weights = {wid: objective * shares[wid][share_index] for wid, objective in objectives.items() if wid in shares}
         total_weight = sum(weights.values())
         if total_weight <= 0:
             return {wid: 0.0 for wid in weights}
 
         # Count only filled (non-None) slots to avoid inflating targets
-        total_bridge_shifts = sum(sum(1 for w in self.schedule[d] if w is not None) for d in bridge_dates)
-        total_bridge_shifts -= sum(
-            sum(1 for d in self._fixed_cadence_dates(w) if d in bridge_dates)
-            for w in self.workers_data
-            if is_fixed_cadence(w)
+        total_shifts = sum(
+            sum(1 for w in self.schedule[d] if w is not None) if filled_only else len(self.schedule[d]) for d in dates
         )
-        return {wid: max(0, total_bridge_shifts) * weight / total_weight for wid, weight in weights.items()}
+        total_shifts -= sum(
+            sum(1 for d in self._fixed_cadence_dates(w) if d in dates) for w in self.workers_data if is_fixed_cadence(w)
+        )
+        return {wid: max(0, total_shifts) * weight / total_weight for wid, weight in weights.items()}
+
+    def scheduled_holiday_dates(self) -> set[datetime]:
+        """Configured holidays (festivos) inside the period."""
+        return {date for date in self.holidays or () if date in self.schedule}
+
+    def count_holidays_for_worker(self, worker_id: str) -> int:
+        """Holiday (festivo) shifts assigned to ``worker_id``."""
+        holidays = self.scheduled_holiday_dates()
+        return sum(1 for d in self.worker_assignments.get(worker_id, ()) if d in holidays)
+
+    def get_holiday_objective(self, worker: dict, filled_only: bool = True) -> float:
+        """Objective holiday (festivo) shifts for ``worker``.
+
+        Holidays already count as weekend days; this separate objective keeps them
+        from piling up on the same workers inside an otherwise balanced weekend
+        count. Same sharing rule as bridges (see ``holiday_objectives_for``).
+        """
+        holidays = self.scheduled_holiday_dates()
+        if is_fixed_cadence(worker):
+            return float(sum(1 for d in self._fixed_cadence_dates(worker) if d in holidays))
+        objectives = {w["id"]: self._shift_objective(w) for w in self.workers_data if not is_fixed_cadence(w)}
+        return self.holiday_objectives_for(objectives, filled_only).get(str(worker.get("id")), 0.0)
+
+    def holiday_objectives_for(self, objectives: Mapping[str, float], filled_only: bool = True) -> dict[str, float]:
+        """Holiday objectives for the non-cadence workers in ``objectives`` (worker id → shift objective).
+
+        The filled holiday shifts left after the cadence workers' holidays are
+        shared by shift objective × the share of the worker's own available slots
+        that fall on holidays.
+        """
+        return self._filled_day_objectives_for(
+            objectives, self.scheduled_holiday_dates(), share_index=2, filled_only=filled_only
+        )
 
     def _scheduled_bridge_dates(self) -> set[datetime]:
         return {
@@ -513,25 +556,27 @@ class Scheduler:
         self._weekend_objectives_cache = (fingerprint, result)
         return result
 
-    def _availability_shares(self) -> dict[str, tuple[float, float]]:
-        """(weekend, bridge) share of each non-cadence worker's available slots.
+    def _availability_shares(self) -> dict[str, tuple[float, float, float]]:
+        """(weekend, bridge, holiday) share of each non-cadence worker's available slots.
 
         Availability follows ``work_periods`` and ``days_off``, the same definition
         used for shift targets. A worker with no available slot gets the period-wide
         shares so they never weigh as zero.
         """
-        shares: dict[str, tuple[float, float]] = {}
+        shares: dict[str, tuple[float, float, float]] = {}
         for w in self.workers_data:
             if is_fixed_cadence(w):
                 continue
-            available, weekend, bridge = self._availability_slot_counts(w)
+            available, weekend, bridge, holiday = self._availability_slot_counts(w)
             if available <= 0:
-                available, weekend, bridge = self._availability_slot_counts({})
-            shares[w["id"]] = (weekend / available, bridge / available) if available else (0.0, 0.0)
+                available, weekend, bridge, holiday = self._availability_slot_counts({})
+            shares[w["id"]] = (
+                (weekend / available, bridge / available, holiday / available) if available else (0.0, 0.0, 0.0)
+            )
         return shares
 
-    def _availability_slot_counts(self, worker: dict) -> tuple[int, int, int]:
-        """(available, weekend, bridge) slots over the period for ``worker``'s availability."""
+    def _availability_slot_counts(self, worker: dict) -> tuple[int, int, int, int]:
+        """(available, weekend, bridge, holiday) slots over the period for ``worker``'s availability."""
         bridges = tuple((bp["start_date"], bp["end_date"]) for bp in (self.bridge_periods or ()))
         key = (worker.get("work_periods") or "", worker.get("days_off") or "", bridges)
         cache = getattr(self, "_availability_slot_cache", None)
@@ -543,7 +588,8 @@ class Scheduler:
         from saldo27.target_calculator import TargetCalculator
 
         work_ranges, off_ranges = TargetCalculator(self)._worker_availability_ranges(worker)
-        available = weekend = bridge = 0
+        holidays = set(self.holidays or ())
+        available = weekend = bridge = holiday = 0
         for day in self._get_date_range(self.start_date, self.end_date):
             if not any(rs <= day <= re for rs, re in work_ranges) or any(rs <= day <= re for rs, re in off_ranges):
                 continue
@@ -553,7 +599,9 @@ class Scheduler:
                 weekend += slots
             if self.date_utils.is_bridge_day(day, self.bridge_periods):
                 bridge += slots
-        cache[key] = (available, weekend, bridge)
+            if day in holidays:
+                holiday += slots
+        cache[key] = (available, weekend, bridge, holiday)
         return cache[key]
 
     def _fixed_cadence_dates(self, worker: dict) -> list[datetime]:

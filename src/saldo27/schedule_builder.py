@@ -1886,6 +1886,16 @@ class ScheduleBuilder:
                 if weekend_target > 0 and weekend_assignments < weekend_target * 0.8:
                     score -= 100
 
+        # Holidays (festivos) also count as weekend days; their own objective keeps
+        # them from piling up on the same workers inside a balanced weekend count.
+        if date in self.scheduler.scheduled_holiday_dates() and not is_fixed_cadence(worker):
+            holiday_ceiling = math.ceil(self.scheduler.get_holiday_objective(worker, filled_only=False) - 1e-9)
+            holiday_after = self.scheduler.count_holidays_for_worker(worker_id) + 1
+            if holiday_after > holiday_ceiling:
+                score -= (holiday_after - holiday_ceiling) * 15000
+            else:
+                score += 5000
+
         # =========================================================================
         # LAST POST (P4) BALANCE SCORING - Ensures fair distribution from Phase 1
         # =========================================================================

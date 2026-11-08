@@ -45,6 +45,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from saldo27.scheduler import Scheduler
 
 from saldo27 import tolerance_policy
@@ -89,12 +91,15 @@ class FinalAdjustmentEngine(EngineStateMixin):
             w["id"]: {
                 "weekend": round(scheduler.get_weekend_objective(w)),
                 "bridge": round(scheduler.get_bridge_objective_for_worker(w["id"])),
+                "holiday": round(scheduler.get_holiday_objective(w)),
             }
             for w in self.workers_data
             if is_fixed_cadence(w)
         }
         self._weekend_targets: dict[str, int] = {}
         self._bridge_targets: dict[str, int] = {}
+        self._holiday_targets: dict[str, int] = {}
+        self._holiday_dates: set[datetime] = scheduler.scheduled_holiday_dates()
         self._kind_targets_source: dict[str, int] = {}
         self._refresh_kind_targets()
 
@@ -103,6 +108,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
             "shift_swaps": 0,
             "weekend_swaps": 0,
             "bridge_swaps": 0,
+            "holiday_swaps": 0,
             "weekend_last_post_swaps": 0,
             "ortools_reassignments": 0,
             "holes_filled": 0,
@@ -167,6 +173,14 @@ class FinalAdjustmentEngine(EngineStateMixin):
                 break
             self.stats["bridge_swaps"] += 1
 
+        # --- Phase 3b: Holiday (festivo) balance ---------------------------
+        # Holiday ↔ ordinary weekend day swaps: weekend and bridge counts stay.
+        logging.info("Phase FA-3b: Holiday balance")
+        for _ in range(iters_per_phase):
+            if not self._improve_holiday_balance():
+                break
+            self.stats["holiday_swaps"] += 1
+
         # --- Phase 4: OR-Tools CP-SAT refinement --------------------------
         logging.info("Phase FA-4: OR-Tools CP-SAT refinement")
         self.stats["ortools_reassignments"] = self._run_ortools_phase()
@@ -223,6 +237,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         logging.info(f"  Shift swaps:          {self.stats['shift_swaps']}")
         logging.info(f"  Weekend swaps:        {self.stats['weekend_swaps']}")
         logging.info(f"  Bridge swaps:         {self.stats['bridge_swaps']}")
+        logging.info(f"  Holiday swaps:        {self.stats['holiday_swaps']}")
         logging.info(f"  Weekend last-post:    {self.stats['weekend_last_post_swaps']}")
         logging.info(f"  Holes filled:         {self.stats.get('holes_filled', 0)}")
         logging.info(f"  OR-Tools changes:     {self.stats['ortools_reassignments']}")
@@ -253,6 +268,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
                     "bridge_target": int,
                     "bridge_assigned": int,
                     "bridge_deviation": int,
+                    "holiday_target": int,
+                    "holiday_assigned": int,
+                    "holiday_deviation": int,
                     "last_post_target": int,
                     "last_post_assigned": int,
                     "last_post_deviation": int,
@@ -266,11 +284,13 @@ class FinalAdjustmentEngine(EngineStateMixin):
         total_by_worker: dict[str, int] = {}
         weekend_by_worker: dict[str, int] = {}
         bridge_by_worker: dict[str, int] = {}
+        holiday_by_worker: dict[str, int] = {}
         last_post_by_worker: dict[str, int] = {}
 
         for date, shifts in self.schedule.items():
             is_weekend = self.scheduler.date_utils.is_weekend_day(date, self.holidays_set)
             is_bridge = self.scheduler.date_utils.is_bridge_day(date, self.scheduler.bridge_periods)
+            is_holiday = date in self._holiday_dates
             last_post = len(shifts) - 1
             for post, worker_id in enumerate(shifts):
                 if worker_id is None:
@@ -280,6 +300,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
                     weekend_by_worker[worker_id] = weekend_by_worker.get(worker_id, 0) + 1
                 if is_bridge:
                     bridge_by_worker[worker_id] = bridge_by_worker.get(worker_id, 0) + 1
+                if is_holiday:
+                    holiday_by_worker[worker_id] = holiday_by_worker.get(worker_id, 0) + 1
                 if post == last_post:
                     last_post_by_worker[worker_id] = last_post_by_worker.get(worker_id, 0) + 1
 
@@ -295,6 +317,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
 
             weekend_target = self._weekend_target_for(raw_target, wid)
             bridge_target = self._bridge_target_for(raw_target, wid)
+            holiday_target = self._holiday_target_for(wid)
+            holiday_assigned = holiday_by_worker.get(wid, 0)
             last_post_target = self._last_post_target_for(worker)
 
             metrics[wid] = {
@@ -308,6 +332,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
                 "bridge_target": bridge_target,
                 "bridge_assigned": bridge_assigned,
                 "bridge_deviation": bridge_assigned - bridge_target,
+                "holiday_target": holiday_target,
+                "holiday_assigned": holiday_assigned,
+                "holiday_deviation": holiday_assigned - holiday_target,
                 "last_post_target": last_post_target,
                 "last_post_assigned": last_post_assigned,
                 "last_post_deviation": last_post_assigned - last_post_target,
@@ -331,7 +358,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
             current += timedelta(days=1)
 
     def _refresh_kind_targets(self) -> None:
-        """Integer weekend/bridge targets for the non-cadence workers.
+        """Integer weekend/bridge/holiday targets for the non-cadence workers.
 
         Same formulas as the ``Scheduler`` objectives, applied to this engine's
         raw targets, then split with the largest-remainder method so the integer
@@ -342,6 +369,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         objectives = {w["id"]: self._raw_targets.get(w["id"], 0) for w in self.workers_data if not is_fixed_cadence(w)}
         self._weekend_targets = self._apportion(self.scheduler.weekend_objectives_for(objectives), "weekend")
         self._bridge_targets = self._apportion(self.scheduler.bridge_objectives_for(objectives), "bridge")
+        self._holiday_targets = self._apportion(self.scheduler.holiday_objectives_for(objectives), "holiday")
         self._kind_targets_source = dict(self._raw_targets)
 
     def _apportion(self, objectives: dict[str, float], kind: str) -> dict[str, int]:
@@ -384,6 +412,13 @@ class FinalAdjustmentEngine(EngineStateMixin):
         ratio = self._total_bridge_slots / self._total_all_slots
         return round(raw_target * ratio)
 
+    def _holiday_target_for(self, worker_id: str) -> int:
+        """Target de festivos: ``Scheduler.get_holiday_objective`` repartido en enteros."""
+        if worker_id in self._cadence_targets:
+            return self._cadence_targets[worker_id]["holiday"]
+        self._ensure_kind_targets()
+        return self._holiday_targets.get(worker_id, 0)
+
     def _last_post_target_for(self, worker: dict) -> int:
         """Target de turnos en el último puesto (Rosell); ver ``Scheduler.get_last_post_objective``."""
         return round(self.scheduler.get_last_post_objective(worker))
@@ -408,21 +443,33 @@ class FinalAdjustmentEngine(EngineStateMixin):
     def _is_bridge_date(self, date: datetime) -> bool:
         return self.scheduler.date_utils.is_bridge_day(date, self.scheduler.bridge_periods)
 
+    def _is_holiday_date(self, date: datetime) -> bool:
+        return date in self._holiday_dates
+
+    def _kind_predicate(self, kind: str) -> Callable[[datetime], bool]:
+        if kind == "weekend":
+            return self._is_weekend_date
+        if kind == "holiday":
+            return self._is_holiday_date
+        return self._is_bridge_date
+
+    def _kind_target(self, worker_id: str, kind: str) -> int:
+        raw_target = self._raw_targets.get(worker_id, 0)
+        if kind == "weekend":
+            return self._weekend_target_for(raw_target, worker_id)
+        if kind == "holiday":
+            return self._holiday_target_for(worker_id)
+        return self._bridge_target_for(raw_target, worker_id)
+
     def _kind_count(self, worker_id: str, kind: str) -> int:
         """Assigned shifts of one kind, counted the same way as ``compute_metrics``."""
-        predicate = self._is_weekend_date if kind == "weekend" else self._is_bridge_date
+        predicate = self._kind_predicate(kind)
         return sum(1 for day in self.worker_assignments.get(worker_id, ()) if predicate(day))
 
     def _kind_abs_deviation(self, worker_id: str, kind: str, count: int | None = None) -> int:
         if count is None:
             count = self._kind_count(worker_id, kind)
-        raw_target = self._raw_targets.get(worker_id, 0)
-        target = (
-            self._weekend_target_for(raw_target, worker_id)
-            if kind == "weekend"
-            else self._bridge_target_for(raw_target, worker_id)
-        )
-        return abs(count - target)
+        return abs(count - self._kind_target(worker_id, kind))
 
     def _weekend_deviation(self, worker_id: str) -> int:
         """Signed weekend deviation (assigned − target) from the live schedule."""
@@ -432,7 +479,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
     def _exchange_abs_after(self, worker_id: str, lose: datetime, gain: datetime, kind: str) -> tuple[int, int]:
         """Absolute deviation of ``kind`` before and after losing ``lose`` and gaining ``gain``."""
         count = self._kind_count(worker_id, kind)
-        predicate = self._is_weekend_date if kind == "weekend" else self._is_bridge_date
+        predicate = self._kind_predicate(kind)
         after = count - int(predicate(lose)) + int(predicate(gain))
         return self._kind_abs_deviation(worker_id, kind, count), self._kind_abs_deviation(worker_id, kind, after)
 
@@ -1143,6 +1190,94 @@ class FinalAdjustmentEngine(EngineStateMixin):
         return False
 
     # ------------------------------------------------------------------
+    # Internal: holiday balance
+    # ------------------------------------------------------------------
+
+    def _improve_holiday_balance(self) -> bool:
+        """
+        Intenta un intercambio pareado que mejore el balance de festivos.
+
+        A (exceso de festivos) cede un festivo → B (déficit de festivos).
+        B cede un día de fin de semana no festivo → A.
+        Net: shift and weekend counts unchanged; bridge counts never get worse.
+        """
+        if not self._holiday_dates:
+            return False
+
+        over: list[tuple[str, int]] = []
+        under: list[tuple[str, int]] = []
+        for worker in self.workers_data:
+            wid = worker["id"]
+            if is_fixed_cadence(worker) or self._raw_targets.get(wid, 0) == 0:
+                continue
+            dev = self._kind_count(wid, "holiday") - self._holiday_target_for(wid)
+            if dev > 0:
+                over.append((wid, dev))
+            elif dev < 0:
+                under.append((wid, dev))
+        if not over or not under:
+            return False
+        over.sort(key=lambda x: x[1], reverse=True)
+        under.sort(key=lambda x: x[1])
+
+        for over_id, over_dev in over[:5]:
+            over_holidays = [
+                d
+                for d in sorted(self.worker_assignments.get(over_id, set()))
+                if self._is_holiday_date(d) and self._can_swap_away(over_id, d)
+            ]
+            for under_id, under_dev in under[:5]:
+                under_weekend_days = [
+                    d
+                    for d in sorted(self.worker_assignments.get(under_id, set()))
+                    if self._is_weekend_date(d) and not self._is_holiday_date(d) and self._can_swap_away(under_id, d)
+                ]
+                for date_holiday in over_holidays:
+                    try:
+                        post_h = self.schedule[date_holiday].index(over_id)
+                    except (ValueError, KeyError):
+                        continue
+                    for date_weekend in under_weekend_days:
+                        try:
+                            post_w = self.schedule[date_weekend].index(under_id)
+                        except (ValueError, KeyError):
+                            continue
+                        if not self._exchange_preserves(over_id, date_holiday, under_id, date_weekend, "bridge"):
+                            continue
+                        if not self._can_take_in_swap(under_id, date_holiday, post_h, date_weekend):
+                            continue
+                        if not self._can_take_in_swap(over_id, date_weekend, post_w, date_holiday):
+                            continue
+
+                        state = self._save_state()
+                        self.schedule[date_holiday][post_h] = under_id
+                        self.worker_assignments[over_id].discard(date_holiday)
+                        self.worker_assignments.setdefault(under_id, set()).add(date_holiday)
+                        self.scheduler._update_tracking_data(over_id, date_holiday, post_h, removing=True)
+                        self.scheduler._update_tracking_data(under_id, date_holiday, post_h, removing=False)
+
+                        self.schedule[date_weekend][post_w] = over_id
+                        self.worker_assignments[under_id].discard(date_weekend)
+                        self.worker_assignments.setdefault(over_id, set()).add(date_weekend)
+                        self.scheduler._update_tracking_data(under_id, date_weekend, post_w, removing=True)
+                        self.scheduler._update_tracking_data(over_id, date_weekend, post_w, removing=False)
+
+                        new_over = abs(self._kind_count(over_id, "holiday") - self._holiday_target_for(over_id))
+                        new_under = abs(self._kind_count(under_id, "holiday") - self._holiday_target_for(under_id))
+                        if not (new_over < abs(over_dev) and new_under < abs(under_dev)):
+                            self._restore_state(state)
+                            continue
+
+                        logging.info(
+                            f"  ✅ Holiday swap: {over_id} ↔ {under_id} | "
+                            f"{date_holiday.strftime('%Y-%m-%d')} (festivo) ↔ "
+                            f"{date_weekend.strftime('%Y-%m-%d')} (fin de semana)"
+                        )
+                        return True
+
+        return False
+
+    # ------------------------------------------------------------------
     # Internal: OR-Tools CP-SAT phase
     # ------------------------------------------------------------------
 
@@ -1630,6 +1765,7 @@ class ORToolsPhase:
                 self.scheduler.date_utils.is_bridge_day(slots[si][0], self.scheduler.bridge_periods)
                 for si in range(n_slots)
             ]
+            slot_is_holiday = [self.engine._is_holiday_date(slots[si][0]) for si in range(n_slots)]
 
             # 3j. Weekend hard limit (must run after slot_is_weekend is known):
             #     at most max_consecutive_weekends consecutive weekend-weeks,
@@ -1764,6 +1900,17 @@ class ORToolsPhase:
                 dminus_b = model.new_int_var(0, bridge_ub, f"dmb_{wi}")
                 model.add(actual_bridge - bridge_tgt == dplus_b - dminus_b)
                 obj_terms.append(self.W_BRIDGE * (dplus_b + dminus_b))
+
+                # Holiday deviation: never worse than the incumbent (FA-3b balanced it).
+                if any(slot_is_holiday):
+                    holiday_tgt = self.engine._holiday_target_for(wid)
+                    actual_holiday = sum(x[wi, si] for si in range(n_slots) if slot_is_holiday[si])
+                    current_holiday = sum(1 for si in range(n_slots) if slot_is_holiday[si] and slots[si][2] == wid)
+                    holiday_ub = n_slots + abs(holiday_tgt)
+                    dplus_h = model.new_int_var(0, holiday_ub, f"dph_{wi}")
+                    dminus_h = model.new_int_var(0, holiday_ub, f"dmh_{wi}")
+                    model.add(actual_holiday - holiday_tgt == dplus_h - dminus_h)
+                    model.add(dplus_h + dminus_h <= abs(current_holiday - holiday_tgt))
 
                 # Last-post (rotation) deviation (con zona muerta ±DEADZONE_LAST_POST,
                 # alineada con optimization_metrics._calculate_post_rotation_score).

@@ -1026,3 +1026,24 @@ def test_leftover_bridge_target_goes_to_the_worker_already_holding_it():
 
     assert engine._bridge_target_for(0, "W1") == 2
     assert engine._bridge_target_for(0, "W0") == 1
+
+
+def test_holiday_swap_moves_a_holiday_to_the_worker_without_one():
+    """A holds both holidays and B none (targets 1 each). A gives one holiday to B
+    for B's Saturday, so both keep their shift and weekend counts."""
+    holidays = [datetime(2026, 3, 5), datetime(2026, 3, 18)]
+    saturday = datetime(2026, 3, 28)
+    scheduler = _make_scheduler(_plain_workers(2))
+    scheduler.holidays = holidays
+    for day, worker in ((holidays[0], "W0"), (holidays[1], "W0"), (saturday, "W1")):
+        scheduler.schedule[day] = [worker, None]
+    scheduler.worker_assignments["W0"] = set(holidays)
+    scheduler.worker_assignments["W1"] = {saturday}
+
+    engine = _build_engine(scheduler)
+    engine._holiday_target_for = lambda _worker_id: 1
+
+    assert engine._improve_holiday_balance() is True
+    assert scheduler.schedule[saturday][0] == "W0"
+    assert sum(1 for d in holidays if scheduler.schedule[d][0] == "W1") == 1
+    assert engine._improve_holiday_balance() is False
