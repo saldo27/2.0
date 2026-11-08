@@ -34,14 +34,26 @@ def worker_flag_enabled(worker_data: dict | None, key: str) -> bool:
     return bool(value)
 
 
-def apportion_largest_remainder(total: int, weights: list[float], prefer: list[float] | None = None) -> list[int]:
+def period_tie_offset(start: date) -> int:
+    """Rotation offset for tie-breaks that advances by one every calendar month.
+
+    Passing it as ``tie_offset`` to :func:`apportion_largest_remainder` keeps the
+    same worker (the first in the list) from winning every tie in every period.
+    """
+    return start.year * 12 + start.month - 1
+
+
+def apportion_largest_remainder(
+    total: int, weights: list[float], prefer: list[float] | None = None, tie_offset: int = 0
+) -> list[int]:
     """Split the integer ``total`` proportionally to ``weights`` (largest-remainder method).
 
     The result always sums to ``total`` (when there is any positive weight), so
     integer objectives derived from it never over- or under-subscribe the supply.
     Every share is the floor or the ceiling of its exact quota. The extra units
     go to the largest fractions, or, when ``prefer`` is given, to the highest
-    ``prefer`` values among the shares with a fraction. Ties go to the earlier index.
+    ``prefer`` values among the shares with a fraction. Remaining ties go to the
+    first index at or after ``tie_offset`` (cyclically).
     """
     if total <= 0 or not weights:
         return [0] * len(weights)
@@ -56,11 +68,14 @@ def apportion_largest_remainder(total: int, weights: list[float], prefer: list[f
     def fraction(i: int) -> float:
         return exact[i] - shares[i]
 
-    def rank(i: int) -> tuple[float, float, int]:
-        return (-(prefer[i] if prefer is not None else 0.0), -fraction(i), i)
+    n = len(exact)
 
-    with_fraction = sorted((i for i in range(len(exact)) if fraction(i) > 1e-9), key=rank)
-    without_fraction = sorted((i for i in range(len(exact)) if fraction(i) <= 1e-9), key=rank)
+    def rank(i: int) -> tuple[float, float, int]:
+        # Rounded so equal weights tie despite floating-point noise in the quotas.
+        return (-(prefer[i] if prefer is not None else 0.0), -round(fraction(i), 9), (i - tie_offset) % n)
+
+    with_fraction = sorted((i for i in range(n) if fraction(i) > 1e-9), key=rank)
+    without_fraction = sorted((i for i in range(n) if fraction(i) <= 1e-9), key=rank)
     for i in (with_fraction + without_fraction)[:remainder]:
         shares[i] += 1
     return shares

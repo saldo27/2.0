@@ -215,8 +215,8 @@ trabajadores_ejemplo.json   # Ejemplo de configuración de trabajadores
 El score mide la calidad del **motor** respecto a lo factible bajo la configuración; no castiga desbalances impuestos por el propio condicionamiento del reparto.
 
 - **Fill / cobertura**: los huecos que nadie puede cubrir (restricciones duras) cuentan como cubiertos a efectos de score
-- **Balance de carga (workload)**: ±10% respecto al objetivo de scoring (techo por capacidad de cliques de incompatibilidad); en calendarios incompletos (p. ej. Revisión parcial) se escala el objetivo para no aplastar Balance/FS a 0
-- **Balance de fines de semana**: ±15% respecto al objetivo de scoring (misma lógica de techo estructural / escala incompleta)
+- **Balance de carga (workload)**: ±10% respecto al objetivo de scoring, con un máximo de ±1 guardia; la penalización combina la media (75%) y el peor trabajador (25%) (techo por capacidad de cliques de incompatibilidad); en calendarios incompletos (p. ej. Revisión parcial) se escala el objetivo para no aplastar Balance/FS a 0
+- **Balance de fines de semana**: ±15% respecto al objetivo de scoring, con un máximo de ±1 guardia y la misma combinación media/peor caso (misma lógica de techo estructural / escala incompleta)
 - **Balance de puentes**: tolerancia absoluta ±0.5 turnos sobre objetivos escalados por capacidad estructural
 - **Rotación de puestos**: ±20%; `no_last_post` / `only_last_post` / cadencia exentos; con restricciones de puesto, el spillover de Rosell hacia quien sí puede no se penaliza
 - **Penalización por violaciones**: gaps con suelos por `gap_periods`; cadencia fija y pares dual-mandatory (gap/7–14/incompat) no penalizan

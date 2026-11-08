@@ -849,3 +849,24 @@ def test_pass1_scores_each_worker_once_per_empty_slot(sample_workers_data):
     empty_slots = sum(slot is None for posts in scheduler.schedule.values() for slot in posts)
     assert len(calls) == empty_slots * len(sample_workers_data)
     assert set(calls) == {1}
+
+
+def test_holiday_objective_shares_holiday_slots_by_availability():
+    """Two March holidays × 2 posts = 4 slots. A worker on leave over both holidays
+    gets no holiday objective; the two others share all 4 (unfilled slots count
+    when ``filled_only=False``)."""
+    holidays = [datetime(2026, 3, 19), datetime(2026, 3, 26)]
+    workers = [
+        _availability_worker("AWAY", "19-03-2026 - 19-03-2026;26-03-2026 - 26-03-2026"),
+        _availability_worker("A"),
+        _availability_worker("B"),
+    ]
+    scheduler = _march_scheduler(workers, holidays)
+    away, a, b = scheduler.workers_data
+
+    assert scheduler.get_holiday_objective(away, filled_only=False) == 0
+    assert scheduler.get_holiday_objective(a, filled_only=False) + scheduler.get_holiday_objective(
+        b, filled_only=False
+    ) == pytest.approx(4)
+    # Nothing is filled yet, so there is nothing to share.
+    assert scheduler.get_holiday_objective(a) == 0

@@ -933,6 +933,15 @@ def test_ortools_phase_moves_a_weekend_without_prior_period():
     assert len(_weekends_of(scheduler, "A")) == 1
 
 
+def test_ortools_phase_survives_repeated_multithreaded_solves():
+    """Hinted multi-worker solves in one process. With repair_hint, OR-Tools 9.15
+    aborted the process (Check failed: heuristics.fixed_search) within a few runs."""
+    for _ in range(30):
+        scheduler, engine = _weekend_after_prior_scheduler({})
+        engine._run_ortools_phase(time_limit_seconds=10)
+        assert len(_weekends_of(scheduler, "A")) == 1
+
+
 def test_ortools_phase_counts_prior_weekends_as_consecutive():
     """A worked the two prior weekends; with a limit of 2, 6-8 March would be a third in a row."""
     prior = {"A": {datetime(2026, 2, 21), datetime(2026, 2, 28)}}
@@ -1026,3 +1035,24 @@ def test_leftover_bridge_target_goes_to_the_worker_already_holding_it():
 
     assert engine._bridge_target_for(0, "W1") == 2
     assert engine._bridge_target_for(0, "W0") == 1
+
+
+def test_holiday_swap_moves_a_holiday_to_the_worker_without_one():
+    """A holds both holidays and B none (targets 1 each). A gives one holiday to B
+    for B's Saturday, so both keep their shift and weekend counts."""
+    holidays = [datetime(2026, 3, 5), datetime(2026, 3, 18)]
+    saturday = datetime(2026, 3, 28)
+    scheduler = _make_scheduler(_plain_workers(2))
+    scheduler.holidays = holidays
+    for day, worker in ((holidays[0], "W0"), (holidays[1], "W0"), (saturday, "W1")):
+        scheduler.schedule[day] = [worker, None]
+    scheduler.worker_assignments["W0"] = set(holidays)
+    scheduler.worker_assignments["W1"] = {saturday}
+
+    engine = _build_engine(scheduler)
+    engine._holiday_target_for = lambda _worker_id: 1
+
+    assert engine._improve_holiday_balance() is True
+    assert scheduler.schedule[saturday][0] == "W0"
+    assert sum(1 for d in holidays if scheduler.schedule[d][0] == "W1") == 1
+    assert engine._improve_holiday_balance() is False

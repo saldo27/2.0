@@ -136,3 +136,17 @@ def test_empty_schedule(validator, sample_workers_data):
 def test_empty_workers(validator, sample_schedule):
     result = validator.validate_schedule_balance(sample_schedule, [])
     assert isinstance(result, dict)
+
+
+def test_count_worker_shifts_parses_unpadded_mandatory_dates(validator):
+    """'5-3-2026' is the same day as the 2026-03-05 schedule key and must not count as free."""
+    schedule = {
+        "2026-03-05": ["W"],
+        "2026-03-10": ["W"],
+        "2026-03-15": ["W"],
+    }
+    worker = {"id": "W", "mandatory_days": "5-3-2026; 10-03-2026"}
+
+    assert validator._count_mandatory_shifts("W", schedule, worker) == 2
+    assert validator._count_worker_shifts("W", schedule, worker) == 1
+    assert validator._count_worker_shifts("W", schedule) == 3
