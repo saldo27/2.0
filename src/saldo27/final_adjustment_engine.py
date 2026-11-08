@@ -1625,6 +1625,10 @@ class ORToolsPhase:
                 a_wi = worker_idx[a_id]
                 b_wi = worker_idx[b_id]
                 for date, slot_indices in date_to_slots.items():
+                    # Both pinned to this date (dual mandatory): exempt, as in
+                    # ConstraintChecker. Forbidding the pair makes the model infeasible.
+                    if (a_wi, date) in protected_slots and (b_wi, date) in protected_slots:
+                        continue
                     a_vars = [x[a_wi, si] for si in slot_indices]
                     b_vars = [x[b_wi, si] for si in slot_indices]
                     model.add(sum(a_vars) + sum(b_vars) <= 1)
@@ -1718,11 +1722,15 @@ class ORToolsPhase:
                                 continue
                             model.add(x[wi, si] == 0)
 
-            # 3h. Max shifts per worker
+            # 3h. Max shifts per worker. The generic cap is total slots / workers
+            # + 2, which sits below a cadence or manual target on a long period
+            # and below some automatic raw targets. A lower cap contradicts the
+            # manual pin (actual == raw target) and makes the model infeasible.
             max_shifts = getattr(self.scheduler, "max_shifts_per_worker", None)
             if max_shifts:
-                for wi in range(n_workers):
-                    model.add(sum(x[wi, si] for si in range(n_slots)) <= max_shifts)
+                for wi, wid in enumerate(worker_ids):
+                    cap = max(max_shifts, int(self.engine._raw_targets.get(wid, 0)))
+                    model.add(sum(x[wi, si] for si in range(n_slots)) <= cap)
 
             # 3i. At most 1 consecutive last-post shift in the worker's own
             # chronological assignment sequence (mirrors ConstraintChecker.
@@ -1797,8 +1805,19 @@ class ORToolsPhase:
                 if prior_weekend_weeks
                 else weekend_slots_by_week
             )
+            # Weekend-weeks a worker cannot leave: a protected assignment on a
+            # weekend day. Fixed-cadence workers are exempt from the limit, and a
+            # window already over it through forced weeks alone cannot be fixed.
+            forced_weekend_weeks: dict[int, set] = {}
+            for wi, date in protected_slots:
+                if self.scheduler.date_utils.is_weekend_day(date, self.holidays_set):
+                    forced_weekend_weeks.setdefault(wi, set()).add(date - timedelta(days=date.weekday()))
+
             if sorted_weekend_weeks:
                 for wi in range(n_workers):
+                    if is_fixed_cadence(worker_data_by_id[worker_ids[wi]]):
+                        continue
+                    worker_forced_weeks = forced_weekend_weeks.get(wi, set())
                     worker_prior_weeks = prior_weekend_weeks.get(worker_ids[wi], set())
                     week_flags: list = []
                     for week_start in sorted_weekend_weeks:
@@ -1832,7 +1851,17 @@ class ORToolsPhase:
                                     break
                             window_flags = [week_flags[start_idx + offset] for offset in range(window)]
                             # Windows made only of prior-period constants cannot be changed here
-                            if consecutive and any(not isinstance(f, int) for f in window_flags):
+                            fixed = sum(
+                                1
+                                for offset in range(window)
+                                if sorted_weekend_weeks[start_idx + offset] in worker_forced_weeks
+                                or (isinstance(window_flags[offset], int) and window_flags[offset] == 1)
+                            )
+                            if (
+                                consecutive
+                                and any(not isinstance(f, int) for f in window_flags)
+                                and fixed <= max_consecutive_weekends
+                            ):
                                 model.add(sum(window_flags) <= max_consecutive_weekends)
 
             obj_terms = []
