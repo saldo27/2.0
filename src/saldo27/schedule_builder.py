@@ -1685,18 +1685,19 @@ class ScheduleBuilder:
             gap_ok = self._check_gap_constraints(worker, date, relaxation_level)
             if not gap_ok:
                 if _DEBUG():
-                    if worker_id in ["LUIS H", "M.JOSE"] and shift_deficit > 2:
-                        logging.debug(f"    ⚠️ {worker_id}: BLOCKED by gap constraints despite deficit={shift_deficit}")
-                    logging.debug(f"    🚫 {worker_id}: BLOCKED by gap constraints (min gap or 7/14 pattern)")
+                    logging.debug(
+                        f"    🚫 {worker_id}: BLOCKED by gap constraints (min gap or 7/14 pattern), "
+                        f"deficit={shift_deficit}"
+                    )
                 return float("-inf")
 
             # Calculate monthly target score
             monthly_score = self._calculate_monthly_target_score(worker, date, relaxation_level)
             if monthly_score == float("-inf"):
                 if _DEBUG():
-                    if worker_id in ["LUIS H", "M.JOSE"] and shift_deficit > 2:
-                        logging.debug(f"    ⚠️ {worker_id}: BLOCKED by monthly target despite deficit={shift_deficit}")
-                    logging.debug(f"    🚫 {worker_id}: BLOCKED by monthly target (exceeded monthly max)")
+                    logging.debug(
+                        f"    🚫 {worker_id}: BLOCKED by monthly target (exceeded monthly max), deficit={shift_deficit}"
+                    )
                 return float("-inf")
             score += monthly_score
 
@@ -1704,12 +1705,10 @@ class ScheduleBuilder:
             worker_config = next((w for w in self.workers_data if w["id"] == worker_id), None)
             overall_score = self._calculate_overall_target_score(worker_id, worker_config, relaxation_level)
             if overall_score == float("-inf"):
-                if worker_id in ["LUIS H", "M.JOSE"] and shift_deficit > 2:
-                    logging.info(
-                        f"    ⚠️ {worker_id}: BLOCKED by overall target (exceeded +10% tolerance) despite deficit={shift_deficit}"
-                    )
                 if _DEBUG():
-                    logging.debug(f"    🚫 {worker_id}: BLOCKED by overall target (exceeded +10% tolerance)")
+                    logging.debug(
+                        f"    🚫 {worker_id}: BLOCKED by overall target (exceeded +10% tolerance), deficit={shift_deficit}"
+                    )
                 return float("-inf")
             score += overall_score
 
@@ -1759,8 +1758,8 @@ class ScheduleBuilder:
         # NUEVO SISTEMA: SCORING BASADO EN RATIO (% completitud)
         # =========================================================================
         # El ratio permite comparar justamente trabajadores con diferentes objetivos
-        # Ejemplo: Luis H con 7/13 (54%) vs Worker X con 4/8 (50%)
-        # Worker X tiene prioridad porque tiene menor completitud
+        # Ejemplo: trabajador A con 7/13 (54%) vs trabajador B con 4/8 (50%)
+        # B tiene prioridad porque tiene menor completitud
         #
         # FORMULA: completion_ratio = (non_mandatory_assigned / target_shifts)
         # SCORE:   (1 - completion_ratio) * 100000 (inverted so lower ratio = higher score)
@@ -1775,7 +1774,7 @@ class ScheduleBuilder:
             ratio_score = (1 - completion_ratio) * 100000
 
             # Apply square to give even MORE priority to very incomplete workers
-            # This helps Luis H (54% complete) vs workers who are 70-80% complete
+            # e.g. a worker at 54% ahead of workers who are 70-80% complete
             if completion_ratio < 0.8:
                 # Boost for significantly incomplete workers
                 incompleteness_boost = (0.8 - completion_ratio) * 50000
@@ -1783,8 +1782,7 @@ class ScheduleBuilder:
 
             score += ratio_score
 
-            # DEBUG: Log ratio for specific workers
-            if _DEBUG() and (worker_id in ["LUIS H", "M.JOSE"] or completion_ratio < 0.7):
+            if _DEBUG() and completion_ratio < 0.7:
                 logging.debug(
                     f"📊 RATIO SCORING - {worker_id}: ratio={completion_ratio:.2f} ({non_mandatory_assigned}/{target_shifts}), "
                     f"ratio_score={ratio_score:.0f}, total_so_far={score:.0f}"

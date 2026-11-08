@@ -125,11 +125,7 @@ class AdvancedDistributionEngine(EngineStateMixin):
             empty_slots = self._get_empty_slots_in_range(current_date, chunk_end)
 
             if empty_slots:
-                # Analizar el chunk y crear un plan óptimo
-                plan = self._create_chunk_plan(empty_slots, current_date, chunk_end)
-
-                # Ejecutar el plan
-                filled_in_chunk = self._execute_chunk_plan(plan)
+                filled_in_chunk = self._fill_chunk(empty_slots)
                 filled_count += filled_in_chunk
 
                 logging.info(f"    Filled {filled_in_chunk} slots in this chunk")
@@ -138,86 +134,46 @@ class AdvancedDistributionEngine(EngineStateMixin):
 
         return filled_count
 
-    def _create_chunk_plan(self, empty_slots: list[tuple], chunk_start: datetime, chunk_end: datetime) -> dict:
+    def _fill_chunk(self, empty_slots: list[tuple]) -> int:
+        """Fill a chunk slot by slot, re-scoring after every assignment.
+
+        Scores depend on each worker's current count, so a plan scored up front
+        for the whole chunk kept choosing the same worker (the one in deficit
+        before the chunk started) for several slots in a row.
         """
-        Crear un plan óptimo para llenar un chunk
-
-        Analiza las necesidades de cada trabajador y distribuye los slots
-        de manera que maximice el balance y respete las constraints.
-        """
-        plan = {"assignments": [], "priority": []}
-
-        # Calcular déficit de cada trabajador
-        # CRITICAL: target_shifts ya tiene mandatory restados, comparar con non-mandatory
-        worker_deficit = {}
-        for worker in self.scheduler.workers_data:
-            worker_id = worker["id"]
-            all_assignments = self.scheduler.worker_assignments.get(worker_id, set())
-            target = worker.get("target_shifts", 0)
-
-            # Contar mandatory asignados para calcular non-mandatory
-            _mandatory_assigned, non_mandatory_assigned = BalanceValidator.compute_non_mandatory_assigned(
-                worker, all_assignments, getattr(self.builder, "date_utils", None)
-            )
-
-            deficit = max(0, target - non_mandatory_assigned)
-
-            if deficit > 0:
-                worker_deficit[worker_id] = {
-                    "deficit": deficit,
-                    "work_percentage": worker.get("work_percentage", 100),
-                    "priority": deficit * (worker.get("work_percentage", 100) / 100),
-                }
-
-        # Ordenar trabajadores por prioridad (mayor déficit primero)
-        sorted_workers = sorted(worker_deficit.items(), key=lambda x: x[1]["priority"], reverse=True)
-
-        # Para cada slot vacío, encontrar el mejor trabajador
-        for date, post in empty_slots:
-            if not sorted_workers:
-                break
-
-            best_worker = None
-            best_score = float("-inf")
-
-            for worker_id, info in sorted_workers:
-                # Verificar si puede asignarse
-                worker_data = next((w for w in self.scheduler.workers_data if w["id"] == worker_id), None)
-                if not worker_data:
-                    continue
-
-                score = self.builder._calculate_worker_score(worker_data, date, post, relaxation_level=0)
-
-                if score > best_score:
-                    best_score = score
-                    best_worker = worker_id
-
-            if best_worker and best_score > float("-inf"):
-                plan["assignments"].append({"worker_id": best_worker, "date": date, "post": post, "score": best_score})
-
-        return plan
-
-    def _execute_chunk_plan(self, plan: dict) -> int:
-        """Ejecutar el plan de asignación de un chunk"""
         filled_count = 0
-
-        for assignment in plan["assignments"]:
-            worker_id = assignment["worker_id"]
-            date = assignment["date"]
-            post = assignment["post"]
-
-            # Verificar que el slot sigue vacío
-            if (
-                date not in self.scheduler.schedule
-                or len(self.scheduler.schedule[date]) <= post
-                or self.scheduler.schedule[date][post] is None
-            ):
-                # Intentar asignación
+        for date, post in empty_slots:
+            if self.scheduler.schedule.get(date, [None] * (post + 1))[post] is not None:
+                continue
+            for worker_id in self._ranked_deficit_candidates(date, post):
                 if self._try_assign_with_validation(worker_id, date, post):
                     filled_count += 1
                     self.metrics["successful_fills"] += 1
-
+                    break
         return filled_count
+
+    def _ranked_deficit_candidates(self, date: datetime, post: int) -> list[str]:
+        """Workers below their target, best builder score first (feasible ones only)."""
+        # CRITICAL: target_shifts ya tiene mandatory restados, comparar con non-mandatory
+        scored: list[tuple[float, float, str]] = []
+        date_utils = getattr(self.builder, "date_utils", None)
+        for worker in self.scheduler.workers_data:
+            target = worker.get("target_shifts", 0)
+            if target <= 0:
+                continue
+            assignments = self.scheduler.worker_assignments.get(worker["id"], set())
+            _mandatory_assigned, non_mandatory = BalanceValidator.compute_non_mandatory_assigned(
+                worker, assignments, date_utils
+            )
+            if non_mandatory >= target:
+                continue
+            score = self.builder._calculate_worker_score(worker, date, post, relaxation_level=0)
+            if score == float("-inf"):
+                continue
+            # Ties on score go to the worker furthest from target relative to it.
+            scored.append((score, (target - non_mandatory) / target, worker["id"]))
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [worker_id for _score, _relative_deficit, worker_id in scored]
 
     def _adaptive_backtracking_fill(self, max_iterations: int) -> int:
         """
