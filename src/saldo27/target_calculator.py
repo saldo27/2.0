@@ -17,6 +17,8 @@ import math
 from datetime import datetime, timedelta
 from typing import Any
 
+from saldo27.utilities import apportion_largest_remainder
+
 
 class TargetCalculator:
     """
@@ -122,32 +124,12 @@ class TargetCalculator:
                         pct = max(0.0, pct)
                         weights.append(available_slots.get(wid, 0) * pct)
 
-                    total_weight = sum(weights) or 1.0
-
-                    exact_targets = [wgt / total_weight * slots_for_auto for wgt in weights]
-
-                    # Largest-remainder rounding
-                    floors = [int(x) for x in exact_targets]
-                    remainder = int(slots_for_auto - sum(floors))
-                    fracs = sorted(
-                        enumerate(exact_targets),
-                        key=lambda ix: exact_targets[ix[0]] - floors[ix[0]],
-                        reverse=True,
-                    )
-                    targets = floors[:]
-                    for idx, _ in fracs[:remainder]:
-                        targets[idx] += 1
+                    mand_counts = [self._mandatory_count_in_period(w) for w in auto_calc_workers]
+                    targets = self._apportion_auto_targets(slots_for_auto, weights, mand_counts)
 
                     for i, w in enumerate(auto_calc_workers):
                         raw_target = targets[i]
-                        mand_count = 0
-                        mand_str = w.get("mandatory_days", "").strip()
-                        if mand_str:
-                            try:
-                                mand_dates = s.date_utils.parse_dates(mand_str)
-                                mand_count = sum(1 for d in mand_dates if s.start_date <= d <= s.end_date)
-                            except Exception as e:
-                                logging.error(f"Failed to parse mandatory_days for {w['id']}: {e}")
+                        mand_count = mand_counts[i]
                         adjusted = max(0, raw_target - mand_count)
                         w["target_shifts"] = adjusted
                         w["_raw_target"] = raw_target
@@ -168,6 +150,50 @@ class TargetCalculator:
         except Exception as e:
             logging.error(f"Error calculating target shifts: {e}")
             return False
+
+    def _mandatory_count_in_period(self, worker: dict) -> int:
+        s = self.scheduler
+        mand_str = worker.get("mandatory_days", "").strip()
+        if not mand_str:
+            return 0
+        try:
+            mand_dates = s.date_utils.parse_dates(mand_str)
+        except Exception as e:
+            logging.error(f"Failed to parse mandatory_days for {worker['id']}: {e}")
+            return 0
+        return sum(1 for d in mand_dates if s.start_date <= d <= s.end_date)
+
+    @staticmethod
+    def _apportion_auto_targets(pool: int, weights: list[float], mand_counts: list[int]) -> list[int]:
+        """Total (mandatory-inclusive) targets for auto workers sharing ``pool`` slots.
+
+        A worker whose mandatory shifts already exceed their proportional share
+        is fixed at their mandatory count and the slots they consume are taken
+        out of the pool before re-sharing it among the rest. Otherwise the
+        excess would be counted twice: once as their mandatory shifts and again
+        inside everyone else's share, so the targets would add up to more slots
+        than exist.
+        """
+        targets = [0] * len(weights)
+        active = [i for i, wgt in enumerate(weights) if wgt > 0]
+        for i, wgt in enumerate(weights):
+            if wgt <= 0:
+                targets[i] = mand_counts[i]
+                pool -= mand_counts[i]
+        while active:
+            pool = max(0, pool)
+            active_weight = sum(weights[i] for i in active)
+            saturated = [i for i in active if mand_counts[i] > 0 and mand_counts[i] >= weights[i] / active_weight * pool]
+            if not saturated:
+                break
+            for i in saturated:
+                targets[i] = mand_counts[i]
+                pool -= mand_counts[i]
+                active.remove(i)
+        shares = apportion_largest_remainder(max(0, pool), [weights[i] for i in active])
+        for i, share in zip(active, shares, strict=True):
+            targets[i] = share
+        return targets
 
     # ------------------------------------------------------------------
     # Cadence ("cadencia") targets
@@ -286,7 +312,8 @@ class TargetCalculator:
             w["target_shifts"] = adjusted
             w["_raw_target"] = raw_target
             w["_mandatory_count"] = mand_count
-            total_manual_slots += raw_target
+            # Mandatory shifts beyond guardias/mes still occupy slots.
+            total_manual_slots += max(raw_target, mand_count)
 
             logging.info(
                 f"Worker {wid} (MANUAL): {guardias_per_mes} guardias/mes * {worker_months:.2f} meses = {raw_target}, "
@@ -515,16 +542,7 @@ class TargetCalculator:
             if is_manual:
                 guardias_mes = worker.get("_original_target_shifts", 0)
                 if guardias_mes > 0 and any(worker_month_avail.values()):
-                    mand_str = worker.get("mandatory_days", "").strip()
-                    mand_dates_by_month: dict[str, int] = {}
-                    if mand_str:
-                        try:
-                            for d in s.date_utils.parse_dates(mand_str):
-                                if s.start_date <= d <= s.end_date:
-                                    mk = f"{d.year}-{d.month:02d}"
-                                    mand_dates_by_month[mk] = mand_dates_by_month.get(mk, 0) + 1
-                        except (TypeError, ValueError) as exc:
-                            logging.debug(f"Worker {worker_id} error parsing mandatory_days for monthly split: {exc}")
+                    mand_dates_by_month = self._mandatory_count_by_month(worker)
 
                     remaining_target = overall_target
                     fully_available_months = []
@@ -580,42 +598,49 @@ class TargetCalculator:
                         worker["monthly_targets"][month_key] = 0
                     continue
 
-            total_avail_days = sum(worker_month_avail.values())
-            remaining_target = overall_target
-
-            if total_avail_days > 0:
-                for month_key in month_days:
-                    avail = worker_month_avail.get(month_key, 0)
-                    if avail == 0:
-                        worker["monthly_targets"][month_key] = 0
-                    else:
-                        raw_fraction = overall_target * avail / total_avail_days
-                        month_target = round(raw_fraction)
-                        month_target = min(month_target, remaining_target)
-                        worker["monthly_targets"][month_key] = month_target
-                        remaining_target -= month_target
-                        logging.debug(
-                            f"Worker {worker_id}: {month_key} → {month_target} shifts "
-                            f"({avail}/{total_avail_days} avail days)"
-                        )
-
-                if remaining_target > 0:
-                    sorted_months = sorted(
-                        [(k, v) for k, v in worker_month_avail.items() if v > 0],
-                        key=lambda x: x[1],
-                        reverse=True,
-                    )
-                    for month_key, _ in sorted_months:
-                        if remaining_target <= 0:
-                            break
-                        worker["monthly_targets"][month_key] += 1
-                        remaining_target -= 1
-            else:
-                for month_key in month_days:
+            month_keys = list(month_days)
+            month_avail = [worker_month_avail.get(k, 0) for k in month_keys]
+            total_avail_days = sum(month_avail)
+            if total_avail_days <= 0:
+                for month_key in month_keys:
                     worker["monthly_targets"][month_key] = 0
+                continue
+
+            # The whole objective (mandatory included) is spread by available
+            # days; each month's mandatory shifts are then taken out of that
+            # month's share, so a month packed with mandatory days does not also
+            # receive a full share of the non-mandatory budget.
+            mand_by_month = self._mandatory_count_by_month(worker)
+            full_objective = overall_target + sum(mand_by_month.values())
+            weights = [
+                max(0.0, full_objective * avail / total_avail_days - mand_by_month.get(key, 0))
+                for key, avail in zip(month_keys, month_avail, strict=True)
+            ]
+            if sum(weights) <= 0:
+                weights = [float(a) for a in month_avail]
+            shares = apportion_largest_remainder(overall_target, weights)
+            for month_key, share in zip(month_keys, shares, strict=True):
+                worker["monthly_targets"][month_key] = share
+            logging.debug(f"Worker {worker_id}: monthly targets {worker['monthly_targets']}")
 
         logging.info("Monthly targets calculated (work_periods-aware)")
         return True
+
+    def _mandatory_count_by_month(self, worker: dict) -> dict[str, int]:
+        """In-period ``mandatory_days`` per ``"YYYY-MM"``."""
+        s = self.scheduler
+        by_month: dict[str, int] = {}
+        mand_str = worker.get("mandatory_days", "").strip()
+        if not mand_str:
+            return by_month
+        try:
+            for d in s.date_utils.parse_dates(mand_str):
+                if s.start_date <= d <= s.end_date:
+                    key = f"{d.year}-{d.month:02d}"
+                    by_month[key] = by_month.get(key, 0) + 1
+        except (TypeError, ValueError) as exc:
+            logging.debug(f"Worker {worker.get('id')} error parsing mandatory_days for monthly split: {exc}")
+        return by_month
 
     def _get_schedule_months(self) -> dict[str, int]:
         """

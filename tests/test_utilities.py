@@ -7,12 +7,27 @@ import pytest
 from saldo27.constraint_checker import candidate_spacing_rejection
 from saldo27.utilities import (
     DateTimeUtils,
+    apportion_largest_remainder,
     format_gap_periods_text,
     get_effective_min_gap,
     normalize_gap_periods,
     numeric_sort_key,
     parse_gap_periods_text,
 )
+
+
+def test_apportion_largest_remainder_keeps_the_total_and_favours_largest_fractions():
+    # exact 1.6 / 1.6 / 1.8: rounding each share in sequence would give 2/2/1
+    assert apportion_largest_remainder(5, [8, 8, 9]) == [2, 1, 2]
+
+
+def test_apportion_largest_remainder_breaks_ties_by_index():
+    assert apportion_largest_remainder(2, [1, 1, 1]) == [1, 1, 0]
+
+
+def test_apportion_largest_remainder_without_weight_or_total_gives_zeros():
+    assert apportion_largest_remainder(4, [0, 0]) == [0, 0]
+    assert apportion_largest_remainder(0, [1, 2]) == [0, 0]
 
 # ── DateTimeUtils construction ──────────────────────────────────────
 

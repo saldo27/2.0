@@ -20,6 +20,67 @@ def _build_scheduler(workers_data, start_date, end_date, num_shifts=1):
     )
 
 
+def _plain_worker(worker_id, **fields):
+    worker = {
+        "id": worker_id,
+        "name": worker_id,
+        "work_percentage": 100,
+        "work_periods": "",
+        "days_off": "",
+        "mandatory_days": "",
+        "incompatible_with": [],
+        "auto_calculate_shifts": True,
+    }
+    worker.update(fields)
+    return worker
+
+
+def _march_days(*days):
+    return ";".join(f"{d:02d}-03-2026" for d in days)
+
+
+def test_auto_targets_reshare_slots_taken_by_mandatory_excess():
+    """31 slots, three equal workers (share ≈ 10.3). A worker with 15 mandatory
+    days holds 15 slots, so the other two share the remaining 16 instead of
+    keeping their 10-11 each and over-subscribing the month."""
+    workers = [
+        _plain_worker("A", mandatory_days=_march_days(*range(1, 30, 2))),
+        _plain_worker("B"),
+        _plain_worker("C"),
+    ]
+    scheduler = _build_scheduler(workers, datetime(2026, 3, 1), datetime(2026, 3, 31))
+
+    a, b, c = scheduler.workers_data
+    assert (a["_raw_target"], a["_mandatory_count"], a["target_shifts"]) == (15, 15, 0)
+    assert b["_raw_target"] == c["_raw_target"] == 8
+    assert sum(w["_raw_target"] for w in scheduler.workers_data) == 31
+
+
+def test_manual_mandatory_beyond_guardias_mes_is_reserved_from_the_auto_pool():
+    workers = [
+        _plain_worker("M", auto_calculate_shifts=False, target_shifts=1, mandatory_days=_march_days(1, 5, 9, 13, 17)),
+        _plain_worker("A"),
+    ]
+    scheduler = _build_scheduler(workers, datetime(2026, 3, 1), datetime(2026, 3, 31))
+
+    auto = scheduler.workers_data[1]
+    assert auto["_raw_target"] == 26
+
+
+def test_auto_monthly_targets_discount_the_mandatory_days_of_each_month():
+    """Objective 10 (6 non-mandatory + 4 mandatory, all in March) over March and
+    April: March's share (≈5.1) is mostly covered by its mandatory days, so the
+    non-mandatory budget goes 1/5 rather than 3/3."""
+    workers = [_plain_worker("A", mandatory_days=_march_days(2, 9, 16, 23))]
+    scheduler = _build_scheduler(workers, datetime(2026, 3, 1), datetime(2026, 4, 30))
+    worker = scheduler.workers_data[0]
+    worker["target_shifts"] = 6
+
+    assert TargetCalculator(scheduler)._calculate_monthly_targets() is True
+
+    assert worker["monthly_targets"] == {"2026-03": 1, "2026-04": 5}
+
+
 def test_manual_worker_monthly_targets_are_not_skewed_by_days_in_month(sample_workers_data):
     """A manual worker with a fixed guardias/mes of 3 spanning two full
     months (March=31 days, April=30 days) must get exactly 3 shifts in each

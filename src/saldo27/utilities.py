@@ -34,6 +34,28 @@ def worker_flag_enabled(worker_data: dict | None, key: str) -> bool:
     return bool(value)
 
 
+def apportion_largest_remainder(total: int, weights: list[float]) -> list[int]:
+    """Split the integer ``total`` proportionally to ``weights`` (largest-remainder method).
+
+    The result always sums to ``total`` (when there is any positive weight), so
+    integer objectives derived from it never over- or under-subscribe the supply.
+    Ties go to the earlier index.
+    """
+    if total <= 0 or not weights:
+        return [0] * len(weights)
+    clean = [max(0.0, float(w)) for w in weights]
+    weight_sum = sum(clean)
+    if weight_sum <= 0:
+        return [0] * len(weights)
+    exact = [w / weight_sum * total for w in clean]
+    shares = [math.floor(x) for x in exact]
+    remainder = total - sum(shares)
+    order = sorted(range(len(exact)), key=lambda i: (-(exact[i] - shares[i]), i))
+    for i in order[:remainder]:
+        shares[i] += 1
+    return shares
+
+
 def coerce_datetime(value: object) -> datetime | None:
     """Return a datetime for a datetime, a date, or an ISO / DD-MM-YYYY string."""
     if isinstance(value, datetime):
