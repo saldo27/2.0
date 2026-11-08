@@ -40,6 +40,7 @@ aplicarlo, y se revierte si no produce mejora neta en la dimensión objetivo.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
 from saldo27 import tolerance_policy
 from saldo27.domain.engine_state_mixin import EngineStateMixin
 from saldo27.infrastructure.optional_engines import ortools_available
-from saldo27.utilities import is_fixed_cadence
+from saldo27.utilities import apportion_largest_remainder, is_fixed_cadence
 
 
 def _normalize_schedule_date(value: datetime | Any) -> datetime:
@@ -92,6 +93,10 @@ class FinalAdjustmentEngine(EngineStateMixin):
             for w in self.workers_data
             if is_fixed_cadence(w)
         }
+        self._weekend_targets: dict[str, int] = {}
+        self._bridge_targets: dict[str, int] = {}
+        self._kind_targets_source: dict[str, int] = {}
+        self._refresh_kind_targets()
 
         # Counters for reporting
         self.stats: dict[str, int] = {
@@ -137,6 +142,8 @@ class FinalAdjustmentEngine(EngineStateMixin):
         except Exception as exc:
             logging.warning(f"FinalAdjustmentEngine hole fill skipped: {exc}")
             self.stats["holes_filled"] = 0
+        # Bridge objectives share the filled bridge slots, which hole fill may have grown.
+        self._refresh_kind_targets()
 
         before = self.compute_metrics()
 
@@ -323,16 +330,53 @@ class FinalAdjustmentEngine(EngineStateMixin):
                 self._total_bridge_slots += n
             current += timedelta(days=1)
 
+    def _refresh_kind_targets(self) -> None:
+        """Integer weekend/bridge targets for the non-cadence workers.
+
+        Same formulas as the ``Scheduler`` objectives, applied to this engine's
+        raw targets, then split with the largest-remainder method so the integer
+        targets add up to the (rounded) total supply. Rounding each worker on its
+        own lets the targets exceed the shifts that exist, so some workers always
+        look one short whatever the schedule.
+        """
+        objectives = {w["id"]: self._raw_targets.get(w["id"], 0) for w in self.workers_data if not is_fixed_cadence(w)}
+        self._weekend_targets = self._apportion(self.scheduler.weekend_objectives_for(objectives), "weekend")
+        self._bridge_targets = self._apportion(self.scheduler.bridge_objectives_for(objectives), "bridge")
+        self._kind_targets_source = dict(self._raw_targets)
+
+    def _apportion(self, objectives: dict[str, float], kind: str) -> dict[str, int]:
+        """Integer targets (floor or ceil of each objective) adding up to the rounded total.
+
+        The units left over after the floors go to the workers who already hold
+        the most above their objective: any floor/ceil choice is equally fair, and
+        this one asks for the fewest moves from the current schedule.
+        """
+        ids = list(objectives)
+        values = [objectives[wid] for wid in ids]
+        held_above = [self._kind_count(wid, kind) - math.floor(objectives[wid]) for wid in ids]
+        shares = apportion_largest_remainder(round(sum(values)), values, prefer=held_above)
+        return dict(zip(ids, shares, strict=True))
+
+    def _ensure_kind_targets(self) -> None:
+        if self._kind_targets_source != self._raw_targets:
+            self._refresh_kind_targets()
+
     def _weekend_target_for(self, raw_target: int, worker_id: str | None = None) -> int:
-        """Target proporcional de fines de semana; misma proporción por slots que ``Scheduler.get_weekend_objective``."""
+        """Target de fines de semana: ``Scheduler.get_weekend_objective`` repartido en enteros."""
         if worker_id in self._cadence_targets:
             return self._cadence_targets[worker_id]["weekend"]
+        self._ensure_kind_targets()
+        if worker_id in self._weekend_targets:
+            return self._weekend_targets[worker_id]
         return round(raw_target * self.scheduler._weekend_slot_ratio())
 
     def _bridge_target_for(self, raw_target: int, worker_id: str | None = None) -> int:
-        """Target proporcional de puentes para un trabajador."""
+        """Target de puentes: ``Scheduler.get_bridge_objective_for_worker`` repartido en enteros."""
         if worker_id in self._cadence_targets:
             return self._cadence_targets[worker_id]["bridge"]
+        self._ensure_kind_targets()
+        if worker_id in self._bridge_targets:
+            return self._bridge_targets[worker_id]
         if self._total_all_slots == 0 or self._total_bridge_slots == 0:
             return 0
         ratio = self._total_bridge_slots / self._total_all_slots

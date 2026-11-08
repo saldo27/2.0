@@ -969,3 +969,60 @@ def test_ortools_phase_does_not_increase_weekend_deviation():
 
     for wid, old in before.items():
         assert abs(engine._weekend_deviation(wid)) <= old
+
+
+def _plain_workers(count):
+    return [
+        {
+            "id": f"W{i}",
+            "name": f"W{i}",
+            "work_percentage": 100,
+            "work_periods": "",
+            "days_off": "",
+            "mandatory_days": "",
+            "incompatible_with": [],
+            "auto_calculate_shifts": True,
+        }
+        for i in range(count)
+    ]
+
+
+def test_weekend_targets_add_up_to_the_weekend_supply():
+    """62 March slots over 5 workers (13/13/12/12/12), 26 of them on weekends.
+    Rounding each objective alone (5.45 / 5.03) gives 5 each = 25, one short of
+    the supply; largest remainder keeps the 26."""
+    scheduler = _make_scheduler(_plain_workers(5))
+    engine = _build_engine(scheduler)
+
+    targets = {wid: engine._weekend_target_for(raw, wid) for wid, raw in engine._raw_targets.items()}
+
+    assert sorted(engine._raw_targets.values()) == [12, 12, 12, 13, 13]
+    assert sum(targets.values()) == 26
+    assert sorted(targets.values()) == [5, 5, 5, 5, 6]
+
+
+def test_weekend_targets_follow_overridden_raw_targets():
+    scheduler = _make_scheduler(_plain_workers(2))
+    engine = _build_engine(scheduler)
+    engine._raw_targets = {"W0": 10, "W1": 0}
+
+    assert engine._weekend_target_for(10, "W0") == round(10 * scheduler._weekend_slot_ratio())
+    assert engine._weekend_target_for(0, "W1") == 0
+
+
+def test_leftover_bridge_target_goes_to_the_worker_already_holding_it():
+    """Two workers share 3 bridge shifts (objective 1.5 each). Either 2/1 split is
+    fair, so the 2 goes to whoever already holds two bridge days."""
+    friday = datetime(2026, 3, 7)
+    scheduler = _make_scheduler(_plain_workers(2))
+    scheduler.bridge_periods = [{**_bridge("bridge_fri", friday), "start_date": datetime(2026, 3, 5)}]
+    bridge_days = [datetime(2026, 3, d) for d in (5, 6, 7)]
+    for day, worker in zip(bridge_days, ("W1", "W1", "W0"), strict=True):
+        scheduler.schedule[day] = [worker, None]
+    scheduler.worker_assignments["W0"] = {bridge_days[2]}
+    scheduler.worker_assignments["W1"] = set(bridge_days[:2])
+
+    engine = _build_engine(scheduler)
+
+    assert engine._bridge_target_for(0, "W1") == 2
+    assert engine._bridge_target_for(0, "W0") == 1

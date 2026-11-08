@@ -34,6 +34,38 @@ def worker_flag_enabled(worker_data: dict | None, key: str) -> bool:
     return bool(value)
 
 
+def apportion_largest_remainder(total: int, weights: list[float], prefer: list[float] | None = None) -> list[int]:
+    """Split the integer ``total`` proportionally to ``weights`` (largest-remainder method).
+
+    The result always sums to ``total`` (when there is any positive weight), so
+    integer objectives derived from it never over- or under-subscribe the supply.
+    Every share is the floor or the ceiling of its exact quota. The extra units
+    go to the largest fractions, or, when ``prefer`` is given, to the highest
+    ``prefer`` values among the shares with a fraction. Ties go to the earlier index.
+    """
+    if total <= 0 or not weights:
+        return [0] * len(weights)
+    clean = [max(0.0, float(w)) for w in weights]
+    weight_sum = sum(clean)
+    if weight_sum <= 0:
+        return [0] * len(weights)
+    exact = [w / weight_sum * total for w in clean]
+    shares = [math.floor(x) for x in exact]
+    remainder = total - sum(shares)
+
+    def fraction(i: int) -> float:
+        return exact[i] - shares[i]
+
+    def rank(i: int) -> tuple[float, float, int]:
+        return (-(prefer[i] if prefer is not None else 0.0), -fraction(i), i)
+
+    with_fraction = sorted((i for i in range(len(exact)) if fraction(i) > 1e-9), key=rank)
+    without_fraction = sorted((i for i in range(len(exact)) if fraction(i) <= 1e-9), key=rank)
+    for i in (with_fraction + without_fraction)[:remainder]:
+        shares[i] += 1
+    return shares
+
+
 def coerce_datetime(value: object) -> datetime | None:
     """Return a datetime for a datetime, a date, or an ISO / DD-MM-YYYY string."""
     if isinstance(value, datetime):
