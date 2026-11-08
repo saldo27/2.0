@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Any
 
 from saldo27 import tolerance_policy
+from saldo27.utilities import DateTimeUtils, coerce_datetime
 
 
 class BalanceValidator:
@@ -161,73 +162,33 @@ class BalanceValidator:
             "is_balanced": len(violations["critical"]) == 0 and len(violations["extreme"]) == 0,
         }
 
-    def _count_worker_shifts(self, worker_id: str, schedule: dict, worker_data: dict | None = None) -> int:
+    @staticmethod
+    def _split_worker_shifts(worker_id: str, schedule: dict, worker_data: dict | None) -> tuple[int, int]:
+        """(mandatory, non-mandatory) shifts of ``worker_id`` in ``schedule``.
+
+        Mandatory dates are parsed with ``DateTimeUtils.parse_dates``, the same
+        reading every other component uses, instead of matched as text (an
+        unpadded ``5-3-2026`` did not match the ``05-03-2026`` schedule key).
+        Schedule keys may be datetimes or ISO strings.
         """
-        Cuenta los turnos asignados a un trabajador, excluyendo mandatory si se proporciona worker_data.
-
-        Args:
-            worker_id: ID del trabajador
-            schedule: Diccionario del horario
-            worker_data: Datos del trabajador (opcional) - si se proporciona, excluye mandatory
-
-        Returns:
-            int: Número de turnos non-mandatory asignados
-        """
-        count = 0
-        mandatory_dates = set()
-
-        # Si hay worker_data, obtener las fechas mandatory para excluirlas
-        if worker_data and worker_data.get("mandatory_days"):
-            mandatory_str = worker_data.get("mandatory_days", "")
-            mandatory_dates = set(p.strip() for p in mandatory_str.replace(";", ",").split(",") if p.strip())
-
+        assigned: set[datetime] = set()
         for date, assignments in schedule.items():
-            if assignments:
-                # Verificar si esta fecha es mandatory
-                is_mandatory = False
-                if mandatory_dates:
-                    try:
-                        check_date = date if isinstance(date, datetime) else datetime.strptime(str(date), "%Y-%m-%d")
-                        date_str1 = check_date.strftime("%d-%m-%Y")
-                        date_str2 = check_date.strftime("%Y-%m-%d")
-                        if date_str1 in mandatory_dates or date_str2 in mandatory_dates:
-                            is_mandatory = True
-                    except (ValueError, TypeError):
-                        pass
+            if not assignments or not any(str(worker) == str(worker_id) for worker in assignments):
+                continue
+            day = coerce_datetime(date)
+            if day is not None:
+                assigned.add(datetime(day.year, day.month, day.day))
+        if not worker_data:
+            return 0, len(assigned)
+        return BalanceValidator.compute_non_mandatory_assigned(worker_data, assigned, DateTimeUtils())
 
-                # Solo contar si NO es mandatory
-                if not is_mandatory:
-                    for worker in assignments:
-                        # Comparar con diferentes formatos de ID
-                        if str(worker) == str(worker_id):
-                            count += 1
-
-        return count
+    def _count_worker_shifts(self, worker_id: str, schedule: dict, worker_data: dict | None = None) -> int:
+        """Turnos asignados a ``worker_id``, excluyendo mandatory si se proporciona ``worker_data``."""
+        return self._split_worker_shifts(worker_id, schedule, worker_data)[1]
 
     def _count_mandatory_shifts(self, worker_id: str, schedule: dict, worker_data: dict | None = None) -> int:
         """Cuenta únicamente los turnos mandatory asignados a un trabajador."""
-        if not worker_data or not worker_data.get("mandatory_days"):
-            return 0
-        mandatory_str = worker_data.get("mandatory_days", "")
-        mandatory_dates = set(p.strip() for p in mandatory_str.replace(";", ",").split(",") if p.strip())
-        count = 0
-        for date, assignments in schedule.items():
-            if not assignments:
-                continue
-            is_mandatory = False
-            try:
-                check_date = date if isinstance(date, datetime) else datetime.strptime(str(date), "%Y-%m-%d")
-                date_str1 = check_date.strftime("%d-%m-%Y")
-                date_str2 = check_date.strftime("%Y-%m-%d")
-                if date_str1 in mandatory_dates or date_str2 in mandatory_dates:
-                    is_mandatory = True
-            except (ValueError, TypeError):
-                pass
-            if is_mandatory:
-                for worker in assignments:
-                    if str(worker) == str(worker_id):
-                        count += 1
-        return count
+        return self._split_worker_shifts(worker_id, schedule, worker_data)[0]
 
     def get_rebalancing_recommendations(self, schedule: dict, workers_data: list[dict]) -> list[dict]:
         """
