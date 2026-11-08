@@ -47,6 +47,7 @@ class Scheduler:
     _scheduler_core: SchedulerCore | None
     _weekend_slot_ratio_cache: float | None
     _availability_slot_cache: dict[tuple[Any, ...], tuple[int, int, int, int]]
+    _holiday_capacity_objectives_cache: tuple[tuple, dict[str, float]]
     _weekend_objectives_cache: tuple[tuple[Any, ...], dict[str, float]] | None
 
     # Configuration (set by SchedulerInitializer.apply_config)
@@ -470,11 +471,21 @@ class Scheduler:
         from piling up on the same workers inside an otherwise balanced weekend
         count. Same sharing rule as bridges (see ``holiday_objectives_for``).
         """
-        holidays = self.scheduled_holiday_dates()
         if is_fixed_cadence(worker):
+            holidays = self.scheduled_holiday_dates()
             return float(sum(1 for d in self._fixed_cadence_dates(worker) if d in holidays))
+        worker_id = str(worker.get("id"))
+        if not filled_only:
+            # Slot capacity does not change while the builder scores candidates.
+            fingerprint = self._objective_fingerprint()
+            cached = getattr(self, "_holiday_capacity_objectives_cache", None)
+            if cached is None or cached[0] != fingerprint:
+                objectives = {w["id"]: self._shift_objective(w) for w in self.workers_data if not is_fixed_cadence(w)}
+                cached = (fingerprint, self.holiday_objectives_for(objectives, filled_only=False))
+                self._holiday_capacity_objectives_cache = cached
+            return cached[1].get(worker_id, 0.0)
         objectives = {w["id"]: self._shift_objective(w) for w in self.workers_data if not is_fixed_cadence(w)}
-        return self.holiday_objectives_for(objectives, filled_only).get(str(worker.get("id")), 0.0)
+        return self.holiday_objectives_for(objectives).get(worker_id, 0.0)
 
     def holiday_objectives_for(self, objectives: Mapping[str, float], filled_only: bool = True) -> dict[str, float]:
         """Holiday objectives for the non-cadence workers in ``objectives`` (worker id → shift objective).
@@ -537,7 +548,18 @@ class Scheduler:
         Called from the per-candidate scoring loops, so it is cached on the worker
         fields it depends on.
         """
-        fingerprint = tuple(
+        fingerprint = self._objective_fingerprint()
+        cached = getattr(self, "_weekend_objectives_cache", None)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        objectives = {w["id"]: self._shift_objective(w) for w in self.workers_data if not is_fixed_cadence(w)}
+        result = self.weekend_objectives_for(objectives)
+        self._weekend_objectives_cache = (fingerprint, result)
+        return result
+
+    def _objective_fingerprint(self) -> tuple:
+        """Worker fields the weekend/holiday objectives depend on (cache key)."""
+        return tuple(
             (
                 w.get("id"),
                 w.get("_raw_target"),
@@ -548,13 +570,6 @@ class Scheduler:
             )
             for w in self.workers_data
         )
-        cached = getattr(self, "_weekend_objectives_cache", None)
-        if cached is not None and cached[0] == fingerprint:
-            return cached[1]
-        objectives = {w["id"]: self._shift_objective(w) for w in self.workers_data if not is_fixed_cadence(w)}
-        result = self.weekend_objectives_for(objectives)
-        self._weekend_objectives_cache = (fingerprint, result)
-        return result
 
     def _availability_shares(self) -> dict[str, tuple[float, float, float]]:
         """(weekend, bridge, holiday) share of each non-cadence worker's available slots.
