@@ -398,3 +398,8 @@ def test_gap_for_other_applies_each_neighbours_threshold():
         )
         is None
     )
+
+
+def test_apportion_largest_remainder_prefer_picks_among_fractional_shares_only():
+    # W2 is exactly 2.0, so it never gets the extra unit even when preferred.
+    assert apportion_largest_remainder(5, [1.5, 1.5, 2.0], prefer=[0, 1, 5]) == [1, 2, 2]
