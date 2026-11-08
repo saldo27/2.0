@@ -933,6 +933,15 @@ def test_ortools_phase_moves_a_weekend_without_prior_period():
     assert len(_weekends_of(scheduler, "A")) == 1
 
 
+def test_ortools_phase_survives_repeated_multithreaded_solves():
+    """Hinted multi-worker solves in one process. With repair_hint, OR-Tools 9.15
+    aborted the process (Check failed: heuristics.fixed_search) within a few runs."""
+    for _ in range(30):
+        scheduler, engine = _weekend_after_prior_scheduler({})
+        engine._run_ortools_phase(time_limit_seconds=10)
+        assert len(_weekends_of(scheduler, "A")) == 1
+
+
 def test_ortools_phase_counts_prior_weekends_as_consecutive():
     """A worked the two prior weekends; with a limit of 2, 6-8 March would be a third in a row."""
     prior = {"A": {datetime(2026, 2, 21), datetime(2026, 2, 28)}}

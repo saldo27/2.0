@@ -1802,20 +1802,21 @@ class ORToolsPhase:
         import time as _time
 
         cpu_workers = min(4, max(1, os.cpu_count() or 1))
+        # No ``repair_hint``: with more than one worker OR-Tools 9.15 aborts the whole
+        # process ("Check failed: heuristics.fixed_search != nullptr"), which no
+        # try/except can catch. Plain hints still warm-start the search.
         attempts = [
             {
                 "label": "warm-start",
                 "include_hints": True,
                 "time_limit": time_limit_seconds,
                 "num_workers": cpu_workers,
-                "repair_hint": True,
             },
             {
                 "label": "retry-without-hints",
                 "include_hints": False,
                 "time_limit": max(time_limit_seconds * 2, 90),
                 "num_workers": cpu_workers,
-                "repair_hint": False,
             },
         ]
 
@@ -1831,9 +1832,6 @@ class ORToolsPhase:
             solver.parameters.max_time_in_seconds = float(attempt["time_limit"])
             solver.parameters.num_workers = int(attempt["num_workers"])
             solver.parameters.log_search_progress = False
-            if attempt["repair_hint"]:
-                solver.parameters.repair_hint = True
-                solver.parameters.hint_conflict_limit = 50_000
 
             solve_t0 = _time.monotonic()
             status = solver.solve(model)
