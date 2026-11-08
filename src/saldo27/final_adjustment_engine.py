@@ -215,7 +215,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
             logging.error(
                 f"Weekend deviation error: {wid} has {metrics['weekend_assigned']} weekend shifts "
                 f"against target {metrics['weekend_target']} "
-                f"(deviation {metrics['weekend_deviation']:+d}, above ±15%)"
+                f"(deviation {metrics['weekend_deviation']:+d}, outside the weekend deadzone)"
             )
 
         logging.info("=" * 70)
@@ -226,7 +226,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
         logging.info(f"  Weekend last-post:    {self.stats['weekend_last_post_swaps']}")
         logging.info(f"  Holes filled:         {self.stats.get('holes_filled', 0)}")
         logging.info(f"  OR-Tools changes:     {self.stats['ortools_reassignments']}")
-        logging.info(f"  Weekend errors >±15%: {self.stats['weekend_errors']}")
+        logging.info(f"  Weekend errors (outside deadzone): {self.stats['weekend_errors']}")
         logging.info("=" * 70)
 
         return {
@@ -1266,7 +1266,7 @@ class FinalAdjustmentEngine(EngineStateMixin):
 # el score pasaba de 8260 a 24460 y la Fase 4 nunca aplicaba cambios).
 W_SHIFT = 1000
 W_WEEKEND = 100
-# A weekend count outside ±15% of its target is an error: the whole absolute
+# A weekend count outside weekend_deadzone (±15%, max ±1) is an error: the whole absolute
 # deviation is charged at the same weight as a shift-count excess.
 W_WEEKEND_ERROR = W_SHIFT
 W_LAST_POST = 50
@@ -1275,6 +1275,7 @@ W_BRIDGE = 10
 # Zonas muertas (deadzones) alineadas con optimization_metrics.py, para que
 # el solver no gaste tiempo optimizando desviaciones que el score final ya
 # no penaliza (ver _calculate_workload_balance_score / _calculate_weekend_balance_score).
+# Porcentaje del objetivo, con un máximo de ±BALANCE_BAND guardias.
 DEADZONE_SHIFT = 0.10
 DEADZONE_WEEKEND = 0.15
 # Alineada con optimization_metrics._calculate_post_rotation_score, que
@@ -1291,16 +1292,26 @@ DEADZONE_LAST_POST = 0.20
 TIEBREAK_WEIGHT = 1
 
 
+def shift_deadzone(target: float) -> float:
+    """Shift deviation that is not penalized: 10% of the target, at most ±1 shift."""
+    return min(float(tolerance_policy.BALANCE_BAND), DEADZONE_SHIFT * target)
+
+
+def weekend_deadzone(target: float) -> float:
+    """Weekend deviation that is not an error: 15% of the target, at most ±1 shift."""
+    return min(float(tolerance_policy.BALANCE_BAND), DEADZONE_WEEKEND * target)
+
+
 def weekend_count_error(deviation: float, target: float) -> float:
     """Weekend shifts that count as an error.
 
-    A deviation within ±15% of the weekend target is not an error. Above that
-    band, the whole absolute deviation is the error.
+    A deviation within the weekend deadzone (``weekend_deadzone``) is not an
+    error. Above that band, the whole absolute deviation is the error.
     """
     abs_dev = abs(deviation)
     if target <= 0:
         return abs_dev
-    if abs_dev > DEADZONE_WEEKEND * target:
+    if abs_dev > weekend_deadzone(target):
         return abs_dev
     return 0.0
 
@@ -1310,9 +1321,9 @@ def _deviation_score(metrics: dict[str, dict[str, Any]]) -> float:
 
     Debe reflejar EXACTAMENTE la misma noción de "desviación" que el objetivo
     CP-SAT (``ORToolsPhase._build_model``): desviaciones de turnos y de
-    último puesto dentro de su zona muerta (±10% / ±20%) no se penalizan con
-    el peso principal. Una desviación de fines de semana dentro de ±15%
-    tampoco. Por encima de ±15% la desviación entera es un error
+    último puesto dentro de su zona muerta (``shift_deadzone`` / ±20%) no se
+    penalizan con el peso principal. Una desviación de fines de semana dentro de
+    ``weekend_deadzone`` tampoco. Por encima, la desviación entera es un error
     (``W_WEEKEND_ERROR``). Dentro de cada zona muerta sigue el desempate
     ``TIEBREAK_WEIGHT``.
     """
@@ -1320,7 +1331,7 @@ def _deviation_score(metrics: dict[str, dict[str, Any]]) -> float:
     for m in metrics.values():
         shift_target = m.get("shift_target", 0)
         shift_dev = abs(m.get("shift_deviation", 0))
-        shift_excess = max(0.0, shift_dev - DEADZONE_SHIFT * shift_target)
+        shift_excess = max(0.0, shift_dev - shift_deadzone(shift_target))
         total += W_SHIFT * shift_excess + TIEBREAK_WEIGHT * shift_dev
 
         weekend_target = m.get("weekend_target", 0)
@@ -1709,7 +1720,7 @@ class ORToolsPhase:
                     dplus_s = model.new_int_var(0, shift_ub, f"dps_{wi}")
                     dminus_s = model.new_int_var(0, shift_ub, f"dms_{wi}")
                     model.add(actual_shifts - raw_tgt == dplus_s - dminus_s)
-                    shift_threshold = int(self.DEADZONE_SHIFT * raw_tgt)
+                    shift_threshold = int(shift_deadzone(raw_tgt))
                     eff_s = model.new_int_var(0, 2 * shift_ub, f"effs_{wi}")
                     model.add(eff_s >= dplus_s + dminus_s - shift_threshold)
                     obj_terms.append(self.W_SHIFT * eff_s)
@@ -1718,8 +1729,8 @@ class ORToolsPhase:
                     # desviaciones "gratis" (coste 0 en eff_s) de forma arbitraria.
                     obj_terms.append(self.TIEBREAK_WEIGHT * (dplus_s + dminus_s))
 
-                # Weekend deviation. Within ±15% only the tie-break applies.
-                # Above ±15% the whole absolute deviation is an error.
+                # Weekend deviation. Within weekend_deadzone only the tie-break applies.
+                # Above it the whole absolute deviation is an error.
                 wknd_tgt = self.engine._weekend_target_for(raw_tgt, wid)
                 actual_wknd = sum(x[wi, si] for si in range(n_slots) if slot_is_weekend[si])
                 weekend_ub = n_slots + abs(wknd_tgt)
@@ -1731,8 +1742,8 @@ class ORToolsPhase:
                 # fix shifts or bridges. The incumbent already satisfies this.
                 current_wknd = sum(1 for si in range(n_slots) if slot_is_weekend[si] and slots[si][2] == wid)
                 model.add(weekend_abs <= abs(current_wknd - wknd_tgt))
-                # floor(15% of target): every integer deviation above this is > ±15%.
-                max_ok = int(self.DEADZONE_WEEKEND * wknd_tgt)
+                # floor(weekend_deadzone): every integer deviation above this is an error.
+                max_ok = int(weekend_deadzone(wknd_tgt))
                 weekend_is_error = model.new_bool_var(f"werr_{wi}")
                 model.add(weekend_abs >= max_ok + 1).only_enforce_if(weekend_is_error)
                 model.add(weekend_abs <= max_ok).only_enforce_if(weekend_is_error.Not())

@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 from saldo27.balance_validator import BalanceValidator
 from saldo27.constraint_checker import config_forced_dates, count_scored_spacing_violations
 from saldo27.structural_score import StructuralScoreBaselines
+from saldo27.tolerance_policy import BALANCE_BAND
 
 # Snapshot entry: (worker_dict, target_shifts, _raw_target)
 ScoreTargetSnapshot = list[tuple[dict[str, Any], Any, Any]]
@@ -374,8 +375,33 @@ class OptimizationMetrics:
             return None
         return fill_ratio
 
+    # Share of the balance penalty taken by the worst worker. The mean alone lets one
+    # badly treated worker hide behind many on-target ones.
+    WORST_CASE_WEIGHT: ClassVar[float] = 0.25
+
+    @classmethod
+    def _aggregate_excess(cls, excesses: list[float]) -> float:
+        """Blend of mean and worst-case excess deviation."""
+        if not excesses:
+            return 0.0
+        mean = sum(excesses) / len(excesses)
+        return (1.0 - cls.WORST_CASE_WEIGHT) * mean + cls.WORST_CASE_WEIGHT * max(excesses)
+
+    @staticmethod
+    def _relative_excess(actual: float, expected: float, deadzone_pct: float) -> float:
+        """Relative deviation beyond a deadzone of ``deadzone_pct`` capped at ±BALANCE_BAND shifts.
+
+        The cap keeps large targets from hiding several shifts inside a percentage band,
+        while small targets keep the stricter percentage.
+        """
+        deadzone = min(float(BALANCE_BAND), deadzone_pct * expected)
+        return max(0.0, abs(actual - expected) - deadzone) / expected
+
     def _calculate_workload_balance_score(self) -> float:
-        """Workload balance vs clique-scaled ``scoring_shift_target`` (±10% deadzone).
+        """Workload balance vs clique-scaled ``scoring_shift_target``.
+
+        Deadzone: 10% of the target, at most ±1 shift. Penalty blends the mean
+        and the worst worker (see ``WORST_CASE_WEIGHT``).
 
         Configuration-driven under-capacity (incompat cliques) is absorbed into
         the scoring target so it does not look like an optimiser failure.
@@ -402,19 +428,18 @@ class OptimizationMetrics:
             scale = self._incomplete_calendar_scale(sum(c for c, _ in rows), sum(t for _, t in rows))
             if scale is None:
                 return 100.0
-            deviations = [abs(count - target * scale) / (target * scale) for count, target in rows]
-
-            deadzone = 0.10
-            effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
-            avg_deviation_pct = sum(effective_deviations) / len(effective_deviations)
-            return max(0.0, 100.0 - avg_deviation_pct * 400.0)
+            excesses = [self._relative_excess(count, target * scale, 0.10) for count, target in rows]
+            return max(0.0, 100.0 - self._aggregate_excess(excesses) * 400.0)
 
         except Exception as e:
             logging.error(f"Error calculating workload balance score: {e}")
             return 0.0
 
     def _calculate_weekend_balance_score(self) -> float:
-        """Weekend balance vs clique-scaled scoring weekend objectives (±15% deadzone)."""
+        """Weekend balance vs clique-scaled scoring weekend objectives.
+
+        Deadzone: 15% of the objective, at most ±1 weekend shift; mean/worst blend.
+        """
         try:
             if not self.scheduler.workers_data:
                 return 100.0
@@ -440,19 +465,15 @@ class OptimizationMetrics:
             scale = self._incomplete_calendar_scale(sum(a for a, _ in rows), sum(e for _, e in rows))
             if scale is None:
                 return 100.0
-            deviations = [abs(actual - expected * scale) / (expected * scale) for actual, expected in rows]
-
-            deadzone = 0.15
-            effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
-            avg_deviation_pct = sum(effective_deviations) / len(effective_deviations)
-            return max(0.0, 100.0 - avg_deviation_pct * 400.0)
+            excesses = [self._relative_excess(actual, expected * scale, 0.15) for actual, expected in rows]
+            return max(0.0, 100.0 - self._aggregate_excess(excesses) * 400.0)
 
         except Exception as e:
             logging.error(f"Error calculating weekend balance score: {e}")
             return 0.0
 
     def _calculate_bridge_balance_score(self) -> float:
-        """Bridge balance vs clique-scaled scoring bridge objectives (±0.5 deadzone)."""
+        """Bridge balance vs clique-scaled scoring bridge objectives (±0.5 deadzone, mean/worst blend)."""
         try:
             bridge_periods = getattr(self.scheduler, "bridge_periods", None)
             if not bridge_periods or not self.scheduler.workers_data:
@@ -475,8 +496,7 @@ class OptimizationMetrics:
 
             deadzone = 0.5
             effective_deviations = [max(0.0, dev - deadzone) for dev in deviations]
-            avg_excess = sum(effective_deviations) / len(effective_deviations)
-            return max(0.0, 100.0 - avg_excess * 50.0)
+            return max(0.0, 100.0 - self._aggregate_excess(effective_deviations) * 50.0)
 
         except Exception as e:
             logging.error(f"Error calculating bridge balance score: {e}")

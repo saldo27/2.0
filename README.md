@@ -40,7 +40,7 @@ Saldo27 permite:
 - Objetivo mensual fijo garantizado para trabajadores con número fijo de guardias/mes, incluso tras la corrección final de restricciones
 - Prorrateo automático del objetivo mensual (manual y automático) según días disponibles por `work_periods` y `days_off` (vacaciones/permisos)
 - Aviso de posible conflicto cuando un día obligatorio (`mandatory_days`) cae dentro de un período de vacaciones o fuera del período de trabajo configurado
-- Score de calidad con zonas sin penalización (carga ±10%, fines de semana ±15%, puentes ±0.5, rotación ±20%), **neutral ante desbalances estructurales** de config (`no_last_post`, `only_last_post`, cliques de incompatibilidad, cadencia, mandatory, huecos no rellenables); las violaciones causadas por mandatory/cadencia no penalizan; gaps por `gap_periods`
+- Score de calidad con zonas sin penalización (carga ±10% y fines de semana ±15%, ambas con un máximo de ±1 guardia; puentes ±0.5; rotación ±20%) y agregación media + peor caso (25%), **neutral ante desbalances estructurales** de config (`no_last_post`, `only_last_post`, cliques de incompatibilidad, cadencia, mandatory, huecos no rellenables); las violaciones causadas por mandatory/cadencia no penalizan; gaps por `gap_periods`
 - **Score del Reparto** (mismo desglose) en Revisión, Estadísticas (calendario generado; snapshot pre-FA si hubo Ajuste Final) y Ajuste Final (post-FA); en Revisión el score se alinea con el de generación
 
 ### Análisis y exportación

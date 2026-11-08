@@ -1,6 +1,6 @@
 """Tests for OptimizationMetrics score-component deadzones and exemptions."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from saldo27.optimization_metrics import OptimizationMetrics
 from saldo27.scheduler import Scheduler
@@ -144,6 +144,47 @@ def test_weekend_balance_score_penalizes_beyond_15_percent():
     scheduler.worker_assignments["A"] = set(weekend_dates[:9])
 
     assert OptimizationMetrics(scheduler)._calculate_weekend_balance_score() < 100.0
+
+
+def _plain_worker(worker_id):
+    return {
+        "id": worker_id,
+        "target_shifts": 10,
+        "work_percentage": 100,
+        "work_periods": "",
+        "mandatory_days": "",
+        "days_off": "",
+    }
+
+
+def _workload_score(targets_and_counts):
+    """Workload score for workers given as (target, assigned count) pairs."""
+    scheduler = _build_scheduler([_plain_worker(f"W{i}") for i in range(len(targets_and_counts))])
+    for i, (target, count) in enumerate(targets_and_counts):
+        scheduler.workers_data[i]["target_shifts"] = target
+        scheduler.worker_assignments[f"W{i}"] = {datetime(2026, 3, 1) + timedelta(days=d) for d in range(count)}
+    return OptimizationMetrics(scheduler)._calculate_workload_balance_score()
+
+
+def test_workload_balance_score_deadzone_capped_at_one_shift():
+    """3 shifts short of 30 is within 10% but beyond the ±1-shift cap: it must penalize."""
+    assert _workload_score([(30, 27)]) < 100.0
+    assert _workload_score([(30, 29)]) == 100.0
+
+
+def test_workload_balance_score_penalizes_worst_case():
+    """Same mean excess, but one worker 3 shifts short is worse than two workers 2 short."""
+    one_bad = _workload_score([(10, 7), (10, 10), (10, 10), (10, 10)])
+    two_mild = _workload_score([(10, 8), (10, 8), (10, 10), (10, 10)])
+
+    assert one_bad < two_mild < 100.0
+
+
+def test_relative_excess_uses_smaller_of_percentage_and_one_shift():
+    """Large objectives are capped at ±1 shift; small ones keep the percentage band."""
+    assert OptimizationMetrics._relative_excess(17, 20, 0.15) == 2 / 20
+    assert OptimizationMetrics._relative_excess(3, 4, 0.15) == (1 - 0.6) / 4
+    assert OptimizationMetrics._relative_excess(19, 20, 0.15) == 0.0
 
 
 def test_post_rotation_score_no_last_post_worker_treated_as_no_deviation():
