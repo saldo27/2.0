@@ -17,7 +17,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Any
 
-from saldo27.utilities import apportion_largest_remainder
+from saldo27.utilities import apportion_largest_remainder, period_tie_offset
 
 
 class TargetCalculator:
@@ -125,7 +125,9 @@ class TargetCalculator:
                         weights.append(available_slots.get(wid, 0) * pct)
 
                     mand_counts = [self._mandatory_count_in_period(w) for w in auto_calc_workers]
-                    targets = self._apportion_auto_targets(slots_for_auto, weights, mand_counts)
+                    targets = self._apportion_auto_targets(
+                        slots_for_auto, weights, mand_counts, tie_offset=period_tie_offset(s.start_date)
+                    )
 
                     for i, w in enumerate(auto_calc_workers):
                         raw_target = targets[i]
@@ -164,7 +166,9 @@ class TargetCalculator:
         return sum(1 for d in mand_dates if s.start_date <= d <= s.end_date)
 
     @staticmethod
-    def _apportion_auto_targets(pool: int, weights: list[float], mand_counts: list[int]) -> list[int]:
+    def _apportion_auto_targets(
+        pool: int, weights: list[float], mand_counts: list[int], tie_offset: int = 0
+    ) -> list[int]:
         """Total (mandatory-inclusive) targets for auto workers sharing ``pool`` slots.
 
         A worker whose mandatory shifts already exceed their proportional share
@@ -172,7 +176,7 @@ class TargetCalculator:
         out of the pool before re-sharing it among the rest. Otherwise the
         excess would be counted twice: once as their mandatory shifts and again
         inside everyone else's share, so the targets would add up to more slots
-        than exist.
+        than exist. Ties in the remainder rotate with ``tie_offset``.
         """
         targets = [0] * len(weights)
         active = [i for i, wgt in enumerate(weights) if wgt > 0]
@@ -192,7 +196,7 @@ class TargetCalculator:
                 targets[i] = mand_counts[i]
                 pool -= mand_counts[i]
                 active.remove(i)
-        shares = apportion_largest_remainder(max(0, pool), [weights[i] for i in active])
+        shares = apportion_largest_remainder(max(0, pool), [weights[i] for i in active], tie_offset=tie_offset)
         for i, share in zip(active, shares, strict=True):
             targets[i] = share
         return targets

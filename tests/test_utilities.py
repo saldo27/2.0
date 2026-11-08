@@ -1,6 +1,6 @@
 """Tests for saldo27.utilities — DateTimeUtils and helpers."""
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -13,6 +13,7 @@ from saldo27.utilities import (
     normalize_gap_periods,
     numeric_sort_key,
     parse_gap_periods_text,
+    period_tie_offset,
 )
 
 
@@ -23,6 +24,22 @@ def test_apportion_largest_remainder_keeps_the_total_and_favours_largest_fractio
 
 def test_apportion_largest_remainder_breaks_ties_by_index():
     assert apportion_largest_remainder(2, [1, 1, 1]) == [1, 1, 0]
+
+
+def test_apportion_largest_remainder_rotates_ties_with_offset():
+    assert apportion_largest_remainder(2, [1, 1, 1], tie_offset=1) == [0, 1, 1]
+    assert apportion_largest_remainder(2, [1, 1, 1], tie_offset=2) == [1, 0, 1]
+
+
+def test_apportion_largest_remainder_ties_survive_float_noise():
+    # 10 / 3 quotas are not bit-identical after scaling; they must still tie.
+    shares = apportion_largest_remainder(10, [0.1, 0.1, 0.1], tie_offset=2)
+    assert shares == [3, 3, 4]
+
+
+def test_period_tie_offset_advances_by_one_per_month():
+    assert period_tie_offset(date(2026, 2, 1)) - period_tie_offset(date(2026, 1, 15)) == 1
+    assert period_tie_offset(date(2027, 1, 1)) - period_tie_offset(date(2026, 12, 31)) == 1
 
 
 def test_apportion_largest_remainder_without_weight_or_total_gives_zeros():

@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 from saldo27 import tolerance_policy
 from saldo27.domain.engine_state_mixin import EngineStateMixin
 from saldo27.infrastructure.optional_engines import ortools_available
-from saldo27.utilities import apportion_largest_remainder, is_fixed_cadence
+from saldo27.utilities import apportion_largest_remainder, is_fixed_cadence, period_tie_offset
 
 
 def _normalize_schedule_date(value: datetime | Any) -> datetime:
@@ -354,7 +354,9 @@ class FinalAdjustmentEngine(EngineStateMixin):
         ids = list(objectives)
         values = [objectives[wid] for wid in ids]
         held_above = [self._kind_count(wid, kind) - math.floor(objectives[wid]) for wid in ids]
-        shares = apportion_largest_remainder(round(sum(values)), values, prefer=held_above)
+        shares = apportion_largest_remainder(
+            round(sum(values)), values, prefer=held_above, tie_offset=period_tie_offset(self.scheduler.start_date)
+        )
         return dict(zip(ids, shares, strict=True))
 
     def _ensure_kind_targets(self) -> None:

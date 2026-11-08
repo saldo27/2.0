@@ -292,3 +292,12 @@ def test_mandatory_days_within_availability_logs_no_warning(sample_workers_data,
         assert TargetCalculator(scheduler).calculate() is True
 
     assert not any("configuration conflict" in record.message for record in caplog.records)
+
+
+def test_auto_target_ties_rotate_between_periods():
+    """Identical workers must not all lose the extra shift to the first one every month."""
+    january = TargetCalculator._apportion_auto_targets(4, [1.0, 1.0, 1.0], [0, 0, 0], tie_offset=0)
+    february = TargetCalculator._apportion_auto_targets(4, [1.0, 1.0, 1.0], [0, 0, 0], tie_offset=1)
+
+    assert january == [2, 1, 1]
+    assert february == [1, 2, 1]
