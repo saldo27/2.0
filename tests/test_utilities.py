@@ -29,6 +29,7 @@ def test_apportion_largest_remainder_without_weight_or_total_gives_zeros():
     assert apportion_largest_remainder(4, [0, 0]) == [0, 0]
     assert apportion_largest_remainder(0, [1, 2]) == [0, 0]
 
+
 # ── DateTimeUtils construction ──────────────────────────────────────
 
 

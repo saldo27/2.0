@@ -177,6 +177,72 @@ def test_bridge_objective_uses_cadence_shift_count_not_the_zero_budget():
     assert cadence_objective > full_objective
 
 
+def _availability_worker(worker_id, days_off=""):
+    return {
+        "id": worker_id,
+        "name": worker_id,
+        "work_percentage": 100,
+        "work_periods": "",
+        "mandatory_days": "",
+        "days_off": days_off,
+        "incompatible_with": [],
+        "auto_calculate_shifts": True,
+    }
+
+
+def _march_scheduler(workers, holidays=()):
+    return Scheduler(
+        {
+            "start_date": datetime(2026, 3, 1),
+            "end_date": datetime(2026, 3, 31),
+            "num_shifts": 2,
+            "workers_data": workers,
+            "holidays": list(holidays),
+            "variable_shifts": [],
+            "gap_between_shifts": 2,
+            "max_consecutive_weekends": 3,
+        }
+    )
+
+
+def test_weekend_objective_follows_each_workers_own_weekend_availability():
+    """A worker on leave every Friday-Sunday of March (except Sunday 1) cannot
+    reach a period-average weekend share. Their objective drops to what their
+    availability allows and the others absorb it, keeping the period total."""
+    weekend_off = ";".join(f"{d:02d}-03-2026" for d in (6, 7, 8, 13, 14, 15, 20, 21, 22, 27, 28, 29))
+    workers = [_availability_worker("OFF", weekend_off), _availability_worker("A"), _availability_worker("B")]
+    scheduler = _march_scheduler(workers)
+    off, a, b = scheduler.workers_data
+
+    objectives = [scheduler.get_weekend_objective(w) for w in (off, a, b)]
+    nominal = sum(scheduler._shift_objective(w) for w in (off, a, b)) * scheduler._weekend_slot_ratio()
+
+    # OFF has 2 weekend slots out of 38 available; A/B 26 out of 62.
+    assert objectives[0] < 1.0
+    assert objectives[1] == pytest.approx(objectives[2])
+    assert objectives[1] > scheduler._shift_objective(a) * scheduler._weekend_slot_ratio()
+    assert sum(objectives) == pytest.approx(nominal)
+
+
+def test_weekend_objective_with_uniform_availability_is_objective_times_period_ratio():
+    scheduler = _march_scheduler([_availability_worker("A"), _availability_worker("B")])
+
+    for worker in scheduler.workers_data:
+        expected = scheduler._shift_objective(worker) * scheduler._weekend_slot_ratio()
+        assert scheduler.get_weekend_objective(worker) == pytest.approx(expected)
+
+
+def test_bridge_objective_is_zero_for_a_worker_on_leave_during_the_bridge():
+    friday_holiday = datetime(2026, 3, 20)
+    workers = [_availability_worker("AWAY", "19-03-2026 - 22-03-2026"), _availability_worker("HOME")]
+    scheduler = _march_scheduler(workers, holidays=[friday_holiday])
+    for day in (19, 20, 21, 22):
+        scheduler.schedule[datetime(2026, 3, day)] = ["HOME", None]
+
+    assert scheduler.get_bridge_objective_for_worker("AWAY") == 0.0
+    assert scheduler.get_bridge_objective_for_worker("HOME") == pytest.approx(4.0)
+
+
 def _variable_shifts_scheduler(workers):
     """4 posts per day, except 10-12 March with 3 posts."""
     return Scheduler(

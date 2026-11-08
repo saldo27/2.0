@@ -289,7 +289,10 @@ class ShiftToleranceValidator:
         """
         if total_target <= 0:
             return 0
-        # Misma proporción por slots y redondeo que el límite de generación
+        # Mismo objetivo (según disponibilidad) y redondeo que el límite de generación
+        worker = next((w for w in self.workers_data if w["id"] == worker_id), None)
+        if worker is not None and "_raw_target" in worker:
+            return round(self.scheduler.get_weekend_objective(worker))
         return round(total_target * self.scheduler._weekend_slot_ratio())
 
     def log_tolerance_report(self) -> None:

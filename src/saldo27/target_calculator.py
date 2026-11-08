@@ -183,7 +183,9 @@ class TargetCalculator:
         while active:
             pool = max(0, pool)
             active_weight = sum(weights[i] for i in active)
-            saturated = [i for i in active if mand_counts[i] > 0 and mand_counts[i] >= weights[i] / active_weight * pool]
+            saturated = [
+                i for i in active if mand_counts[i] > 0 and mand_counts[i] >= weights[i] / active_weight * pool
+            ]
             if not saturated:
                 break
             for i in saturated:

@@ -46,6 +46,8 @@ class Scheduler:
     _cache_enabled: bool
     _scheduler_core: SchedulerCore | None
     _weekend_slot_ratio_cache: float | None
+    _availability_slot_cache: dict[tuple[Any, ...], tuple[int, int, int]]
+    _availability_weights_cache: tuple[tuple[Any, ...], dict[str, Any]] | None
 
     # Configuration (set by SchedulerInitializer.apply_config)
     config: dict[str, Any]
@@ -390,14 +392,15 @@ class Scheduler:
 
     def get_bridge_objective_for_worker(self, worker_id: str) -> float:
         """
-        Calculate the objective (target) number of bridge shifts for a worker
-        proportional to their share of total target shifts.
+        Calculate the objective (target) number of bridge shifts for a worker.
 
-        The weight is the worker's full shift objective (``_raw_target``), which
-        includes mandatory shifts. A fixed-cadence worker's objective is the
+        The weight is the worker's full shift objective (``_raw_target``, which
+        includes mandatory shifts) times the share of their own available slots
+        that fall on bridge days, so a worker on leave during a bridge is not
+        handed a bridge deficit. A fixed-cadence worker's objective is the
         bridge days of their cadence; the other workers share what is left.
 
-        Formula: remaining_bridge_shifts * (worker_shift_objective / sum_non_cadence_objectives)
+        Formula: remaining_bridge_shifts * (worker_weight / sum_non_cadence_weights)
 
         Args:
             worker_id: ID of the worker
@@ -421,9 +424,9 @@ class Scheduler:
         if is_fixed_cadence(worker):
             return float(sum(1 for d in self._fixed_cadence_dates(worker) if d in bridge_dates))
 
-        balanced = [w for w in self.workers_data if not is_fixed_cadence(w)]
-        total_target = sum(self._shift_objective(w) for w in balanced)
-        if total_target == 0:
+        weights = self._availability_weights()["bridge"]
+        total_weight = sum(weights.values())
+        if total_weight <= 0:
             return 0.0
 
         # Count only filled (non-None) slots to avoid inflating targets
@@ -434,11 +437,17 @@ class Scheduler:
             if is_fixed_cadence(w)
         )
 
-        return max(0, total_bridge_shifts) * self._shift_objective(worker) / total_target
+        return max(0, total_bridge_shifts) * weights.get(worker_id, 0.0) / total_weight
 
     def get_weekend_objective(self, worker: dict) -> float:
-        """Objective weekend shifts for ``worker``: their shift objective times the share
-        of slots that fall on weekend days (Fri-Sun, holidays and pre-holidays).
+        """Objective weekend shifts for ``worker`` (Fri-Sun, holidays and pre-holidays).
+
+        Each worker's shift objective is weighted by the share of *their own*
+        available slots that fall on weekend days, then rescaled so the balanced
+        workers together still cover the period's weekend share. Someone on
+        leave every weekend therefore gets a lower objective and the others
+        absorb it, instead of the worker carrying an unreachable deficit. With
+        uniform availability this equals objective × period weekend ratio.
 
         A fixed-cadence worker's objective is the weekend days of their cadence, so
         weekend balancing never sees them as over or under target."""
@@ -446,7 +455,88 @@ class Scheduler:
             return float(
                 sum(1 for d in self._fixed_cadence_dates(worker) if self.date_utils.is_weekend_day(d, self.holidays))
             )
-        return self._shift_objective(worker) * self._weekend_slot_ratio()
+        ratio = self._weekend_slot_ratio()
+        weights = self._availability_weights()
+        worker_id = worker.get("id")
+        if worker_id not in weights["weekend"]:
+            return self._shift_objective(worker) * ratio
+        weighted = weights["weekend_total"]
+        if weighted <= 0:
+            return 0.0
+        return weights["weekend"][worker_id] * weights["objective_total"] * ratio / weighted
+
+    def _availability_weights(self) -> dict[str, Any]:
+        """Per balanced (non-cadence) worker: shift objective × share of their available
+        slots on weekend / bridge days, plus the totals used to normalise them.
+
+        Called from the per-candidate scoring loops, so it is cached on the inputs
+        that can change during a run (objectives, availability, bridge periods).
+        """
+        fingerprint = (
+            tuple(
+                (
+                    w.get("id"),
+                    w.get("_raw_target"),
+                    w.get("target_shifts"),
+                    w.get("work_periods"),
+                    w.get("days_off"),
+                    bool(w.get("has_cadence")),
+                )
+                for w in self.workers_data
+            ),
+            tuple((bp["start_date"], bp["end_date"]) for bp in (self.bridge_periods or ())),
+        )
+        cached = getattr(self, "_availability_weights_cache", None)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+
+        weekend: dict[str, float] = {}
+        bridge: dict[str, float] = {}
+        objective_total = 0
+        for w in self.workers_data:
+            if is_fixed_cadence(w):
+                continue
+            objective = self._shift_objective(w)
+            available, weekend_slots, bridge_slots = self._availability_slot_counts(w)
+            if available <= 0:
+                available, weekend_slots, bridge_slots = self._availability_slot_counts({})
+            objective_total += objective
+            weekend[w["id"]] = objective * weekend_slots / available if available else 0.0
+            bridge[w["id"]] = objective * bridge_slots / available if available else 0.0
+        weights = {
+            "weekend": weekend,
+            "bridge": bridge,
+            "weekend_total": sum(weekend.values()),
+            "objective_total": objective_total,
+        }
+        self._availability_weights_cache = (fingerprint, weights)
+        return weights
+
+    def _availability_slot_counts(self, worker: dict) -> tuple[int, int, int]:
+        """(available, weekend, bridge) slots over the period for ``worker``'s availability."""
+        bridges = tuple((bp["start_date"], bp["end_date"]) for bp in (self.bridge_periods or ()))
+        key = (worker.get("work_periods") or "", worker.get("days_off") or "", bridges)
+        cache = getattr(self, "_availability_slot_cache", None)
+        if cache is None:
+            cache = self._availability_slot_cache = {}
+        if key in cache:
+            return cache[key]
+
+        from saldo27.target_calculator import TargetCalculator
+
+        work_ranges, off_ranges = TargetCalculator(self)._worker_availability_ranges(worker)
+        available = weekend = bridge = 0
+        for day in self._get_date_range(self.start_date, self.end_date):
+            if not any(rs <= day <= re for rs, re in work_ranges) or any(rs <= day <= re for rs, re in off_ranges):
+                continue
+            slots = self._get_shifts_for_date(day)
+            available += slots
+            if self.date_utils.is_weekend_day(day, self.holidays):
+                weekend += slots
+            if self.date_utils.is_bridge_day(day, self.bridge_periods):
+                bridge += slots
+        cache[key] = (available, weekend, bridge)
+        return cache[key]
 
     def _fixed_cadence_dates(self, worker: dict) -> list[datetime]:
         try:
