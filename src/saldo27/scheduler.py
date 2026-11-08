@@ -14,7 +14,7 @@ from saldo27.scheduler_validation import SchedulerValidationService
 from saldo27.utilities import DateTimeUtils, is_fixed_cadence, worker_flag_enabled
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from saldo27.application.contracts import GenerationProgressEvent
     from saldo27.constraint_checker import ConstraintChecker
@@ -421,7 +421,7 @@ class Scheduler:
         objectives = {w["id"]: self._shift_objective(w) for w in self.workers_data if not is_fixed_cadence(w)}
         return self.bridge_objectives_for(objectives).get(worker_id, 0.0)
 
-    def bridge_objectives_for(self, objectives: dict[str, float]) -> dict[str, float]:
+    def bridge_objectives_for(self, objectives: Mapping[str, float]) -> dict[str, float]:
         """Bridge objectives for the non-cadence workers in ``objectives`` (worker id → shift objective).
 
         The filled bridge shifts left after the cadence workers' bridge days are
@@ -470,7 +470,7 @@ class Scheduler:
             return self._shift_objective(worker) * self._weekend_slot_ratio()
         return objectives[worker_id]
 
-    def weekend_objectives_for(self, objectives: dict[str, float]) -> dict[str, float]:
+    def weekend_objectives_for(self, objectives: Mapping[str, float]) -> dict[str, float]:
         """Weekend objectives for the non-cadence workers in ``objectives`` (worker id → shift objective).
 
         Each shift objective is weighted by the share of the worker's *own*
