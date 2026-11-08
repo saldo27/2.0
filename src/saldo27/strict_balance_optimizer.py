@@ -30,6 +30,7 @@ import random
 from saldo27 import tolerance_policy
 from saldo27.balance_validator import BalanceValidator
 from saldo27.domain.engine_state_mixin import EngineStateMixin
+from saldo27.utilities import is_fixed_cadence
 
 
 class StrictBalanceOptimizer(EngineStateMixin):
@@ -161,8 +162,16 @@ class StrictBalanceOptimizer(EngineStateMixin):
             # Obtener trabajadores fuera de tolerancia
             overloaded, underloaded = self._get_imbalanced_workers(target_tolerance)
 
-            if not overloaded or not underloaded:
+            if not overloaded and not underloaded:
                 logging.info(f"✅ Balance achieved at iteration {iteration}")
+                break
+
+            if not overloaded or not underloaded:
+                if self._try_one_sided_transfer(overloaded, underloaded, target_tolerance):
+                    improvement_made = True
+                    self.stats["swaps_performed"] += 1
+                    continue
+                logging.info(f"Iteration {iteration}: no transfer partner left for the remaining imbalance")
                 break
 
             # Intentar múltiples estrategias en orden de preferencia
@@ -365,6 +374,88 @@ class StrictBalanceOptimizer(EngineStateMixin):
         underloaded.sort(key=lambda x: abs(x[1]), reverse=True)
 
         return overloaded, underloaded
+
+    def _try_one_sided_transfer(self, overloaded: list, underloaded: list, tolerance: int) -> bool:
+        """Move one shift when only one side is outside the band.
+
+        The paired strategies need someone above +band *and* someone below
+        -band, so a worker at -2 stays there while everybody else is within ±1.
+        Here the partner is any worker on the other side of their target who
+        stays inside their own band after the move: the number of workers
+        outside the band drops and no new one appears.
+        """
+        date_utils = getattr(self.builder, "date_utils", None)
+        inside: list[tuple[str, int, int]] = []
+        for worker in self.workers_data:
+            target = worker.get("target_shifts", 0)
+            if target <= 0 or is_fixed_cadence(worker):
+                continue
+            _, assigned = BalanceValidator.compute_non_mandatory_assigned(
+                worker, self.worker_assignments.get(worker["id"], set()), date_utils
+            )
+            band = tolerance_policy.balance_band(worker, target, band=tolerance)
+            deviation = assigned - target
+            if abs(deviation) <= band:
+                inside.append((worker["id"], deviation, band))
+
+        if overloaded:
+            givers = overloaded[:5]
+            receivers = sorted(
+                ((wid, dev) for wid, dev, band in inside if dev < 0 and dev + 1 <= band), key=lambda x: x[1]
+            )
+        else:
+            givers = sorted(
+                ((wid, dev) for wid, dev, band in inside if dev > 0 and dev - 1 >= -band), key=lambda x: -x[1]
+            )
+            receivers = underloaded[:5]
+
+        workers_by_id = {w["id"]: w for w in self.workers_data}
+        for giver_id, _ in givers:
+            giver = workers_by_id.get(giver_id)
+            if giver is None or is_fixed_cadence(giver):
+                continue
+            dates = self._sort_dates_by_monthly_excess(giver_id, list(self.worker_assignments.get(giver_id, set())))
+            for date in dates:
+                if self.builder.is_locked_mandatory(giver_id, date):
+                    continue
+                if not self.builder._can_modify_assignment(giver_id, date, "strict_balance"):
+                    continue
+                if not self._giver_month_ok(giver_id, date):
+                    continue
+                try:
+                    post = self.schedule[date].index(giver_id)
+                except (ValueError, KeyError):
+                    continue
+
+                for receiver_id, _ in receivers:
+                    receiver = workers_by_id.get(receiver_id)
+                    if receiver is None or is_fixed_cadence(receiver) or receiver_id in self.schedule[date]:
+                        continue
+                    if self.builder._calculate_worker_score(receiver, date, post, relaxation_level=0) == float("-inf"):
+                        continue
+                    if self.builder._exceeds_monthly_cap(receiver, date):
+                        continue
+                    if not self._weekend_deltas_ok(self._transfer_deltas([(giver_id, receiver_id, date)])):
+                        continue
+                    if (
+                        hasattr(self.builder, "_is_weekend_or_holiday")
+                        and self.builder._is_weekend_or_holiday(date)
+                        and hasattr(self.builder, "_would_exceed_weekend_limit_simulated")
+                        and self.builder._would_exceed_weekend_limit_simulated(
+                            receiver_id, date, self.worker_assignments
+                        )
+                    ):
+                        continue
+
+                    self.schedule[date][post] = receiver_id
+                    self.worker_assignments[giver_id].discard(date)
+                    self.worker_assignments.setdefault(receiver_id, set()).add(date)
+                    self.scheduler._update_tracking_data(giver_id, date, post, removing=True)
+                    self.scheduler._update_tracking_data(receiver_id, date, post, removing=False)
+                    logging.info(f"  ✅ One-sided transfer: {giver_id} → {receiver_id} on {date.strftime('%Y-%m-%d')}")
+                    return True
+
+        return False
 
     def _try_direct_swap(self, overloaded: list, underloaded: list, tolerance: int) -> bool:
         """

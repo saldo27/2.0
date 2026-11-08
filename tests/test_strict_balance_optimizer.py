@@ -266,3 +266,74 @@ def test_shift_balance_does_not_trade_a_weekend_when_both_are_on_target():
     # A target of 4 leaves no room for ±1 under the hard limit, so both end exact
     assert len(scheduler.worker_assignments["A"]) == 4
     assert len(scheduler.worker_assignments["B"]) == 4
+
+
+def test_one_sided_transfer_moves_a_surplus_shift_to_a_worker_two_below():
+    """A worker at -2 receives one shift from a worker at +1, who stays inside ±1."""
+
+    class _AllowAll:
+        def is_locked_mandatory(self, _wid, _date):
+            return False
+
+        def _can_modify_assignment(self, _wid, _date, _op):
+            return True
+
+        def _calculate_worker_score(self, _worker, _date, _post, relaxation_level=0):
+            return 0
+
+        def _exceeds_monthly_cap(self, _worker, _date, assignments=None):
+            return False
+
+    workers = _workers(manual_target=10, auto_target=10)
+    scheduler = _make_scheduler(workers)
+    for worker in scheduler.workers_data:
+        worker["auto_calculate_shifts"] = True
+        worker["target_shifts"] = 10
+    # Target 10 keeps the ±1 band (13% of 10 rounds to one shift).
+    short = [datetime(2026, 3, day) for day in (2, 3, 4, 5, 9, 10, 11, 12)]
+    surplus = [datetime(2026, 3, day) for day in (13, 16, 17, 18, 19, 20, 23, 24, 25, 26, 27)]
+    scheduler.schedule = {day: ["A"] for day in short}
+    scheduler.schedule.update({day: ["B"] for day in surplus})
+    scheduler.worker_assignments["A"] = set(short)
+    scheduler.worker_assignments["B"] = set(surplus)
+
+    sbo = StrictBalanceOptimizer(scheduler, _AllowAll())
+    assert sbo.optimize_balance(max_iterations=5, target_tolerance=1)
+
+    assert len(scheduler.worker_assignments["A"]) == 9
+    assert len(scheduler.worker_assignments["B"]) == 10
+
+
+def test_one_sided_transfer_does_not_take_from_a_worker_on_target():
+    """Nobody above their target: the worker at -2 stays there."""
+
+    class _AllowAll:
+        def is_locked_mandatory(self, _wid, _date):
+            return False
+
+        def _can_modify_assignment(self, _wid, _date, _op):
+            return True
+
+        def _calculate_worker_score(self, _worker, _date, _post, relaxation_level=0):
+            return 0
+
+        def _exceeds_monthly_cap(self, _worker, _date, assignments=None):
+            return False
+
+    workers = _workers(manual_target=10, auto_target=10)
+    scheduler = _make_scheduler(workers)
+    for worker in scheduler.workers_data:
+        worker["auto_calculate_shifts"] = True
+        worker["target_shifts"] = 10
+    short = [datetime(2026, 3, day) for day in (2, 3, 4, 5, 9, 10, 11, 12)]
+    exact = [datetime(2026, 3, day) for day in (13, 16, 17, 18, 19, 20, 23, 24, 25, 26)]
+    scheduler.schedule = {day: ["A"] for day in short}
+    scheduler.schedule.update({day: ["B"] for day in exact})
+    scheduler.worker_assignments["A"] = set(short)
+    scheduler.worker_assignments["B"] = set(exact)
+
+    sbo = StrictBalanceOptimizer(scheduler, _AllowAll())
+    sbo.optimize_balance(max_iterations=5, target_tolerance=1)
+
+    assert scheduler.worker_assignments["A"] == set(short)
+    assert scheduler.worker_assignments["B"] == set(exact)

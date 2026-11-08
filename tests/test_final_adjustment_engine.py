@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from saldo27.final_adjustment_engine import FinalAdjustmentEngine
@@ -1056,3 +1057,104 @@ def test_holiday_swap_moves_a_holiday_to_the_worker_without_one():
     assert scheduler.schedule[saturday][0] == "W0"
     assert sum(1 for d in holidays if scheduler.schedule[d][0] == "W1") == 1
     assert engine._improve_holiday_balance() is False
+
+
+def _fridays():
+    return [datetime(2026, 3, day) for day in (6, 13, 20, 27)]
+
+
+def _assign_two_posts(scheduler, rows):
+    scheduler.schedule = {}
+    scheduler.worker_assignments = {w["id"]: set() for w in scheduler.workers_data}
+    for day, occupants in rows:
+        scheduler.schedule[day] = list(occupants)
+        for worker_id in occupants:
+            scheduler.worker_assignments[worker_id].add(day)
+
+
+def _assert_ortools_feasible(engine, caplog):
+    from saldo27.final_adjustment_engine import ORToolsPhase
+
+    with caplog.at_level(logging.INFO):
+        ORToolsPhase(engine).solve(time_limit_seconds=10)
+    assert "model infeasible" not in caplog.text
+    assert "status=OPTIMAL" in caplog.text or "status=FEASIBLE" in caplog.text
+
+
+def test_ortools_phase_accepts_a_manual_target_above_the_generic_cap(caplog):
+    """A manual target above max_shifts_per_worker must not make the model infeasible."""
+    workers = _simple_workers()
+    scheduler = _make_scheduler(workers)
+    for worker in scheduler.workers_data:
+        if worker["id"] == "A":
+            worker["auto_calculate_shifts"] = False
+            worker["_raw_target"] = 3
+            worker["target_shifts"] = 3
+    scheduler.max_shifts_per_worker = 2
+    dates = [datetime(2026, 3, day) for day in (2, 10, 20)]
+    _assign_two_posts(scheduler, [(day, ("A", "B")) for day in dates])
+
+    engine = _build_engine(scheduler)
+    with caplog.at_level(logging.INFO):
+        engine._run_ortools_phase(time_limit_seconds=10)
+
+    assert "model infeasible" not in caplog.text
+    assert scheduler.worker_assignments["A"] == set(dates)
+
+
+def test_ortools_phase_allows_dual_mandatory_incompatible_pair(caplog):
+    """Two workers pinned to the same obligatory date stay feasible even if they are incompatible."""
+    workers = _simple_workers()
+    workers[0]["incompatible_with"] = ["B"]
+    workers[1]["incompatible_with"] = ["A"]
+    workers[0]["mandatory_days"] = "06-03-2026"
+    workers[1]["mandatory_days"] = "06-03-2026"
+    scheduler = _make_scheduler(workers)
+    day = datetime(2026, 3, 6)
+    _assign_two_posts(scheduler, [(day, ("A", "B"))])
+
+    _assert_ortools_feasible(_build_engine(scheduler), caplog)
+    assert scheduler.schedule[day] == ["A", "B"]
+
+
+def test_ortools_phase_keeps_a_cadence_worker_over_the_weekend_limit(caplog):
+    """A cadence worker already on the weekend target is not made infeasible by the consecutive-weekend limit."""
+    workers = _simple_workers()
+    workers[0]["has_cadence"] = True
+    partners = ["P0", "P1", "P2", "P3"]
+    for partner in partners:
+        workers.append({**workers[1], "id": partner, "name": partner, "has_cadence": False})
+    scheduler = _make_scheduler(workers)
+    _assign_two_posts(scheduler, [(day, ("A", partner)) for day, partner in zip(_fridays(), partners, strict=True)])
+
+    engine = _build_engine(scheduler)
+    engine._cadence_targets["A"] = {"weekend": 4, "bridge": 0, "holiday": 0}
+
+    _assert_ortools_feasible(engine, caplog)
+
+
+def test_ortools_phase_drops_the_free_weekend_of_an_overlong_run(caplog):
+    """Three obligatory weekends pin the window; the fourth, voluntary one still has to go."""
+    workers = _simple_workers()
+    workers[0]["mandatory_days"] = "06-03-2026; 13-03-2026; 20-03-2026"
+    partners = ["P0", "P1", "P2", "P3"]
+    for partner in partners:
+        workers.append({**workers[1], "id": partner, "name": partner})
+    scheduler = _make_scheduler(workers)
+    fridays = _fridays()
+    _assign_two_posts(scheduler, [(day, ("A", partner)) for day, partner in zip(fridays, partners, strict=True)])
+
+    engine = _build_engine(scheduler)
+    for worker in scheduler.workers_data:
+        engine._weekend_targets[worker["id"]] = 1
+    engine._weekend_targets["A"] = 3
+
+    from saldo27.final_adjustment_engine import ORToolsPhase
+
+    with caplog.at_level(logging.INFO):
+        changes = ORToolsPhase(engine).solve(time_limit_seconds=10)
+
+    assert "model infeasible" not in caplog.text
+    assert changes is not None
+    moved = [new for (day, _post), (old, new) in changes.items() if day == fridays[3] and old == "A"]
+    assert moved and moved[0] != "A"
